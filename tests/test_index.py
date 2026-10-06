@@ -469,3 +469,34 @@ def test_orientation_tour_and_authored_tours(con, con2):
     data = export.graph(con2, with_sources=False)
     assert any(t["id"] == saved["id"] and len(t["stops"]) == 2 for t in data["tours"])
     assert data["patterns"] and all(isinstance(m["i"], int) for p in data["patterns"] for m in p["marks"])
+
+
+def test_field_reads_and_writes(con2):
+    from leyline import change
+
+    s = "f2:csharp:cs/Mod::Mod.State."
+
+    def access(fn):
+        return {(r[0], r[1].split(".")[-1], bool(__import__("json").loads(r[2]).get("init"))) for r in con2.execute(
+            "SELECT kind, dst_id, attrs FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?", (s + fn,))}
+    assert access("Counter.Bump()") == {("reads", "Value", False), ("writes", "Value", False),
+                                        ("reads", "_hits", False), ("writes", "_hits", False)}
+    assert access("Counter.Full()") == {("reads", "Value", False), ("reads", "Limit", False)}
+    assert access("Driver.Make()") == {("writes", "Limit", True), ("writes", "Value", False)}   # Limit only while creating
+    assert access("Driver.Peek(Counter)") == {("reads", "Limit", False)}                        # the local Value hides nothing
+    assert access("Driver.Reset(Counter)") == {("writes", "Value", False), ("reads", "Slots", False), ("writes", "Slots", False)}
+
+    field = query.expand(con2, s + "Counter.Value")["data"]
+    assert {x["name"] for x in field["written_by"]} == {"Bump", "Make", "Reset"} and field["written_outside_its_type"] == 2
+    assert {f["name"]: (f["readers"], f["writers"]) for f in query.expand(con2, s + "Counter")["data"]["fields"]}["Limit"] == (2, 1)
+    shared = {f["name"]: f for f in query.shared_state(con2)["fields"]}
+    assert shared["Counter.Value"]["written_from"] == ["Driver"] and "Counter.Limit" not in shared
+
+    p = "f2:python:py."
+    py = {(r[0], r[1].rsplit(".", 2)[-2]) for r in con2.execute(
+        "SELECT kind, src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (p + "src.pkg.core.Engine.name",))}
+    assert {("writes", "Engine"), ("reads", "Engine"), ("writes", "test_engine"), ("reads", "test_engine")} <= py
+    assert "Engine.name" not in {f["name"] for f in query.shared_state(con2)["fields"]}     # only a test assigns it from outside
+
+    r = change.assess(con2, "Drop Counter.Value", [{"id": s + "Counter.Value", "action": "remove"}])
+    assert {m["id"].split(".")[-1] for m in r["must_edit"]} >= {"Bump()", "Full()", "Make()", "Reset(Counter)"}

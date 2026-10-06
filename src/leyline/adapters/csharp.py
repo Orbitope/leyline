@@ -8,7 +8,7 @@ from typing import Optional
 import tree_sitter_c_sharp
 from tree_sitter import Language, Parser
 
-from ..model import CallSite, Edge, EventUse, FileResult, ImportRef, Node, TypeRef
+from ..model import FieldUse, CallSite, Edge, EventUse, FileResult, ImportRef, Node, TypeRef
 
 NAME = "tree-sitter-c-sharp"
 VERSION = "0.1"
@@ -37,6 +37,31 @@ LAMBDAS = ("lambda_expression", "anonymous_method_expression")
 LITERALS = {"integer_literal": "int", "real_literal": "double", "boolean_literal": "bool", "character_literal": "char",
             "string_literal": "string", "verbatim_string_literal": "string", "raw_string_literal": "string",
             "interpolated_string_expression": "string"}
+
+
+def _identifiers(node) -> list[str]:
+    if node is None:
+        return []
+    if node.type == "identifier":
+        return [_text(node)]
+    return [x for c in node.children for x in _identifiers(c)]
+
+
+def _declared_names(node) -> list[str]:
+    """Names a lambda, pattern, catch clause or out-declaration introduces."""
+    if node.type == "lambda_expression":
+        first = node.child_by_field_name("parameters") or (node.named_children[0] if node.named_children else None)
+        if first is None or first.type not in ("implicit_parameter", "parameter_list", "identifier"):
+            return []
+        if first.type == "parameter_list":
+            return [_text(p.child_by_field_name("name") or p.named_children[-1]) for p in first.children if p.type == "parameter"]
+        return [_text(first)]
+    name = node.child_by_field_name("name")
+    if name is not None:
+        return _identifiers(name)
+    ids = [c for c in node.named_children
+           if c.type in ("identifier", "single_variable_designation", "parenthesized_variable_designation")]
+    return _identifiers(ids[-1]) if ids else []
 
 
 def _arg_hint(arg, scope: dict):
@@ -352,6 +377,8 @@ class _Walker:
             ptypes.append(_squash(_text(ptype)).replace(", ", ","))
             pname = _text(p.child_by_field_name("name"))
             outer = _outer_type(ptype)
+            if pname:
+                scope["#" + pname] = "1"  # a local name: never a field of the enclosing type
             if pname and outer:
                 scope[pname] = outer
                 elem = _elem_type(ptype)
@@ -439,6 +466,7 @@ class _Walker:
                 vt = declared or self._infer(v, scope, type_id)
                 if nm:
                     scope.pop("~" + nm, None)
+                    scope["#" + nm] = "1"
                 if nm and vt:
                     scope[nm] = vt
                 elif nm:
@@ -454,6 +482,8 @@ class _Walker:
         elif t in ("foreach_statement",):
             tnode = node.child_by_field_name("type")
             nm = _text(node.child_by_field_name("left"))
+            for ident in _identifiers(node.child_by_field_name("left")):
+                scope["#" + ident] = "1"
             if tnode is not None and _text(tnode) != "var" and nm:
                 outer = _outer_type(tnode)
                 if outer:
@@ -464,7 +494,12 @@ class _Walker:
                     scope[nm] = elem
         elif t == "invocation_expression":
             self._invocation(node, cid, type_id, scope)
-        elif t == "assignment_expression" and any(_text(c) == "+=" for c in node.children if not c.is_named):
+        elif t in ("lambda_expression", "catch_declaration", "declaration_expression", "declaration_pattern", "from_clause"):
+            for ident in _declared_names(node):  # names these introduce are locals
+                scope["#" + ident] = "1"
+        if t in ("identifier", "member_access_expression"):
+            self._use(node, cid, type_id, scope)
+        if t == "assignment_expression" and any(_text(c) == "+=" for c in node.children if not c.is_named):
             left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
             if left is not None and right is not None and right.type in LAMBDAS + ("identifier", "member_access_expression"):
                 handler = None
@@ -493,6 +528,73 @@ class _Walker:
                                                tuple(_arg_hint(a, scope) for a in ctor_args) if len(ctor_args) == argc else ()))
         for c in node.children:
             self._body(c, cid, type_id, scope)
+
+    def _use(self, node, cid: str, type_id: Optional[str], scope: dict[str, str]) -> None:
+        """Record a name that may be a field, and whether this use reads or assigns it."""
+        parent = node.parent
+        if parent is None:
+            return
+        pt = parent.type
+        same = lambda a, b: a is not None and b is not None and a.start_byte == b.start_byte and a.end_byte == b.end_byte
+        receiver = rtype = chain = None
+        if node.type == "member_access_expression":
+            if pt == "invocation_expression" and same(parent.child_by_field_name("function"), node):
+                return  # a method call, recorded as a call site
+            name_node = node.child_by_field_name("name")
+            if name_node is None or name_node.type != "identifier":
+                return
+            name = _text(name_node)
+            expr = node.child_by_field_name("expression")
+            receiver, rtype = self._receiver(expr, scope, type_id)
+            inner = expr
+            while inner is not None and inner.type in ("parenthesized_expression", "await_expression") and inner.named_children:
+                inner = inner.named_children[-1]
+            if inner is not None and inner.type == "invocation_expression":
+                chain, receiver = self._invocation(inner, cid, type_id, scope), "?"
+            elif rtype is None and receiver and "~" + receiver in scope:
+                chain = scope["~" + receiver]
+        else:
+            name = _text(node)
+            if "#" + name in scope:
+                return  # a local or a parameter
+            if pt == "member_access_expression" and same(parent.child_by_field_name("name"), node):
+                return  # the member half of a.b, handled with its parent
+            if pt in ("invocation_expression", "generic_name", "qualified_name", "type_argument_list", "base_list",
+                      "array_type", "nullable_type", "name_colon", "name_equals", "attribute", "variable_declarator",
+                      "parameter", "type_parameter", "using_directive", "labeled_statement", "member_binding_expression",
+                      "implicit_parameter", "tuple_element", "pointer_type", "type_parameter_constraint", "typeof_expression",
+                      "alias_qualified_name", "enum_member_declaration", "local_function_statement", "catch_declaration",
+                      "single_variable_designation", "declaration_pattern", "constant_pattern", "from_clause"):
+                if not (pt == "variable_declarator" and not same(parent.child_by_field_name("name") or _child(parent, "identifier"), node)):
+                    return
+            if same(parent.child_by_field_name("type"), node) or same(parent.child_by_field_name("name"), node) and pt != "argument":
+                return  # a type name, or the name being declared
+            if pt == "assignment_expression" and parent.parent is not None and parent.parent.type == "initializer_expression" \
+                    and same(parent.child_by_field_name("left"), node):
+                made = parent.parent.parent
+                if made is not None and made.type == "object_creation_expression":
+                    tn = _outer_type(made.child_by_field_name("type"))
+                    if tn:  # new Foo { a = 1 } assigns Foo.a
+                        self.res.field_uses.append(FieldUse(cid, name, tn, tn, "i", node.start_point[0] + 1, type_id))
+                return
+        # Read or write: look at what the expression sits in.
+        cur, up = node, parent
+        while up is not None and up.type == "parenthesized_expression":
+            cur, up = up, up.parent
+        access = "r"
+        if up is not None:
+            ops = [_text(c) for c in up.children if not c.is_named]
+            if up.type == "assignment_expression" and same(up.child_by_field_name("left"), cur):
+                access = "w" if "=" in ops else "rw"
+            elif up.type in ("postfix_unary_expression", "prefix_unary_expression") and ("++" in ops or "--" in ops):
+                access = "rw"
+            elif up.type == "argument" and any(o in ("out", "ref") for o in ops):
+                access = "w" if "out" in ops else "rw"
+            elif up.type == "element_access_expression" and same(up.child_by_field_name("expression") or up.named_children[0], cur):
+                outer = up.parent
+                if outer is not None and outer.type == "assignment_expression" and same(outer.child_by_field_name("left"), up):
+                    access = "rw"  # field[i] = x changes what the field holds
+        self.res.field_uses.append(FieldUse(cid, name, receiver, rtype, access, node.start_point[0] + 1, type_id, chain))
 
     def _elem_of(self, expr, scope: dict[str, str], type_id: Optional[str]) -> Optional[str]:
         """Element type of a collection expression that is a local, a parameter or a field."""

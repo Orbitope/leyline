@@ -79,6 +79,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("patterns", help="design patterns found by their shape")
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
+    p = sub.add_parser("state", help="fields assigned from outside the type that declares them")
+    p.add_argument("scope", nargs="?", help="a module id or an id prefix")
     p = sub.add_parser("tour", help="print a tour of the repository")
     p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
     p = sub.add_parser("view", help="serve the map on localhost")
@@ -138,6 +140,13 @@ def main(argv=None) -> int:
         print(", ".join(f"{k} {v}" for k, v in sorted(r["by_pattern"].items())) or "no patterns found")
         for x in r["patterns"]:
             print(f"\n[{x['pattern']}  {x['confidence']:.2f}{'  stale' if x['stale'] else ''}] {x['rationale']}")
+    elif args.cmd == "state":
+        r = query.shared_state(con, args.scope, 60)
+        print(f"{r['total']} fields are assigned from outside their own type\n")
+        for f in r["fields"]:
+            print(f"{f['name']:<40} {f['writers']:>3} writers in {', '.join(f['written_from'][:5])}"
+                  f"{' ...' if len(f['written_from']) > 5 else ''}; {f['readers']} readers")
+        print("\n" + r["note"])
     elif args.cmd == "tour":
         from . import tours
         listed = tours.listing(con)["tours"]

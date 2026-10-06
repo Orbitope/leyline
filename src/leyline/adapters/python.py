@@ -8,7 +8,7 @@ from typing import Optional
 import tree_sitter_python
 from tree_sitter import Language, Parser
 
-from ..model import CallSite, Edge, FileResult, ImportRef, Node, Spawn, TypeRef
+from ..model import CallSite, FieldUse, Edge, FileResult, ImportRef, Node, Spawn, TypeRef
 
 NAME = "tree-sitter-python"
 VERSION = "0.1"
@@ -305,6 +305,44 @@ class _Walker:
                     symbols.append("*")
             self.res.imports.append(ImportRef(self.file_id, target, symbols=symbols))
 
+    def _use(self, node, cid, class_id, scope) -> None:
+        """Record obj.attr as a read or an assignment of a possible field."""
+        parent = node.parent
+        same = lambda a, b: a is not None and b is not None and a.start_byte == b.start_byte and a.end_byte == b.end_byte
+        if parent is None or (parent.type == "call" and same(parent.child_by_field_name("function"), node)):
+            return  # a method call
+        obj, attr = node.child_by_field_name("object"), node.child_by_field_name("attribute")
+        if obj is None or attr is None:
+            return
+        name, otext = _text(attr), _text(obj)
+        receiver = rtype = chain = None
+        if otext == "self":
+            receiver = "this"
+        elif obj.type == "identifier":
+            receiver, rtype = otext, scope.get(otext)
+            chain = None if rtype else scope.get("~" + otext)
+        elif obj.type == "attribute" and _text(obj.child_by_field_name("object")) == "self":
+            inner = _text(obj.child_by_field_name("attribute"))
+            receiver, rtype = "." + inner, self.self_types.get(class_id or "", {}).get(inner)
+        elif obj.type == "call":
+            receiver, chain = "?", self._site(obj, cid, class_id, scope)
+        else:
+            receiver = "?"
+        cur, up = node, parent
+        while up is not None and up.type in ("pattern_list", "tuple_pattern", "tuple", "parenthesized_expression"):
+            cur, up = up, up.parent
+        access = "r"
+        if up is not None:
+            if up.type == "assignment" and same(up.child_by_field_name("left"), cur):
+                access = "w"
+            elif up.type == "augmented_assignment" and same(up.child_by_field_name("left"), cur):
+                access = "rw"
+            elif up.type == "subscript" and same(up.child_by_field_name("value"), cur):
+                outer = up.parent
+                if outer is not None and outer.type in ("assignment", "augmented_assignment") and same(outer.child_by_field_name("left"), up):
+                    access = "rw"  # self.x[i] = v changes what the field holds
+        self.res.field_uses.append(FieldUse(cid, name, receiver, rtype, access, node.start_point[0] + 1, class_id, chain))
+
     def _site(self, node, cid, class_id, scope) -> Optional[CallSite]:
         """Record one call. A call used as the receiver of another is recorded once and shared."""
         key = (node.start_byte, node.end_byte)
@@ -396,6 +434,8 @@ class _Walker:
                     self.top_used = True
             if fn is not None and cid is not None:
                 self._site(node, cid, class_id, scope)
+        elif t == "attribute" and cid is not None:
+            self._use(node, cid, class_id, scope)
         elif t == "as_pattern" and cid is not None and node.named_child_count >= 2:
             # `with app.test_client() as c:` binds c to what the call returns.
             value, alias = node.named_children[0], node.named_children[-1]

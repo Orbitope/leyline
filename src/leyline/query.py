@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 import re
 import sqlite3
 from pathlib import Path
@@ -232,6 +233,9 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
              for a in con.execute("SELECT * FROM annotations WHERE node_id = ?", (node_id,))]
     if notes:
         out["annotations"] = notes
+    data = _data_access(con, row)
+    if data:
+        out["data"] = data
     if row["kind"] in ("type", "callable", "field"):
         from . import patterns
         try:
@@ -420,3 +424,101 @@ def source(con, node_id: str, max_lines: int = 200) -> dict:
     shown_end = start + max_lines - 1 if truncated else end
     return {"id": node_id, "path": row["path"], "lines": [start, end], "truncated": truncated,
             "text": "\n".join(lines[start - 1:shown_end])}
+
+
+def _owner_type(con, node_id: str) -> Optional[str]:
+    row = con.execute("SELECT parent_id FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    while row and row[0]:
+        p = con.execute("SELECT id, kind, parent_id FROM nodes WHERE id = ?", (row[0],)).fetchone()
+        if p is None:
+            return None
+        if p["kind"] == "type":
+            return p["id"]
+        row = (p["parent_id"],)
+    return None
+
+
+def _data_access(con, row) -> dict:
+    """Which functions read and assign a field; which fields a function touches; a type's fields at a glance."""
+    def users(field_id):
+        r, w = [], []
+        for e in con.execute("SELECT e.kind, e.src_id, e.precision, e.attrs, n.name FROM edges e JOIN nodes n ON n.id = e.src_id"
+                             " WHERE e.dst_id = ? AND e.kind IN ('reads', 'writes') ORDER BY e.src_id", (field_id,)):
+            a = json.loads(e["attrs"] or "{}")
+            item = {"id": e["src_id"], "name": e["name"], "times": a.get("n", 1), "line": a.get("line"),
+                    **({"guessed": True} if e["precision"] == "guess" else {}),
+                    **({"only_when_creating": True} if a.get("init") else {})}
+            (w if e["kind"] == "writes" else r).append(item)
+        return r, w
+    if row["kind"] == "field":
+        r, w = users(row["id"])
+        own = _owner_type(con, row["id"])
+        outside = [x for x in w if _owner_type(con, x["id"]) != own]
+        return {"read_by": r, "written_by": w, "written_outside_its_type": len(outside)} if (r or w) else {}
+    if row["kind"] in ("callable", "test"):
+        out = {"reads": [], "writes": []}
+        for e in con.execute("SELECT e.kind, e.dst_id, e.precision, n.name, p.name AS owner FROM edges e JOIN nodes n ON n.id = e.dst_id"
+                             " LEFT JOIN nodes p ON p.id = n.parent_id WHERE e.src_id = ? AND e.kind IN ('reads', 'writes')"
+                             " ORDER BY e.dst_id", (row["id"],)):
+            out[e["kind"]].append({"id": e["dst_id"], "name": f"{e['owner']}.{e['name']}" if e["owner"] else e["name"],
+                                   **({"guessed": True} if e["precision"] == "guess" else {})})
+        return out if (out["reads"] or out["writes"]) else {}
+    if row["kind"] == "type":
+        fields = []
+        for f in con.execute("SELECT id, name FROM nodes WHERE parent_id = ? AND kind = 'field' ORDER BY name", (row["id"],)):
+            r, w = users(f["id"])
+            if not (r or w):
+                continue
+            outside = sorted({_owner_type(con, x["id"]) or x["id"] for x in w} - {row["id"]})
+            fields.append({"id": f["id"], "name": f["name"], "readers": len(r), "writers": len(w),
+                           "written_from": [o.split("::")[-1].split(":")[-1] for o in outside]})
+        return {"fields": fields} if fields else {}
+    return {}
+
+
+def shared_state(con, scope: Optional[str] = None, limit: int = 40) -> dict:
+    """Fields assigned from outside the type that declares them, most widely written first.
+    `scope` narrows to a module, type or path prefix of the field's id."""
+    parent = {r["id"]: (r["parent_id"], r["kind"]) for r in con.execute("SELECT id, parent_id, kind FROM nodes")}
+    module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
+    names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
+    tests = {r[0] for r in con.execute("SELECT entry_id FROM flows WHERE json_extract(attrs, '$.kind') = 'test'")}
+    test_mods = {module.get(t) for t in tests}
+
+    def owner(i):
+        cur = parent.get(i, (None, None))[0]
+        while cur and parent.get(cur, (None, None))[1] != "type":
+            cur = parent.get(cur, (None, None))[0]
+        return cur
+    supers = defaultdict(set)
+    for e in con.execute("SELECT src_id, dst_id FROM edges WHERE kind IN ('extends', 'implements')"):
+        supers[e["src_id"]].add(e["dst_id"])
+
+    def is_a(t, base, seen=None):  # a subclass assigning an inherited field is still inside the type
+        seen = seen or set()
+        return t == base or any(b not in seen and not seen.add(b) and is_a(b, base, seen) for b in supers.get(t, ()))
+    writers, readers = defaultdict(set), defaultdict(set)
+    for e in con.execute("SELECT kind, src_id, dst_id, attrs FROM edges WHERE kind IN ('reads', 'writes')"):
+        if e["kind"] == "writes" and json.loads(e["attrs"] or "{}").get("init"):
+            continue  # filling in a new object is construction, not a change to shared state
+        if e["kind"] == "writes" and names.get(e["src_id"]) in (".ctor", "__init__") and owner(e["src_id"]) == owner(e["dst_id"]):
+            continue
+        (writers if e["kind"] == "writes" else readers)[e["dst_id"]].add(e["src_id"])
+    rows = []
+    for f, ws in writers.items():
+        if scope and not (f.startswith(scope) or module.get(f) == scope):
+            continue
+        own = owner(f)
+        product = {w for w in ws if module.get(w) not in test_mods}
+        outside_types = sorted(t for t in {owner(w) or w for w in product} if not is_a(t, own))
+        if not outside_types:
+            continue
+        rows.append({"id": f, "name": f"{names.get(own, '?')}.{names.get(f, f)}", "module": names.get(module.get(f), ""),
+                     "writers": len(product), "written_from": [names.get(t, t) for t in outside_types],
+                     "writer_modules": sorted({names.get(module.get(w), "") for w in product}),
+                     "readers": len(readers.get(f, ()))})
+    rows.sort(key=lambda r: (-len(r["written_from"]), -len(r["writer_modules"]), -r["writers"], r["name"]))
+    return {"total": len(rows), "fields": rows[:limit],
+            "note": "A field many types assign has no single place that keeps it valid. Test code, constructors and values set "
+                    "while creating an object (new Foo { a = 1 }) are not counted. "
+                    "Changes made by calling a method on the field (list.Add) are not assignments and are not seen."}

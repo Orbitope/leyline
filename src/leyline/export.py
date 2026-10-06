@@ -62,9 +62,14 @@ def graph(con, with_sources: bool = True) -> dict:
         nodes.append(n)
     rank = {"exact": 2, "observed": 2, "heuristic": 1, "guess": 0}
     edges = []
+    access = []  # [function, field, 1 for an assignment, times, line, 1 if only while creating, 1 if guessed]
     for e in con.execute("SELECT kind, src_id, dst_id, precision, attrs FROM edges WHERE kind != 'contains'"):
         if e["src_id"] in index and e["dst_id"] in index:
             attrs = json.loads(e["attrs"]) if e["attrs"] else {}
+            if e["kind"] in ("reads", "writes"):
+                access.append([index[e["src_id"]], index[e["dst_id"]], int(e["kind"] == "writes"), attrs.get("n", 1),
+                               attrs.get("line") or 0, int(bool(attrs.get("init"))), int(e["precision"] == "guess")])
+                continue
             extra = attrs.get("role") or ""
             if e["kind"] == "communicates":
                 extra = {"channel": attrs.get("channel"), "address": attrs.get("address"),
@@ -137,6 +142,9 @@ def graph(con, with_sources: bool = True) -> dict:
                                      "marks": marks})
     except Exception:  # a store written before patterns existed
         pattern_list = []
+    from . import query
+    state = [{"i": index[f["id"]], "from": f["written_from"], "w": f["writers"], "r": f["readers"]}
+             for f in query.shared_state(con, limit=60)["fields"] if f["id"] in index]
     tour_list = []
     try:
         from . import tours
@@ -157,7 +165,7 @@ def graph(con, with_sources: bool = True) -> dict:
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 if p.is_file():
                     sources[r["path"]] = p.read_text(errors="replace")
-    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list,
+    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list, "access": access, "state": state,
             "coverage": coverage, "sources": sources}
 
 

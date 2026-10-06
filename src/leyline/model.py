@@ -71,6 +71,20 @@ class EventUse:
 
 
 @dataclass
+class FieldUse:
+    """A place where a member that may be a field is read or assigned."""
+
+    src_id: str  # enclosing callable
+    name: str
+    receiver: Optional[str]  # as in CallSite; None means a bare name
+    receiver_type: Optional[str]
+    access: str  # r | w | rw | i (set while the object is being created: new Foo { a = 1 })
+    line: int
+    enclosing_type: Optional[str] = None
+    chain: Optional[CallSite] = None
+
+
+@dataclass
 class Spawn:
     """A place where another program is launched."""
 
@@ -98,6 +112,7 @@ class FileResult:
     calls: list[CallSite] = field(default_factory=list)
     imports: list[ImportRef] = field(default_factory=list)
     events: list[EventUse] = field(default_factory=list)
+    field_uses: list[FieldUse] = field(default_factory=list)
     spawns: list[Spawn] = field(default_factory=list)
     # Namespaces (C#) or module paths (Python) this file declares.
     declares: list[str] = field(default_factory=list)

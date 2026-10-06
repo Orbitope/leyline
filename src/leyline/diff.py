@@ -13,7 +13,8 @@ from typing import Optional
 
 from . import change, rules
 
-EDGE_KINDS = ("extends", "implements", "uses_type", "instantiates", "imports", "communicates", "overrides", "depends_on")
+EDGE_KINDS = ("extends", "implements", "uses_type", "instantiates", "imports", "communicates", "overrides", "depends_on",
+              "reads", "writes")
 CODE_KINDS = ("type", "callable", "field", "test")
 
 

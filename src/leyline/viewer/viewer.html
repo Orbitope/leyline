@@ -329,6 +329,30 @@ for (const p of D.patterns || []) {
   PATTERN_AT.set(VIEWS.length, p);
   VIEWS.push({ id: p.id, kind: "pattern", title: `${cap}: ${owner}${nm.n}`, narrative: p.rationale, marks: p.marks.map((m) => ({ ...m, note: "" })), legend: {}, pattern: p });
 }
+// Field access: which functions read and assign each field.
+const ACC_BY_FIELD = new Map(), ACC_BY_FN = new Map();
+for (const a of D.access || []) { (ACC_BY_FIELD.get(a[1]) || ACC_BY_FIELD.set(a[1], []).get(a[1])).push(a); (ACC_BY_FN.get(a[0]) || ACC_BY_FN.set(a[0], []).get(a[0])).push(a); }
+function accessHtml(i) {
+  const n = N[i]; let h = "";
+  const fnRow = (a) => ({ go: a[0], name: N[a[0]].k === "test" ? N[a[0]].n : qual(a[0]), sub: [N[moduleOf[a[0]]] ? "in " + N[moduleOf[a[0]]].n : "", a[4] ? "line " + a[4] : "", a[5] ? "only while creating the object" : "", a[6] ? "guessed by name" : ""].filter(Boolean).join(" · "), ct: a[3] > 1 ? a[3] + "×" : "" });
+  const fieldRow = (a) => ({ go: a[1], name: qual(a[1]), sub: [a[5] ? "only while creating the object" : "", a[6] ? "guessed by name" : ""].filter(Boolean).join(" · "), ct: a[3] > 1 ? a[3] + "×" : "" });
+  if (n.k === "field") {
+    const all = ACC_BY_FIELD.get(i) || [], w = all.filter((a) => a[2]), r = all.filter((a) => !a[2]);
+    if (all.length) { h += listHtml("Assigned by", w.slice(0, 40).map(fnRow), w.length, "Nothing in the repository assigns it after its declaration."); h += listHtml("Read by", r.slice(0, 40).map(fnRow), r.length, "Nothing in the repository reads it."); }
+  } else if (n.k === "callable" || n.k === "test") {
+    const all = ACC_BY_FN.get(i) || [], w = all.filter((a) => a[2]), r = all.filter((a) => !a[2]);
+    h += listHtml("Assigns", w.slice(0, 30).map(fieldRow), w.length) + listHtml("Reads", r.slice(0, 30).map(fieldRow), r.length);
+  } else if (n.k === "type") {
+    const rows = [];
+    N.forEach((f, k) => { if (f.k !== "field" || f.p !== i) return; const all = ACC_BY_FIELD.get(k) || []; if (!all.length) return;
+      const w = all.filter((a) => a[2] && !a[5]), r = all.filter((a) => !a[2]);
+      const out = [...new Set(w.map((a) => { let c = N[a[0]].p; while (c != null && N[c].k !== "type") c = N[c].p; return c; }).filter((c) => c !== i).map((c) => (c == null ? "top-level code" : N[c].n)))];
+      rows.push({ go: k, name: f.n, sub: out.length ? "assigned from " + out.slice(0, 4).join(", ") + (out.length > 4 ? " and " + (out.length - 4) + " more" : "") : "", ct: `${w.length} set · ${r.length} read`, o: out.length, w: w.length }); });
+    rows.sort((a, b) => b.o - a.o || b.w - a.w);
+    h += listHtml("State", rows.slice(0, 30), rows.length);
+  }
+  return h;
+}
 const patternsOf = (i) => { const out = []; for (const [k, p] of PATTERN_AT) if (p.marks.some((m) => m.i === i || (N[m.i] && N[m.i].p === i))) out.push(k); return out; };
 const patternRows = (ks) => ks.length ? `<h3>Design patterns <span>${ks.length}</span></h3><ul class="list">${ks.slice(0, 12).map((k) => `<li><button data-view="${k}"><span class="nm">${esc(VIEWS[k].title)}<small>${esc(VIEWS[k].narrative)}</small></span><span class="ct">${Math.round(PATTERN_AT.get(k).c * 100)}%</span></button></li>`).join("")}</ul>${ks.length > 12 ? `<div class="more">and ${ks.length - 12} more</div>` : ""}` : "";
 const ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect"];
@@ -791,6 +815,7 @@ function repoHtml() {
     <div class="facts">${facts.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("")}</div>
     <p class="note">Each box is a module. An arrow from A to B means A depends on B, and its number counts the links behind it. Select a box or an arrow for detail.</p>
     ${(() => { const by = new Map(); for (const [k, p] of PATTERN_AT) if (!p.tests) (by.get(p.pattern) || by.set(p.pattern, []).get(p.pattern)).push(k); return by.size ? `<h3>Design patterns <span>${[...by.values()].reduce((a, b) => a + b.length, 0)}</span></h3><ul class="list">${[...by.entries()].sort((a, b) => b[1].length - a[1].length).map(([name, ks]) => `<li><button data-view="${ks[0]}"><span class="nm">${esc(name)}<small>${esc(PATTERN_AT.get(ks[0]).about)}</small></span><span class="ct">${ks.length}</span></button></li>`).join("")}</ul>` : ""; })()}
+    ${listHtml("State assigned from several places", (D.state || []).slice(0, 8).map((f) => ({ go: f.i, name: qual(f.i), sub: "assigned from " + f.from.slice(0, 4).join(", ") + (f.from.length > 4 ? " and " + (f.from.length - 4) + " more" : ""), ct: `${f.w} set · ${f.r} read` })), (D.state || []).length)}
     ${listHtml("Systems", N.map((m, k) => k).filter((k) => N[k].k === "system").map((k) => ({ go: k, name: N[k].n, sub: "in " + N[N[k].p].n + (NOTES[k] && NOTES[k].responsibility ? " · " + NOTES[k].responsibility.v : ""), ct: (unitsOf.get(k) || []).length + " types" })), N.filter((m) => m.k === "system").length)}
     ${listHtml("Where execution starts", entries.slice(0, 12), entries.length)}
     <h3>What was analyzed</h3><ul class="list">${stat}${nas}</ul>
@@ -853,6 +878,7 @@ function nodeHtml(i, isFocus) {
     fns.sort((a, b) => vis(a) - vis(b) || (N[a].a || 0) - (N[b].a || 0));
     h += listHtml("Functions", fns.slice(0, 60).map((c) => ({ go: c, name: short(c), sub: (N[c].x || {}).signature, ct: (N[c].x || {}).visibility === "public" ? "" : ((N[c].x || {}).visibility || "") })), fns.length);
     h += listHtml("Fields", fields.slice(0, 40).map((c) => ({ go: c, name: c && N[c].n, ct: (N[c].x || {}).declared_type || "" })), fields.length);
+    h += accessHtml(i);
     h += listHtml("Nested types", nested.map((c) => ({ go: c, name: N[c].n, ct: (N[c].x || {}).native_kind })), nested.length);
     const dep = around(i, "out", byUnit), usedBy = around(i, "in", byUnit);
     h += listHtml("Uses", dep.slice(0, 15), dep.length) + listHtml("Used by", usedBy.slice(0, 15), usedBy.length, "Nothing found. It may be reached through an entry point or a channel that was not analyzed.");
@@ -863,7 +889,9 @@ function nodeHtml(i, isFocus) {
     if (fi >= 0 && S.mode !== "flows") h += `<button class="open" data-flow="${fi}">Trace this test</button>`;
     const callees = around(i, "out", byMember).filter((r) => N[r.go].k === "callable");
     h += listHtml("Calls", callees.slice(0, 40), callees.length);
+    h += accessHtml(i);
   }
+  if (n.k === "field") h += accessHtml(i);
   if (n.k === "callable") {
     const callees = around(i, "out", byMember).filter((r) => N[r.go].k === "callable"), callers = around(i, "in", byMember).filter((r) => N[r.go].k === "callable");
     const types = around(i, "out", byUnit).filter((r) => !callees.some((c) => unitOf[c.go] === r.go) );
@@ -873,6 +901,7 @@ function nodeHtml(i, isFocus) {
     h += listHtml("Implements", bases.map((b) => ({ go: b, name: N[unitOf[b]].n + "." + short(b), sub: `${callersOf(b)} call sites go through it`, ct: "" })), bases.length);
     h += listHtml("Implemented by", impls.slice(0, 20).map((m) => ({ go: m, name: N[unitOf[m]].n + "." + short(m), sub: moduleOf[m] !== moduleOf[i] ? "in " + N[moduleOf[m]].n : "", ct: "" })), impls.length);
     h += listHtml("Called by", callers.slice(0, 30), callers.length, entryTargets.has(i) ? "Nothing calls it: execution starts here." : bases.length ? `No direct callers. Callers reach it through ${esc(N[unitOf[bases[0]]].n)}.${esc(short(bases[0]))}, listed above.` : "No callers found. It may be called through an event, a delegate or an outside framework.");
+    h += accessHtml(i);
     h += listHtml("Other types it touches", types.slice(0, 12), types.length);
     const fl = flowsOf.get(i) || [], tests = fl.filter((fi) => FLOWS[fi].kind === "test");
     if (fl.length) h += `<h3>Flows through here <span>${fl.length} of ${FLOWS.length}</span></h3><ul class="list">${fl.slice(0, 12).map((fi) => `<li><button data-flow="${fi}" data-at="${i}"><span class="nm">${esc(flowName(FLOWS[fi]))}<small>${flowGroup(FLOWS[fi]).replace(/s$/, "").toLowerCase()}</small></span><span class="ct">step ${FLOWS[fi].steps.findIndex((s) => s[0] === i) + 1}</span></button></li>`).join("")}</ul>${fl.length > 12 ? `<div class="more">and ${fl.length - 12} more</div>` : ""}`;

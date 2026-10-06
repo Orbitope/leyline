@@ -75,6 +75,9 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
     type_users: dict[str, list] = defaultdict(list)
     for r in con.execute("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('uses_type','instantiates','extends','implements')"):
         type_users[r["dst_id"]].append((r["src_id"], r["kind"]))
+    field_users: dict[str, list] = defaultdict(list)   # field -> [(function, reads|writes, guessed)]
+    for r in con.execute("SELECT src_id, dst_id, kind, precision FROM edges WHERE kind IN ('reads', 'writes')"):
+        field_users[r["dst_id"]].append((r["src_id"], r["kind"], r["precision"] == "guess"))
     kids: dict[str, list] = defaultdict(list)
     for i, n in nodes.items():
         if n["parent_id"]:
@@ -117,6 +120,17 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                     members.append(k)
                 elif nodes[k]["kind"] in ("type", "file"):
                     stack.append(k)
+        if n["kind"] == "field":
+            # Everything that reads or assigns the field depends on what it holds.
+            how: dict[str, set] = defaultdict(set)
+            for user, kind, guess in field_users.get(i, []):
+                if user in nodes:
+                    how[user].add(("assigns" if kind == "writes" else "reads") + (" (a guess)" if guess else ""))
+            for user, verbs in sorted(how.items()):
+                note = f"{' and '.join(sorted(verbs))} {n['name']}"
+                mark(user, "must_edit" if t["action"] in BREAKING else "direct", note, 1)
+                if t["action"] != "rename" and nodes[user]["kind"] in ("callable", "test"):
+                    members.append(user)   # what it computes may change, so its callers are reached
         if n["kind"] == "system":
             for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'groups' AND src_id = ?", (i,)):
                 stack = [r[0]]

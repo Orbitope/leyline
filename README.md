@@ -21,6 +21,7 @@ leyline --db ... search "Simulation Step"
 leyline --db ... expand "<node id>"
 leyline --db ... tour               # a guided walk through the repository
 leyline --db ... patterns           # design patterns found by their shape
+leyline --db ... state              # fields assigned from outside their own type
 leyline --db ... serve              # MCP server over stdio
 leyline --db ... view               # the map, served on http://127.0.0.1:8765
 leyline --db ... export -o map.html # the map as one self-contained page
@@ -91,6 +92,25 @@ some test's path). Selectors are `module:Name`, `system:Name`, `external:Name`, 
 `leyline rules --confirm ID`. `leyline rules` checks all of them and exits 1 when a confirmed
 error-level rule fails, so it can run in CI. A `forbid` rule on an external package sees imports
 (`using`, `import`), not fully qualified names used inline.
+
+### Field reads and writes
+
+Each function is linked to the fields it reads and the fields it assigns (`reads` and `writes` edges,
+with a count and the first line). `expand` on a field lists its readers and writers; on a function,
+the fields it touches; on a type, each field with how many functions set and read it and which
+other types set it. `leyline state` (the `shared_state` tool) ranks the fields assigned from outside
+the type that declares them: the mutable state with no single owner.
+
+- An assignment is `x.f = v`, `x.f += v`, `x.f++`, `out`/`ref x.f` and `x.f[i] = v`. A value set
+  while creating an object (`new Foo { f = 1 }`) is recorded as construction and left out of the
+  shared-state ranking, as are constructors, subclasses and test code.
+- A change made by calling a method on the field (`list.Add(x)`) is a read of the field, not an
+  assignment: the map cannot tell a mutating method from a query.
+- Properties count as fields. Enum members and events do not.
+- In C#, a field on a receiver of unknown type is linked by name only when one field has that name,
+  and marked as a guess. In Python there is no such guess: attribute names repeat too often.
+- A change assessment whose target is a field marks every reader and writer, and `review` reports
+  field access that is new.
 
 ### Design patterns
 
@@ -165,6 +185,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
+| `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `patterns(pattern?, node_id?)` | Design patterns found by shape, with roles, rationale and confidence |
 | `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |
 | `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |

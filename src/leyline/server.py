@@ -63,7 +63,8 @@ def search(text: str, kind: Optional[str] = None, limit: int = 20) -> dict:
 def neighbors(node_id: str, direction: str = "both", kinds: Optional[list[str]] = None,
               limit: int = 100) -> dict:
     """Edges around a node. `direction` is out, in or both. `kinds` filters by edge kind: calls,
-    imports, uses_type, extends, implements, instantiates, has_field, exposes, depends_on."""
+    imports, uses_type, extends, implements, instantiates, has_field, exposes, depends_on, reads, writes
+    (reads and writes run from a function to a field)."""
     return query.neighbors(_db(), node_id, direction, kinds, limit)
 
 
@@ -194,6 +195,14 @@ def label_pattern(pattern: str, roles: dict, rationale: str, confidence: float =
     to the node ids that play it, for example {"adapter": [...], "adaptee": [...]}. `rationale` must
     say what in the code makes it this pattern. The label goes stale when that code changes."""
     return pattern_labels.label(_db(), pattern, roles, rationale, confidence, "mcp")
+
+
+@mcp.tool()
+def shared_state(scope: Optional[str] = None, limit: int = 40) -> dict:
+    """Fields assigned from outside the type that declares them, most widely written first: the mutable
+    state with no single owner. `scope` is a module id or an id prefix. To see every reader and writer of
+    one field, or the fields one function touches, call `expand` on it and read `data`."""
+    return query.shared_state(_db(), scope, limit)
 
 
 @mcp.tool()

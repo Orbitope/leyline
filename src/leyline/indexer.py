@@ -13,7 +13,7 @@ from typing import Optional
 from . import store
 from .adapters import BY_EXTENSION
 from .adapters.python import module_path
-from .model import CallSite, Edge, FileResult, Node
+from .model import CallSite, Edge, FieldUse, FileResult, Node
 
 SOURCE = "leyline-indexer/0.1"
 MODULE_MARKERS = ("pyproject.toml", "setup.py", "package.json", "__init__.py")
@@ -135,6 +135,7 @@ class Indexer:
         self._resolve_overrides()
         self._resolve_calls()
         self._resolve_events()
+        self._resolve_fields()
         self._resolve_spawns()
         self._build_flows()
         self._write(con)
@@ -777,6 +778,56 @@ class Indexer:
             if n is not None and n.kind == "field" and n.attrs.get("native_kind") == "event":
                 return fid
         return None
+
+    def _resolve_fields(self) -> None:
+        """Link each function to the fields it reads and assigns."""
+        field_id: dict[str, dict[str, str]] = defaultdict(dict)
+        by_name: dict[tuple, list[str]] = defaultdict(list)
+        for n in self.nodes.values():
+            if n.kind == "field" and n.attrs.get("native_kind") not in ("enum_member", "event"):
+                field_id[n.parent_id][n.name] = n.id
+                by_name[(n.language, n.name)].append(n.id)
+        found: dict[tuple, list] = {}
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            st = self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]
+            for u in res.field_uses:
+                if u.src_id not in self.nodes:
+                    continue
+                target, guessed = None, False
+                if u.receiver in (None, "this"):
+                    if u.receiver is None and lang == "python":
+                        continue  # a bare name in Python is a local or a global, never an attribute
+                    owners = self._chain(u.enclosing_type)
+                elif u.receiver == "base":
+                    owners = self._chain(u.enclosing_type)[1:]
+                else:
+                    probe = CallSite(u.src_id, u.name, u.receiver, u.receiver_type, 0, u.line, u.enclosing_type, chain=u.chain)
+                    tid, known = self._receiver_type(lang, probe)
+                    owners = self._chain(tid) if tid else []
+                    if lang == "csharp" and not tid and not known and len(u.name) > 3:
+                        # Receiver type unknown: accept only a field name declared exactly once, and say it is a guess.
+                        cands = [c for c in by_name.get((lang, u.name), ()) if self._can_see(fid, c)]
+                        if len(cands) == 1 and (lang, u.name) not in self.outside_names:
+                            target, guessed = cands[0], True
+                for t in owners:
+                    if u.name in field_id.get(t, ()):
+                        target = field_id[t][u.name]
+                        break
+                if target is None or target == u.src_id:
+                    continue
+                st["field_uses"] += 1
+                for kind in (("reads",) if u.access == "r" else ("writes",) if u.access in ("w", "i") else ("reads", "writes")):
+                    slot = found.setdefault((kind, u.src_id, target), [0, u.line, False, 0])
+                    slot[0] += 1
+                    slot[1] = min(slot[1], u.line)
+                    slot[2] = slot[2] or guessed
+                    slot[3] += u.access == "i"
+        for (kind, src, dst), (n, line, guessed, init) in found.items():
+            attrs = {"n": n, "line": line}
+            if init == n:
+                attrs["init"] = True  # only ever set while creating the object, never changed afterwards
+            self.edges.append(Edge(kind, src, dst, "guess" if guessed else "heuristic", attrs))
 
     def _resolve_events(self) -> None:
         """Link the code that raises an event to the code that handles it."""

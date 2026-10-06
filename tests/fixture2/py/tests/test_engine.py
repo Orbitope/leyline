@@ -19,3 +19,8 @@ def test_chain(engine):
     assert engine.child().start()
     kid = engine.child()
     kid.stop()
+
+
+def test_rename(engine):
+    engine.name = "renamed"
+    assert engine.name

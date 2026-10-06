@@ -12,10 +12,11 @@ from collections import defaultdict
 from typing import Optional
 
 KINDS = ("forbid", "no_cycle", "must_be_tested")
-EDGE_KINDS = ("calls", "imports", "uses_type", "instantiates", "extends", "implements", "depends_on", "communicates")
+EDGE_KINDS = ("calls", "imports", "uses_type", "instantiates", "extends", "implements", "depends_on", "communicates",
+              "reads", "writes")
 # What a forbid rule looks at unless told otherwise. A channel is left out: the sender of an event
 # does not depend on whoever listens to it.
-DEPENDENCY_KINDS = ("calls", "imports", "uses_type", "instantiates", "extends", "implements", "depends_on")
+DEPENDENCY_KINDS = ("calls", "imports", "uses_type", "instantiates", "extends", "implements", "depends_on", "reads", "writes")
 
 
 def _select(con, selector: str) -> set[str]:

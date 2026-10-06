@@ -191,6 +191,20 @@ def generate(con, repo_id: str) -> dict:
         stop("A boundary" if p["pattern"] == "process boundary" else "An event", "pattern", p["id"],
              f"{p['rationale']} A change on one side of this needs a matching change on the other, and the compiler will not say so.")
 
+    # State with more than one writer.
+    try:
+        from . import query
+        shared = [f for f in query.shared_state(con, limit=100000)["fields"] if len(f["written_from"]) >= 2]
+    except Exception:
+        shared = []
+    if shared:
+        f = shared[0]
+        stop("State changed from several places", "node", f["id"],
+             f"{f['name']} is assigned by {_plural(f['writers'], 'function')} in {_names(f['written_from'])}, none of them the type "
+             f"that declares it, and read by {_plural(f['readers'], 'function')}. No single piece of code keeps it valid, so a "
+             f"change to what it means has to be checked at every one of those places. "
+             + (f"{len(shared) - 1} more fields are assigned from two or more other types; `leyline state` lists them." if len(shared) > 1 else ""))
+
     # 5. A path worth tracing: a test that crosses the most modules without being huge.
     best = None
     for f in flows:
