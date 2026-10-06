@@ -70,8 +70,13 @@ CREATE TABLE IF NOT EXISTS flows (
   group_id TEXT, layer TEXT, source TEXT, attrs TEXT
 );
 CREATE TABLE IF NOT EXISTS flow_steps (
-  flow_id TEXT, seq INTEGER, depth INTEGER, callable_id TEXT, edge_id INTEGER
+  flow_id TEXT, seq INTEGER, depth INTEGER, callable_id TEXT, edge_id INTEGER,
+  via TEXT,            -- start | calls | runs | dispatch | event | process
+  site_line INTEGER,   -- line of the call that led here
+  parent_seq INTEGER   -- the step this one was reached from
 );
+CREATE INDEX IF NOT EXISTS flow_steps_flow ON flow_steps(flow_id, seq);
+CREATE INDEX IF NOT EXISTS flow_steps_callable ON flow_steps(callable_id);
 CREATE TABLE IF NOT EXISTS pattern_instances (
   id TEXT PRIMARY KEY, pattern TEXT, matcher TEXT, rationale TEXT,
   confidence REAL, evidence_hash TEXT, stale INTEGER DEFAULT 0

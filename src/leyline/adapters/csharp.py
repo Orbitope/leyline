@@ -8,7 +8,7 @@ from typing import Optional
 import tree_sitter_c_sharp
 from tree_sitter import Language, Parser
 
-from ..model import CallSite, Edge, FileResult, ImportRef, Node, TypeRef
+from ..model import CallSite, Edge, EventUse, FileResult, ImportRef, Node, TypeRef
 
 NAME = "tree-sitter-c-sharp"
 VERSION = "0.1"
@@ -31,6 +31,11 @@ CALLABLE_DECLS = {
     "operator_declaration", "conversion_operator_declaration", "local_function_statement",
 }
 ACCESS = ("public", "private", "protected", "internal")
+LAMBDAS = ("lambda_expression", "anonymous_method_expression")
+STRINGS = ("string_literal", "verbatim_string_literal", "raw_string_literal", "interpolated_string_expression")
+# Calls of the shape Run("name", () => { ... }) declare a test inline.
+TEST_RUNNERS = {"Run", "Test", "It", "Case", "Scenario", "Fact", "Check", "Spec"}
+TEST_ATTRIBUTES = {"Fact", "Theory", "Test", "TestCase", "TestMethod", "DataTestMethod"}
 LIFECYCLE = {"_Ready", "_Process", "_PhysicsProcess", "_Input", "_UnhandledInput", "_EnterTree",
              "_ExitTree", "_Draw", "_Notification"}
 
@@ -113,6 +118,7 @@ class _Walker:
         self.res = FileResult()
         self.tree = _parser.parse(src)
         self.field_types: dict[str, dict[str, str]] = {}  # type id -> member name -> type name
+        self.redirect: dict[tuple, str] = {}  # lambda span -> node its body's calls belong to
 
     # -- ids -----------------------------------------------------------------
     def _qid(self, qualified: str) -> str:
@@ -322,6 +328,11 @@ class _Walker:
             names = _type_names(ret)
             if names:
                 self.res.type_refs.append(TypeRef(cid, names, "return", ret.start_point[0] + 1))
+        attrs_text = " ".join(_text(a) for a in node.children if a.type == "attribute_list")
+        found = set(re.findall(r"[A-Za-z_]+", attrs_text)) & TEST_ATTRIBUTES
+        if found:
+            self.res.nodes[-1].attrs["is_test"] = True
+            self.res.nodes[-1].attrs["framework"] = sorted(found)[0]
         if name == "Main" and "static" in mods:
             self._entry(cid, "cli", self.path)
         elif name in LIFECYCLE:
@@ -342,6 +353,8 @@ class _Walker:
     def _body(self, node, cid: str, type_id: Optional[str], scope: dict[str, str]) -> None:
         """Walk a body in source order, tracking local variable types and emitting call sites."""
         t = node.type
+        if t in LAMBDAS and self.redirect:
+            cid = self.redirect.pop((node.start_byte, node.end_byte), cid)
         if t == "local_function_statement":
             self._callable(node, cid, type_id, False, scope)
             return
@@ -375,6 +388,21 @@ class _Walker:
                     scope[nm] = elem
         elif t == "invocation_expression":
             self._invocation(node, cid, type_id, scope)
+        elif t == "assignment_expression" and any(_text(c) == "+=" for c in node.children if not c.is_named):
+            left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
+            if left is not None and right is not None and right.type in LAMBDAS + ("identifier", "member_access_expression"):
+                handler = None
+                if right.type == "identifier":
+                    handler = _text(right)
+                elif right.type == "member_access_expression":
+                    handler = _text(right.child_by_field_name("name"))
+                if left.type == "identifier":
+                    self.res.events.append(EventUse("subscribe", cid, _text(left), None, None, handler,
+                                                    node.start_point[0] + 1, type_id))
+                elif left.type == "member_access_expression":
+                    recv, rtype = self._receiver(left.child_by_field_name("expression"), scope, type_id)
+                    self.res.events.append(EventUse("subscribe", cid, _text(left.child_by_field_name("name")),
+                                                    recv, rtype, handler, node.start_point[0] + 1, type_id))
         elif t == "object_creation_expression":
             tnode = node.child_by_field_name("type")
             names = _type_names(tnode)
@@ -383,7 +411,7 @@ class _Walker:
             if names:
                 self.res.type_refs.append(TypeRef(cid, names, "instantiate", node.start_point[0] + 1))
                 self.res.calls.append(CallSite(cid, ".ctor", names[0], names[0], argc,
-                                               node.start_point[0] + 1, type_id))
+                                               node.start_point[0] + 1, type_id, node.start_point[1]))
         for c in node.children:
             self._body(c, cid, type_id, scope)
 
@@ -460,7 +488,20 @@ class _Walker:
             return
         if name == "nameof":
             return
-        self.res.calls.append(CallSite(cid, name, receiver, rtype, argc, line, type_id))
+        if name == "Invoke" and receiver and receiver[:1].isalpha() and receiver not in ("this", "base"):
+            self.res.events.append(EventUse("raise", cid, receiver, None, None, None, line, type_id))
+        arg_nodes = [a.named_children[-1] for a in args.children if a.type == "argument" and a.named_children] if args is not None else []
+        if (name in TEST_RUNNERS and len(arg_nodes) == 2 and arg_nodes[0].type in STRINGS
+                and arg_nodes[1].type in LAMBDAS):
+            title = _text(arg_nodes[0]).strip('@$"')
+            tid = f"{cid}/test:{re.sub(r'[^A-Za-z0-9]+', '-', title).strip('-').lower()[:80]}"
+            lam = arg_nodes[1]
+            self.res.nodes.append(Node(
+                id=tid, kind="test", name=title, parent_id=cid, language=LANGUAGE, path=self.path,
+                span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
+                attrs={"framework": "inline runner", "runner": name}))
+            self.redirect[(lam.start_byte, lam.end_byte)] = tid
+        self.res.calls.append(CallSite(cid, name, receiver, rtype, argc, line, type_id, node.start_point[1]))
 
     def _receiver(self, expr, scope: dict[str, str], type_id: Optional[str]):
         if expr is None:

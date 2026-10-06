@@ -9,7 +9,7 @@ from typing import Optional
 @dataclass
 class Node:
     id: str
-    kind: str  # repo, module, file, type, callable, field, entry_point, external
+    kind: str  # repo, module, file, type, callable, field, entry_point, external, test
     name: str
     parent_id: Optional[str] = None
     language: Optional[str] = None
@@ -50,6 +50,32 @@ class CallSite:
     argc: int
     line: int
     enclosing_type: Optional[str] = None  # id of the type the caller lives in
+    col: int = 0
+
+
+@dataclass
+class EventUse:
+    """A place where an event is raised or subscribed to."""
+
+    kind: str  # raise | subscribe
+    src_id: str  # enclosing callable
+    event: str  # event member name
+    receiver: Optional[str]  # as in CallSite; None means the enclosing type's own event
+    receiver_type: Optional[str]
+    handler: Optional[str]  # method name for a method-group handler, None for a lambda
+    line: int
+    enclosing_type: Optional[str] = None
+
+
+@dataclass
+class Spawn:
+    """A place where another program is launched."""
+
+    src_id: str
+    strings: list[str]  # string literals in the launch call, constants resolved
+    file_strings: list[str]  # every other string literal in the file, as a weaker hint
+    pipes: bool  # the launcher wires up stdin or stdout
+    line: int
 
 
 @dataclass
@@ -68,5 +94,7 @@ class FileResult:
     type_refs: list[TypeRef] = field(default_factory=list)
     calls: list[CallSite] = field(default_factory=list)
     imports: list[ImportRef] = field(default_factory=list)
+    events: list[EventUse] = field(default_factory=list)
+    spawns: list[Spawn] = field(default_factory=list)
     # Namespaces (C#) or module paths (Python) this file declares.
     declares: list[str] = field(default_factory=list)

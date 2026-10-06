@@ -8,7 +8,7 @@ from typing import Optional
 import tree_sitter_python
 from tree_sitter import Language, Parser
 
-from ..model import CallSite, Edge, FileResult, ImportRef, Node, TypeRef
+from ..model import CallSite, Edge, FileResult, ImportRef, Node, Spawn, TypeRef
 
 NAME = "tree-sitter-python"
 VERSION = "0.1"
@@ -16,6 +16,22 @@ LANGUAGE = "python"
 EXTENSIONS = (".py",)
 
 _parser = Parser(Language(tree_sitter_python.language()))
+LAUNCHERS = {"subprocess.Popen", "subprocess.run", "subprocess.check_output", "subprocess.check_call",
+             "subprocess.call", "os.system", "os.popen", "Popen", "check_output", "check_call"}
+
+
+def _strings(node) -> list[str]:
+    """Every string literal under a node, without quotes."""
+    out, stack = [], [node]
+    while stack:
+        n = stack.pop()
+        if n.type == "string":
+            body = "".join(_text(c) for c in n.children if c.type == "string_content")
+            if body:
+                out.append(body)
+        else:
+            stack.extend(reversed(n.children))
+    return out
 
 
 def _text(node) -> str:
@@ -45,6 +61,18 @@ class _Walker:
         self.top_id = f"{repo}:python:{self.mod}.<module>"
         self.top_used = False
         self.self_types: dict[str, dict[str, str]] = {}  # class id -> attribute -> class name
+        self.consts: dict[str, list[str]] = {}  # module-level NAME = "..." or [...] -> its strings
+        self.all_strings: Optional[list[str]] = None
+        base = rel_path.rsplit("/", 1)[-1]
+        self.is_test_file = base.startswith("test_") or base.endswith("_test.py")
+        for st in self.tree.root_node.children:
+            if st.type == "expression_statement" and st.named_child_count and st.named_children[0].type == "assignment":
+                left = st.named_children[0].child_by_field_name("left")
+                right = st.named_children[0].child_by_field_name("right")
+                if left is not None and left.type == "identifier" and right is not None:
+                    found = _strings(right)
+                    if found:
+                        self.consts[_text(left)] = found
 
     def run(self) -> FileResult:
         root = self.tree.root_node
@@ -189,6 +217,8 @@ class _Walker:
                    "visibility": "private" if name.startswith("_") and not name.startswith("__") else "public",
                    "is_static": is_static or not is_method, "is_async": _text(node).startswith("async"),
                    "is_virtual": is_method, "decorators": decorators,
+                   "is_test": bool(self.is_test_file and name.startswith("test")) or None,
+                   "framework": "pytest" if self.is_test_file and name.startswith("test") else None,
                    "native_kind": "method" if is_method else "function",
                    "argc_min": required, "argc_max": 99 if variadic else total, "type_id": class_id if is_method else None}))
         if body is not None:
@@ -252,23 +282,36 @@ class _Walker:
             args = node.child_by_field_name("arguments")
             argc = len(args.named_children) if args is not None else 0
             line = node.start_point[0] + 1
+            if fn is not None and cid is not None and _text(fn) in LAUNCHERS and args is not None:
+                found = _strings(args)
+                stack = [args]
+                while stack:
+                    n = stack.pop()
+                    if n.type == "identifier" and _text(n) in self.consts:
+                        found.extend(self.consts[_text(n)])
+                    stack.extend(n.children)
+                if self.all_strings is None:
+                    self.all_strings = _strings(self.tree.root_node)
+                self.res.spawns.append(Spawn(cid, found, self.all_strings, "PIPE" in _text(args), line))
+                if cid == self.top_id:
+                    self.top_used = True
             if fn is not None and cid is not None:
                 if fn.type == "identifier":
-                    self.res.calls.append(CallSite(cid, _text(fn), None, None, argc, line, class_id))
+                    self.res.calls.append(CallSite(cid, _text(fn), None, None, argc, line, class_id, node.start_point[1]))
                 elif fn.type == "attribute":
                     obj = fn.child_by_field_name("object")
                     name = _text(fn.child_by_field_name("attribute"))
                     otext = _text(obj)
                     if otext == "self":
-                        self.res.calls.append(CallSite(cid, name, "this", None, argc, line, class_id))
+                        self.res.calls.append(CallSite(cid, name, "this", None, argc, line, class_id, node.start_point[1]))
                     elif obj is not None and obj.type == "identifier":
-                        self.res.calls.append(CallSite(cid, name, otext, scope.get(otext), argc, line, class_id))
+                        self.res.calls.append(CallSite(cid, name, otext, scope.get(otext), argc, line, class_id, node.start_point[1]))
                     elif obj is not None and obj.type == "attribute" and _text(obj.child_by_field_name("object")) == "self":
                         attr = _text(obj.child_by_field_name("attribute"))
                         rtype = self.self_types.get(class_id or "", {}).get(attr)
-                        self.res.calls.append(CallSite(cid, name, "." + attr, rtype, argc, line, class_id))
+                        self.res.calls.append(CallSite(cid, name, "." + attr, rtype, argc, line, class_id, node.start_point[1]))
                     else:
-                        self.res.calls.append(CallSite(cid, name, "?", None, argc, line, class_id))
+                        self.res.calls.append(CallSite(cid, name, "?", None, argc, line, class_id, node.start_point[1]))
         for c in node.children:
             self._body(c, cid, class_id, scope, qual)
 

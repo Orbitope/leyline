@@ -7,7 +7,7 @@ import json
 from importlib import resources
 from pathlib import Path
 
-KEEP_ATTRS = ("native_kind", "visibility", "signature", "declared_type", "trigger", "is_static",
+KEEP_ATTRS = ("framework", "runner", "native_kind", "visibility", "signature", "declared_type", "trigger", "is_static",
               "is_abstract", "marker", "ecosystem", "category", "also_in", "namespace", "version",
               "target_framework", "url")
 
@@ -45,18 +45,32 @@ def graph(con, with_sources: bool = True) -> dict:
         if x:
             n["x"] = x
         nodes.append(n)
+    rank = {"exact": 2, "observed": 2, "heuristic": 1, "guess": 0}
     edges = []
     for e in con.execute("SELECT kind, src_id, dst_id, precision, attrs FROM edges WHERE kind != 'contains'"):
         if e["src_id"] in index and e["dst_id"] in index:
-            role = (json.loads(e["attrs"]) if e["attrs"] else {}).get("role")
-            edges.append([e["kind"], index[e["src_id"]], index[e["dst_id"]],
-                          1 if e["precision"] == "exact" else 0, role or ""])
+            attrs = json.loads(e["attrs"]) if e["attrs"] else {}
+            extra = attrs.get("role") or ""
+            if e["kind"] == "communicates":
+                extra = {"channel": attrs.get("channel"), "address": attrs.get("address"),
+                         "handler": attrs.get("handler"), "pipes": attrs.get("pipes")}
+            edges.append([e["kind"], index[e["src_id"]], index[e["dst_id"]], rank.get(e["precision"], 1), extra])
     calls = []
     for c in con.execute(
-            "SELECT src_id, dst_id, COUNT(*) AS n, MIN(site_start) AS line, MAX(precision = 'exact') AS exact"
+            "SELECT src_id, dst_id, COUNT(*) AS n, MIN(site_start) AS line,"
+            " MIN(CASE precision WHEN 'exact' THEN 2 WHEN 'guess' THEN 0 ELSE 1 END) AS rank"
             " FROM calls GROUP BY src_id, dst_id"):
         if c["src_id"] in index and c["dst_id"] in index:
-            calls.append([index[c["src_id"]], index[c["dst_id"]], c["n"], c["line"], c["exact"]])
+            calls.append([index[c["src_id"]], index[c["dst_id"]], c["n"], c["line"], c["rank"]])
+    flows = []
+    for f in con.execute("SELECT * FROM flows ORDER BY name"):
+        a = json.loads(f["attrs"]) if f["attrs"] else {}
+        steps = [[index[s["callable_id"]], s["depth"], s["via"], s["site_line"] or 0]
+                 for s in con.execute("SELECT * FROM flow_steps WHERE flow_id = ? ORDER BY seq", (f["id"],))
+                 if s["callable_id"] in index]
+        if f["entry_id"] in index:
+            flows.append({"id": f["id"], "name": f["name"], "kind": a.get("kind"), "detail": a.get("detail"),
+                          "truncated": a.get("truncated", False), "entry": index[f["entry_id"]], "steps": steps})
     coverage = [{"repo": r["repo_id"], "extractor": r["extractor"], "status": r["status"],
                  "stats": json.loads(r["stats"]) if r["stats"] else {}}
                 for r in con.execute("SELECT * FROM extractor_coverage ORDER BY extractor")]
@@ -70,7 +84,7 @@ def graph(con, with_sources: bool = True) -> dict:
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 if p.is_file():
                     sources[r["path"]] = p.read_text(errors="replace")
-    return {"version": 1, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls,
+    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows,
             "coverage": coverage, "sources": sources}
 
 

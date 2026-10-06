@@ -88,11 +88,13 @@ def test_overview_rolls_up_to_modules(con):
     o = query.overview(con)
     edge = next(e for e in o["module_edges"] if e["from"] == "fx:module:App" and e["to"] == "fx:module:Lib")
     assert edge["calls"] >= 3 and edge["imports"] >= 1
-    assert {c["status"] for c in o["coverage"] if c["extractor"].startswith("communicates")} == {"not_analyzed"}
+    status = {c["extractor"]: c["status"] for c in o["coverage"]}
+    assert status["communicates:event"] == "ok" and status["communicates:process"] == "ok"
+    assert status["communicates:http"] == "not_analyzed"
 
 
 def test_expand_and_search(con):
-    hit = query.search(con, "canvas total")["results"][0]
+    hit = query.search(con, "canvas total", kind="callable")["results"][0]
     assert hit["name"] == "Total"
     t = query.expand(con, "fx:csharp:Lib::Lib.Canvas")
     assert t["contains"]["callable"]["total"] == 3
@@ -128,3 +130,73 @@ def test_export_embeds_a_loadable_graph(con):
     data = re.search(r'<script id="leyline-data" type="application/json">(.*?)</script>', page, re.S).group(1)
     assert json.loads(data)["nodes"][0]["k"] == "repo"
     assert "__LEYLINE" not in page
+
+
+def comm(con):
+    import json
+    return [(r[0], r[1], r[2], json.loads(r[3])) for r in con.execute(
+        "SELECT src_id, dst_id, precision, attrs FROM edges WHERE kind = 'communicates'")]
+
+
+def test_event_links_raiser_to_handler(con):
+    events = [c for c in comm(con) if c[3]["channel"] == "event"]
+    assert [(s, d) for s, d, _, _ in events] == [
+        ("fx:csharp:Lib::Lib.Bus.Set(int)", "fx:csharp:App::Checks.OnChanged(int)")]
+    assert events[0][3]["address"] == "fx:csharp:Lib::Lib.Bus.Changed"
+    assert events[0][3]["handler"] == "method"
+
+
+def test_process_launch_links_to_the_program_entry(con):
+    procs = [c for c in comm(con) if c[3]["channel"] == "process"]
+    assert len(procs) == 1
+    src, dst, precision, attrs = procs[0]
+    assert src == "fx:python:scripts.launch.start"
+    assert dst.startswith("fx:csharp:App::Program.Main(")
+    assert precision == "heuristic" and attrs["pipes"] is True
+
+
+def test_inline_tests_become_nodes_with_their_own_calls(con):
+    tests = {r[0]: r[1] for r in con.execute("SELECT name, id FROM nodes WHERE kind = 'test'")}
+    assert set(tests) == {"bus notifies a subscriber", "canvas totals"}
+    assert calls(con, tests["canvas totals"]) == {"fx:csharp:Lib::Lib.Canvas.Total()"}
+    assert "fx:csharp:Lib::Lib.Bus.Set(int)" in calls(con, tests["bus notifies a subscriber"])
+    # The enclosing method runs the tests but does not make their calls itself.
+    assert "fx:csharp:Lib::Lib.Canvas.Total()" not in calls(con, "fx:csharp:App::Checks.All()")
+
+
+def test_flows_follow_calls_and_only_subscribed_events(con):
+    from leyline import query
+    listed = query.flows(con, kind="test")["flows"]
+    assert {f["name"] for f in listed} == {"bus notifies a subscriber", "canvas totals"}
+    bus = query.flow(con, next(f["id"] for f in listed if f["name"].startswith("bus")))
+    names = [s["name"] for s in bus["steps"]]
+    assert names[0] == "bus notifies a subscriber" and "Set" in names
+    assert names.index("OnChanged") > names.index("Set")      # reached through the event
+    assert bus["steps"][names.index("OnChanged")]["via"] == "event"
+    canvas = query.flow(con, next(f["id"] for f in listed if f["name"].startswith("canvas")))
+    assert "OnChanged" not in [s["name"] for s in canvas["steps"]]
+
+
+def test_trace_and_impact(con):
+    from leyline import query
+    t = query.trace(con, "fx:python:scripts.launch.start", "fx:csharp:Lib::Lib.Canvas.Total()")
+    assert t["found"] and t["path"][1]["via"] == "communicates"
+    assert [p["name"] for p in t["path"]] == ["start", "Main", "Total"]
+    i = query.impact(con, "fx:csharp:Lib::Lib.Canvas.Total()")
+    assert i["crosses_module_boundary"]
+    assert {g["module"] for g in i["by_module"]} >= {"App", "Lib", "scripts"}
+    assert i["flows_through"]["total"] >= 2
+
+
+def test_implementations_link_to_interface_methods(con):
+    from leyline import query
+    pairs = {(r[0], r[1]) for r in con.execute("SELECT src_id, dst_id FROM edges WHERE kind = 'overrides'")}
+    assert ("fx:csharp:Lib::Lib.Circle.Area()", "fx:csharp:Lib::Lib.IShape.Area()") in pairs
+    # A flow that calls the interface method continues into the implementation.
+    listed = query.flows(con, kind="test")["flows"]
+    steps = query.flow(con, next(f["id"] for f in listed if f["name"].startswith("canvas")))["steps"]
+    names = [(s["name"], s["via"]) for s in steps]
+    assert ("Area", "dispatch") in names
+    # And changing the implementation is reported as reaching the interface's callers.
+    i = query.impact(con, "fx:csharp:Lib::Lib.Circle.Area()")
+    assert i["reached_by"] >= 2 and i["flows_through"]["total"] >= 1

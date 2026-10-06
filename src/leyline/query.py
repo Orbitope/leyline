@@ -237,6 +237,122 @@ def neighbors(con, node_id: str, direction: str = "both", kinds: Optional[list[s
     return out
 
 
+def flows(con, kind: Optional[str] = None, through: Optional[str] = None) -> dict:
+    """Flows: paths walked from an entry point or a test. `through` keeps flows that pass a node."""
+    sql = "SELECT f.* FROM flows f"
+    args: list = []
+    if through:
+        sql += " WHERE f.id IN (SELECT flow_id FROM flow_steps WHERE callable_id = ?)"
+        args.append(through)
+    out = []
+    for f in con.execute(sql + " ORDER BY f.name", args):
+        a = json.loads(f["attrs"]) if f["attrs"] else {}
+        if kind and a.get("kind") != kind:
+            continue
+        out.append({"id": f["id"], "name": f["name"], "origin": f["origin"], "kind": a.get("kind"),
+                    "trigger": a.get("detail"), "steps": a.get("steps"), "truncated": a.get("truncated", False),
+                    "modules": [m.split(":module:")[-1] for m in a.get("modules", [])], "entry": f["entry_id"]})
+    return {"total": len(out), "flows": out,
+            "note": "Static flows list each function once, in source order. They show what can run, not what did."}
+
+
+def flow(con, flow_id: str, max_steps: int = 400) -> dict:
+    """One flow, step by step. `depth` is the call depth and `parent` the step it was reached from."""
+    f = con.execute("SELECT * FROM flows WHERE id = ?", (flow_id,)).fetchone()
+    if f is None:
+        return {"error": f"No flow with id {flow_id!r}. Use `flows` to list them."}
+    steps = []
+    for s in con.execute(
+            "SELECT s.seq, s.depth, s.via, s.site_line, s.parent_seq, n.* FROM flow_steps s"
+            " JOIN nodes n ON n.id = s.callable_id WHERE s.flow_id = ? ORDER BY s.seq LIMIT ?", (flow_id, max_steps)):
+        a = _attrs(s)
+        steps.append({"seq": s["seq"], "depth": s["depth"], "parent": s["parent_seq"], "via": s["via"],
+                      "call_line": s["site_line"], "id": s["id"], "name": s["name"], "path": s["path"],
+                      "lines": [s["span_start"], s["span_end"]], "signature": a.get("signature")})
+    a = json.loads(f["attrs"]) if f["attrs"] else {}
+    return {"id": f["id"], "name": f["name"], "origin": f["origin"], "kind": a.get("kind"),
+            "truncated": a.get("truncated", False), "total_steps": a.get("steps"), "steps": steps}
+
+
+def _adjacency(con, reverse: bool = False) -> dict:
+    adj: dict[str, list] = {}
+    a, b = ("dst_id", "src_id") if reverse else ("src_id", "dst_id")
+    for r in con.execute(f"SELECT DISTINCT {a}, {b}, 'calls' FROM calls UNION"
+                         f" SELECT {a}, {b}, 'communicates' FROM edges WHERE kind = 'communicates' UNION"
+                         f" SELECT {b}, {a}, 'dispatch' FROM edges WHERE kind = 'overrides'"):
+        adj.setdefault(r[0], []).append((r[1], r[2]))
+    return adj
+
+
+def trace(con, from_id: str, to_id: str, max_depth: int = 12) -> dict:
+    """The shortest chain of calls (and channels) from one function to another."""
+    for i in (from_id, to_id):
+        if _node(con, i) is None:
+            return {"error": f"No node with id {i!r}."}
+    adj = _adjacency(con)
+    prev: dict[str, tuple] = {from_id: (None, None)}
+    frontier, depth = [from_id], 0
+    while frontier and to_id not in prev and depth < max_depth:
+        nxt = []
+        for cur in frontier:
+            for dst, via in adj.get(cur, ()):
+                if dst not in prev:
+                    prev[dst] = (cur, via)
+                    nxt.append(dst)
+        frontier, depth = nxt, depth + 1
+    if to_id not in prev:
+        return {"from": from_id, "to": to_id, "found": False,
+                "note": "No static path. The link may run through a channel that was not analyzed."}
+    path, cur = [], to_id
+    while cur is not None:
+        p, via = prev[cur]
+        row = _node(con, cur)
+        path.append({"id": cur, "name": row["name"], "path": row["path"], "via": via})
+        cur = p
+    return {"from": from_id, "to": to_id, "found": True, "hops": len(path) - 1, "path": path[::-1]}
+
+
+def impact(con, node_id: str, max_depth: int = 6) -> dict:
+    """Everything that can reach a node through calls and channels, grouped by module, plus the
+    flows that pass through it. Use it before changing the node."""
+    row = _node(con, node_id)
+    if row is None:
+        return {"error": f"No node with id {node_id!r}."}
+    targets = {node_id} | {r[0] for r in con.execute(
+        "WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT n.id FROM nodes n JOIN d ON n.parent_id = d.id)"
+        " SELECT id FROM d", (node_id,))}
+    adj = _adjacency(con, reverse=True)
+    dist: dict[str, int] = {t: 0 for t in targets}
+    frontier, depth = list(targets), 0
+    while frontier and depth < max_depth:
+        nxt = []
+        for cur in frontier:
+            for src, _via in adj.get(cur, ()):
+                if src not in dist:
+                    dist[src] = depth + 1
+                    nxt.append(src)
+        frontier, depth = nxt, depth + 1
+    reached = [i for i in dist if i not in targets]
+    by_module: dict[str, dict] = {}
+    home = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (node_id,)).fetchone()
+    for i in reached:
+        m = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (i,)).fetchone()
+        mod = (m[0] if m and m[0] else "?")
+        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "count": 0, "direct": []})
+        g["count"] += 1
+        if dist[i] == 1 and len(g["direct"]) < 15:
+            g["direct"].append(i)
+    marks = ",".join("?" * len(targets))
+    through = [{"id": r["id"], "name": r["name"]} for r in con.execute(
+        f"SELECT DISTINCT f.id, f.name FROM flows f JOIN flow_steps s ON s.flow_id = f.id"
+        f" WHERE s.callable_id IN ({marks}) ORDER BY f.name", list(targets))]
+    return {"id": node_id, "reached_by": len(reached), "depth_limit": max_depth,
+            "crosses_module_boundary": any(m != (home[0] if home else None) for m in by_module),
+            "by_module": sorted(by_module.values(), key=lambda g: -g["count"]),
+            "flows_through": {"total": len(through), "items": through[:40]},
+            "note": "Callers found from syntax. Code reached only through outside frameworks is not counted."}
+
+
 def source(con, node_id: str, max_lines: int = 200) -> dict:
     """The source text of a node, read from the working tree it was indexed from."""
     row = _node(con, node_id)

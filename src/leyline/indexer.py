@@ -77,6 +77,10 @@ class Indexer:
         self.results: dict[str, FileResult] = {}  # file id -> adapter output
         self.file_lang: dict[str, str] = {}
         self.stats: dict[str, Counter] = defaultdict(Counter)
+        self.flows: list[tuple] = []
+        self.call_col: dict[tuple, int] = {}
+        self.flow_steps: list[tuple] = []
+        self.channel_stats: dict[str, Counter] = defaultdict(Counter)
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
 
@@ -117,7 +121,11 @@ class Indexer:
         self._build_indexes()
         self._resolve_imports()
         self._resolve_types()
+        self._resolve_overrides()
         self._resolve_calls()
+        self._resolve_events()
+        self._resolve_spawns()
+        self._build_flows()
         self._write(con)
         return {k: dict(v) for k, v in self.stats.items()}
 
@@ -443,6 +451,7 @@ class Indexer:
             st = self.stats[adapter]
             for call in res.calls:
                 st["calls_total"] += 1
+                self._guessed = False
                 targets = self._resolve_call(lang, fid, call)
                 if targets is None:
                     st["calls_external"] += 1
@@ -452,7 +461,9 @@ class Indexer:
                     st["calls_resolved"] += 1
                     for t in targets:
                         dispatch = "virtual" if t.attrs.get("is_virtual") and lang == "csharp" else "static"
-                        self.calls.append((call.src_id, t.id, dispatch, "heuristic", call.line))
+                        self.calls.append((call.src_id, t.id, dispatch,
+                                           "guess" if self._guessed else "heuristic", call.line))
+                        self.call_col[(call.src_id, t.id, call.line)] = call.col
 
     def _resolve_call(self, lang: str, fid: str, call: CallSite) -> Optional[list[Node]]:
         """None = defined outside the workspace; [] = defined here but not pinned down."""
@@ -469,7 +480,7 @@ class Indexer:
         if call.receiver is None:
             # Local functions of the caller, innermost first.
             cur = call.src_id
-            while cur in self.nodes and self.nodes[cur].kind == "callable":
+            while cur in self.nodes and self.nodes[cur].kind in ("callable", "test"):
                 local = self.members.get(cur, {}).get(name)
                 if local:
                     return self._pick(local, argc)
@@ -506,6 +517,7 @@ class Indexer:
             self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]["calls_guess_declined"] += 1
             return []
         self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]["calls_by_unique_name"] += 1
+        self._guessed = True
         # Receiver type unknown: accept only a name that is defined exactly once.
         cands = self._pick([c for c in self.by_name[(lang, name)] if self._can_see(fid, c.id)], argc)
         owners = {c.parent_id for c in cands}
@@ -518,6 +530,200 @@ class Indexer:
                 return [c for c in cands if c.parent_id == root]
             return []
         return cands
+
+    def _resolve_overrides(self) -> None:
+        """Link each method to the base or interface method it implements, by name and arity."""
+        self.implementers: dict[str, list[str]] = defaultdict(list)
+        for tid, bases in list(self.bases.items()):
+            if not bases:
+                continue
+            for name, impls in self.members.get(tid, {}).items():
+                if name in (".ctor", ".dtor"):
+                    continue
+                for impl in impls:
+                    if impl.kind != "callable":
+                        continue
+                    for base in self._chain(tid)[1:]:
+                        if self.nodes[base].kind != "type" or base == self.nodes[tid].parent_id:
+                            continue
+                        cands = [c for c in self.members.get(base, {}).get(name, [])
+                                 if c.attrs.get("argc_max") == impl.attrs.get("argc_max")]
+                        if cands:
+                            self.edges.append(Edge("overrides", impl.id, cands[0].id, "heuristic"))
+                            self.implementers[cands[0].id].append(impl.id)
+                            break
+
+    # -- channels ------------------------------------------------------------
+    def _event_field(self, type_id: Optional[str], name: str) -> Optional[str]:
+        for t in self._chain(type_id):
+            fid = f"{t}.{name}"
+            n = self.nodes.get(fid)
+            if n is not None and n.kind == "field" and n.attrs.get("native_kind") == "event":
+                return fid
+        return None
+
+    def _resolve_events(self) -> None:
+        """Link the code that raises an event to the code that handles it."""
+        raisers: dict[str, list] = defaultdict(list)
+        handlers: dict[str, list] = defaultdict(list)
+        st = self.channel_stats["event"]
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            for ev in res.events:
+                if ev.kind == "raise":
+                    field = self._event_field(ev.enclosing_type, ev.event)
+                    if field:
+                        raisers[field].append((ev.src_id, ev.line))
+                    continue
+                if ev.receiver is None:
+                    field = self._event_field(ev.enclosing_type, ev.event)
+                else:
+                    probe = CallSite(ev.src_id, ev.event, ev.receiver, ev.receiver_type, 0, ev.line, ev.enclosing_type)
+                    tid, _ = self._receiver_type(lang, probe)
+                    field = self._event_field(tid, ev.event) if tid else None
+                if not field:
+                    if ev.handler is None or ev.receiver is not None:
+                        st["subscriptions_to_outside_events"] += 1
+                    continue
+                target, via = ev.src_id, "lambda"
+                if ev.handler:
+                    found = self._methods(ev.enclosing_type, ev.handler, 1) or self._methods(ev.enclosing_type, ev.handler, 0)
+                    if found:
+                        target, via = found[0].id, "method"
+                handlers[field].append((target, via, ev.line, ev.src_id))
+        seen = set()
+        for field, subs in handlers.items():
+            st["events_with_handlers"] += 1
+            for raiser, _line in raisers.get(field, []):
+                for target, via, line, subscriber in subs:
+                    key = (raiser, target, field)
+                    if key in seen or raiser not in self.nodes or target not in self.nodes:
+                        continue
+                    seen.add(key)
+                    st["links"] += 1
+                    self.edges.append(Edge("communicates", raiser, target, "heuristic", {
+                        "channel": "event", "address": field, "direction": "push", "handler": via,
+                        "subscriber": subscriber, "subscribed_at": line}))
+            if field not in raisers:
+                st["events_never_raised_here"] += 1
+        st["events_declared"] = sum(1 for n in self.nodes.values()
+                                    if n.kind == "field" and n.attrs.get("native_kind") == "event")
+
+    def _resolve_spawns(self) -> None:
+        """Link code that launches a program to that program's entry point, when it is in the workspace."""
+        st = self.channel_stats["process"]
+        entries: dict[str, list[str]] = defaultdict(list)  # module -> cli entry callables
+        for e in self.edges:
+            if e.kind == "exposes" and self.nodes[e.src_id].attrs.get("trigger") == "cli":
+                mod = self.nodes[self.file_of[e.dst_id]].parent_id if e.dst_id in self.file_of else None
+                if mod:
+                    entries[mod].append(e.dst_id)
+        files_by_path = {n.path: n.id for n in self.nodes.values() if n.kind == "file"}
+        modules = [(n.path, n.id) for n in self.nodes.values() if n.kind == "module" and n.path]
+
+        def match(text: str):
+            text = text.strip().replace("\\", "/")
+            if text in files_by_path:  # a script path
+                fid = files_by_path[text]
+                tops = [e.dst_id for e in self.edges if e.kind == "exposes" and self.file_of.get(e.dst_id) == fid]
+                return tops[0] if tops else fid
+            for path, mid in modules:
+                stem = text.rsplit("/", 1)[-1].rsplit(".", 1)[0] if "." in text.rsplit("/", 1)[-1] else None
+                if text == path or text.startswith(path + "/") or (stem and stem == path.rsplit("/", 1)[-1] and text.endswith((".dll", ".exe", ".csproj"))):
+                    if not entries.get(mid):
+                        continue
+                    return entries[mid][0] if len(entries[mid]) == 1 else mid
+            return None
+
+        seen = set()
+        for fid, res in self.results.items():
+            for sp in res.spawns:
+                st["launch_sites"] += 1
+                hits = [(match(s), s, "heuristic") for s in sp.strings]
+                hits = [h for h in hits if h[0]]
+                if not hits:
+                    hits = [(match(s), s, "guess") for s in dict.fromkeys(sp.file_strings)]
+                    hits = [h for h in hits if h[0]]
+                if not hits:
+                    st["launches_of_outside_programs"] += 1
+                    continue
+                for target, text, precision in dict.fromkeys(hits):
+                    if (sp.src_id, target) in seen or target == sp.src_id:
+                        continue
+                    seen.add((sp.src_id, target))
+                    st["links"] += 1
+                    self.edges.append(Edge("communicates", sp.src_id, target, precision, {
+                        "channel": "process", "address": text,
+                        "direction": "both" if sp.pipes else "start", "pipes": sp.pipes, "launched_at": sp.line}))
+
+    # -- flows ---------------------------------------------------------------
+    def _build_flows(self, max_depth: int = 8, max_steps: int = 300) -> None:
+        """Walk the call graph from every entry point and test, in source order."""
+        out: dict[str, list] = defaultdict(list)
+        for src, dst, _disp, _prec, line in self.calls:
+            out[src].append(((line or 0) + self.call_col.get((src, dst, line), 0) / 10000, dst, "calls", None))
+        for e in self.edges:
+            if e.kind == "communicates":
+                a = e.attrs or {}
+                out[e.src_id].append((a.get("launched_at") or 10 ** 9, e.dst_id, a.get("channel", "channel"),
+                                      a.get("subscriber")))
+        # A call to an interface or base method may land in any implementation.
+        for base, impls in self.implementers.items():
+            for impl in impls:
+                out[base].append((10 ** 9 - 1, impl, "dispatch", None))
+        # A test declared inline runs where its runner call sits.
+        for n in self.nodes.values():
+            if n.kind == "test" and n.parent_id:
+                out[n.parent_id].append((n.span_start or 0, n.id, "runs", None))
+        for lst in out.values():
+            lst.sort(key=lambda x: (x[0], x[1]))
+        starts = []
+        for e in self.edges:
+            if e.kind == "exposes":
+                ep = self.nodes[e.src_id]
+                starts.append((e.dst_id, "entry", ep.attrs.get("trigger")))
+        for n in self.nodes.values():
+            if n.kind == "test" or n.attrs.get("is_test"):
+                starts.append((n.id, "test", n.attrs.get("framework")))
+        for start, kind, detail in starts:
+            if start not in self.nodes:
+                continue
+            fid = f"flow:{start}"
+            entry_file = self.file_of.get(start)
+            seen, steps, truncated = {start}, [(0, 0, start, "start", None, None)], False
+            stack = [(start, 0, 0)]
+            # Depth-first, pre-order, each callable listed once per flow.
+            def walk(node, depth, parent_seq):
+                nonlocal truncated
+                if depth >= max_depth:
+                    if out.get(node):
+                        truncated = True
+                    return
+                for line, dst, via, subscriber in out.get(node, ()):
+                    if dst in seen or dst not in self.nodes:
+                        continue
+                    if via == "event" and subscriber not in seen:
+                        continue  # nobody in this flow subscribed, so the handler does not run here
+                    if via == "dispatch" and entry_file and self.file_lang.get(entry_file) == "csharp" \
+                            and not self._can_see(entry_file, dst):
+                        continue  # an implementation in a project this program does not reference
+                    if kind == "test" and via == "runs":
+                        continue
+                    if len(steps) >= max_steps:
+                        truncated = True
+                        return
+                    seen.add(dst)
+                    seq = len(steps)
+                    steps.append((seq, depth + 1, dst, via, int(line) if line < 10 ** 9 - 1 else None, parent_seq))
+                    walk(dst, depth + 1, seq)
+            walk(start, 0, 0)
+            n = self.nodes[start]
+            name = n.name if n.kind == "test" else start.split(":", 2)[-1].split("::")[-1]
+            mods = {self.nodes[self.file_of[s[2]]].parent_id for s in steps if s[2] in self.file_of}
+            self.flows.append((fid, name, "static", start, 0.0, None, "fact", SOURCE, {
+                "kind": kind, "detail": detail, "steps": len(steps), "truncated": truncated,
+                "modules": sorted(m for m in mods if m)}))
+            self.flow_steps.extend((fid, *s) for s in steps)
 
     def _py_symbol(self, node_id: str, argc: int) -> Optional[list[Node]]:
         n = self.nodes.get(node_id)
@@ -569,9 +775,14 @@ class Indexer:
                 st = dict(self.stats.get(a.NAME, {}))
                 status = "ok" if st.get("files") else "no_files"
                 store.write_coverage(con, self.repo, a.NAME, a.VERSION, status, self.commit, st)
-            for channel in ("event", "di", "http", "rpc", "queue", "db", "file"):
-                store.write_coverage(con, self.repo, f"communicates:{channel}", "-", "not_analyzed",
-                                     self.commit, {})
+            for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
+                ran = channel in ("event", "process")
+                store.write_coverage(con, self.repo, f"communicates:{channel}", "0.1" if ran else "-",
+                                     "ok" if ran else "not_analyzed", self.commit,
+                                     dict(self.channel_stats.get(channel, {})))
+            store.write_flows(con, self.repo, self.flows, self.flow_steps)
+            store.write_coverage(con, self.repo, "flows:static", "0.1", "ok", self.commit,
+                                 {"flows": len(self.flows), "steps": len(self.flow_steps)})
             store.write_coverage(con, self.repo, "scip", "-", "not_analyzed", self.commit, {})
             store.write_coverage(con, self.repo, "coverage", "-", "not_analyzed", self.commit, {})
             store.rebuild_derived(con)

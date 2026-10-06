@@ -5,19 +5,19 @@
 :root {
   --bg: #ecf0ed; --surface: #f8faf8; --sunken: #e2e8e4; --ink: #15201c; --muted: #586860;
   --line: #c6d0ca; --grid: #e2e8e4; --edge: #7c8c84; --accent: #0b6a5b; --accent-soft: #d3e9e3; --mark: #b0561a;
-  --mark-soft: #f4dfcd; --cs: #5b4fb3; --py: #8f6410; --warn: #a3341f; --warn-soft: #f3d9d2;
+  --mark-soft: #f4dfcd; --cs: #5b4fb3; --py: #8f6410; --warn: #a3341f; --warn-soft: #f3d9d2; --chan: #1f62ad;
   --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #0f1513; --surface: #161e1b; --sunken: #0b100e; --ink: #e2e9e5; --muted: #8d9d95;
   --line: #2a3631; --grid: #141c19; --edge: #6e7f77; --accent: #55c4ab; --accent-soft: #173a33; --mark: #e8a15c;
-  --mark-soft: #40291a; --cs: #a99df2; --py: #ddb155; --warn: #f08a75; --warn-soft: #43201a;
+  --mark-soft: #40291a; --cs: #a99df2; --py: #ddb155; --warn: #f08a75; --warn-soft: #43201a; --chan: #7db5f2;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #0f1513; --surface: #161e1b; --sunken: #0b100e; --ink: #e2e9e5; --muted: #8d9d95;
   --line: #2a3631; --grid: #141c19; --edge: #6e7f77; --accent: #55c4ab; --accent-soft: #173a33; --mark: #e8a15c;
-  --mark-soft: #40291a; --cs: #a99df2; --py: #ddb155; --warn: #f08a75; --warn-soft: #43201a;
+  --mark-soft: #40291a; --cs: #a99df2; --py: #ddb155; --warn: #f08a75; --warn-soft: #43201a; --chan: #7db5f2;
   color-scheme: dark }
 
 html, body { height: 100%; }
@@ -88,6 +88,10 @@ button { cursor: pointer; }
 .dense .edge:not(.near):not(.sel) path.vis { opacity: 0.45; }
 .edge path.vis { fill: none; stroke: var(--edge); }
 .edge.heur path.vis { stroke-dasharray: 5 4; }
+.edge.guess path.vis { stroke-dasharray: 1.5 4; stroke-linecap: round; }
+.edge.comm path.vis { stroke: var(--chan); stroke-dasharray: 9 3 2 3; }
+.edge.comm text { fill: var(--chan); }
+#arrow-c path { fill: var(--chan); }
 .edge path.hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
 .edge text { font: 11px var(--mono); fill: var(--muted); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; pointer-events: none; }
 .edge:hover path.vis, .edge.near path.vis { stroke: var(--accent); }
@@ -151,6 +155,25 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
   user-select: none; opacity: 0.7; }
 .status { font: 12px var(--mono); }
 .status.ok { color: var(--accent); } .status.na { color: var(--muted); }
+.tag.chan { border-color: var(--chan); color: var(--chan); }
+.flow-wrap { height: 100%; overflow: auto; padding: 14px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
+.flow-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.flow-head select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; max-width: 100%; min-width: 0; flex: 1 1 280px; }
+.flow-head span { font-size: 12px; color: var(--muted); }
+.steps { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  overflow-x: auto; }
+.steps li { border-top: 1px solid var(--line); min-width: max-content; }
+.steps li:first-child { border-top: 0; }
+.steps button { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; text-align: left;
+  padding: 4px 10px; font: 12.5px var(--mono); white-space: nowrap; }
+.steps button:hover { background: var(--accent-soft); }
+.steps button[aria-current="true"] { background: var(--mark-soft); box-shadow: inset 3px 0 0 var(--mark); }
+.steps .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.steps .seq { color: var(--muted); font-size: 11px; width: 2.4em; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+.steps .ind { flex: none; width: calc(var(--d) * 18px); }
+.steps .mod { color: var(--muted); font: 11.5px var(--sans); margin-left: auto; padding-left: 24px; }
+.steps .via { font: 11px var(--sans); color: var(--chan); border: 1px solid var(--chan); border-radius: 4px; padding: 0 5px; }
 
 @media (max-width: 820px) {
   html, body { height: auto; }
@@ -170,6 +193,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
     <div class="tabs" role="group" aria-label="View">
       <button id="tab-map" aria-pressed="true">Map</button>
       <button id="tab-matrix" aria-pressed="false">Matrix</button>
+      <button id="tab-flows" aria-pressed="false">Flows</button>
     </div>
     <div class="search">
       <input id="q" type="search" placeholder="Find a type, function or file" autocomplete="off" aria-label="Search">
@@ -182,16 +206,20 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
           <marker id="arrow-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+          <marker id="arrow-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
           <marker id="arrow-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
         </defs>
         <g id="world"><g id="edges"></g><g id="nodes"></g></g>
       </svg>
       <div class="matrix-wrap" id="matrix" hidden></div>
+      <div class="flow-wrap" id="flowview" hidden></div>
       <div class="tools" id="tools"></div>
       <div class="hint" id="hint">
         <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="1.5"/></svg>exact</i>
-        <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/></svg>heuristic (from syntax, may be wrong)</i>
-        <i>Arrows point at what is depended on. Double-click a box to open it.</i>
+        <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/></svg>worked out from syntax</i>
+        <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="1.5 4" stroke-linecap="round"/></svg>guessed by name</i>
+        <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--chan)" stroke-width="1.5" stroke-dasharray="9 3 2 3"/></svg>event or process, in the direction data moves</i>
+        <i>Other arrows point at what is depended on. Double-click a box to open it.</i>
       </div>
     </section>
     <aside class="side" id="side" aria-live="polite"></aside>
@@ -237,13 +265,21 @@ const memberOf = (i) => {
   return c;
 };
 const GROUPS = { calls: "calls", uses_type: "types", instantiates: "types", extends: "inherit",
-  implements: "inherit", imports: "imports", depends_on: "imports" };
+  implements: "inherit", imports: "imports", depends_on: "imports", communicates: "channels" };
 const LABEL = { calls: "calls", uses_type: "uses type", instantiates: "creates", extends: "extends",
-  implements: "implements", imports: "imports", depends_on: "depends on" };
-// One flat list of links: [kind, src, dst, exact, count, line]
+  implements: "implements", imports: "imports", depends_on: "depends on", communicates: "channel",
+  event: "raises an event handled by", process: "launches" };
+// One flat list of links: [kind, src, dst, rank (2 exact, 1 from syntax, 0 guessed), count, line, channel info]
 const LINKS = [];
-for (const [k, s, d, x] of D.edges) if (GROUPS[k]) LINKS.push([k, s, d, x, 1, 0]);
-for (const [s, d, n, line, x] of D.calls) LINKS.push(["calls", s, d, x ? 1 : 0, n, line]);
+for (const [k, s, d, x, extra] of D.edges) if (GROUPS[k]) LINKS.push([k, s, d, x, 1, 0, k === "communicates" ? extra : null]);
+for (const [s, d, n, line, x] of D.calls) LINKS.push(["calls", s, d, x, n, line, null]);
+// Interface and base methods, and the methods that implement them.
+const implsOf = new Map(), basesOf = new Map();
+for (const [k, s, d] of D.edges) if (k === "overrides") { (implsOf.get(d) || implsOf.set(d, []).get(d)).push(s); (basesOf.get(s) || basesOf.set(s, []).get(s)).push(d); }
+const linkLabel = (L) => (L[6] ? LABEL[L[6].channel] || L[6].channel : LABEL[L[0]]);
+const FLOWS = D.flows || [];
+const flowsOf = new Map();
+FLOWS.forEach((f, fi) => { for (const st of f.steps) { if (!flowsOf.has(st[0])) flowsOf.set(st[0], []); flowsOf.get(st[0]).push(fi); } });
 const entryTargets = new Set(D.edges.filter((e) => e[0] === "exposes").map((e) => e[2]));
 const entryOf = new Map(D.edges.filter((e) => e[0] === "exposes").map((e) => [e[2], e[1]]));
 const hasEntry = new Set();
@@ -262,9 +298,10 @@ const langOf = (i) => { const n = N[i]; if (n.l) return n.l; if (n.k === "module
 
 /* ---------- state ---------- */
 const S = { level: "repo", focus: null, sel: null, hover: null, mode: "map", externals: false, view: null,
-  filters: { repo: { calls: true, types: true, inherit: true, imports: true },
-             module: { calls: true, types: false, inherit: true, imports: false },
-             unit: { calls: true, types: false, inherit: true, imports: false } },
+  filters: { repo: { calls: true, types: true, inherit: true, imports: true, channels: true },
+             module: { calls: true, types: false, inherit: true, imports: false, channels: true },
+             unit: { calls: true, types: false, inherit: true, imports: false, channels: true } },
+  flow: 0,
   outside: { module: false, unit: true } };
 const cam = { x: 0, y: 0, k: 1 };
 
@@ -293,11 +330,13 @@ function buildView() {
     const ia = inside(a), ib = inside(b);
     if (!ia && !ib) continue;
     if (S.level !== "repo" && !S.outside[S.level] && !(ia && ib)) continue;
-    const key = a + ">" + b;
+    const comm = L[0] === "communicates";
+    const key = a + ">" + b + (comm ? ">c" : "");
     let e = edges.get(key);
-    if (!e) edges.set(key, e = { key, a, b, n: 0, exact: 0, kinds: {}, links: [] });
-    e.n += L[4]; if (L[3]) e.exact += L[4];
-    e.kinds[L[0]] = (e.kinds[L[0]] || 0) + L[4];
+    if (!e) edges.set(key, e = { key, a, b, n: 0, exact: 0, guess: 0, kinds: {}, links: [], comm, chans: new Set() });
+    e.n += L[4]; if (L[3] === 2) e.exact += L[4]; if (L[3] === 0) e.guess += L[4];
+    if (comm) e.chans.add(L[6].channel);
+    e.kinds[linkLabel(L)] = (e.kinds[linkLabel(L)] || 0) + L[4];
     e.links.push(L);
     used.add(a); used.add(b);
   }
@@ -332,7 +371,8 @@ function layout(view) {
   }
   const out = new Map(), inn = new Map();
   for (const i of view.nodes) { out.set(i, []); inn.set(i, []); }
-  for (const e of view.edges) { out.get(e.a).push(e.b); inn.get(e.b).push(e.a); }
+  // A handler depends on whatever raises its event, so event arrows are layered against their direction.
+  for (const e of view.edges) { const flip = e.comm && e.chans.has("event"); const a = flip ? e.b : e.a, b = flip ? e.a : e.b; if (!out.get(a).includes(b)) { out.get(a).push(b); inn.get(b).push(a); } }
   const linked = view.nodes.filter((i) => out.get(i).length || inn.get(i).length);
   const loose = view.nodes.filter((i) => !out.get(i).length && !inn.get(i).length);
   // Break cycles with a depth-first pass, then layer by longest path.
@@ -343,28 +383,53 @@ function layout(view) {
   const layer = new Map();
   const depth = (v) => { if (layer.has(v)) return layer.get(v); layer.set(v, 0); let d = 0; for (const u of inn.get(v)) if (!back.has(u + ">" + v)) d = Math.max(d, depth(u) + 1); layer.set(v, d); return d; };
   linked.forEach(depth);
-  const rows = [];
-  for (const v of linked) (rows[layer.get(v)] = rows[layer.get(v)] || []).push(v);
+  const layers = [];
+  for (const v of linked) (layers[layer.get(v)] = layers[layer.get(v)] || []).push(v);
   const pos = new Map();
-  rows.forEach((r) => r.forEach((v, j) => pos.set(v, j)));
-  const bary = (v, nb) => { const ns = nb.get(v).filter((u) => pos.has(u) && layer.get(u) !== layer.get(v)); return ns.length ? ns.reduce((s, u) => s + pos.get(u), 0) / ns.length : pos.get(v); };
-  for (let sweep = 0; sweep < 6; sweep++) {
-    const seq = sweep % 2 ? [...rows.keys()].reverse() : [...rows.keys()];
-    for (const r of seq) { if (!rows[r]) continue; const nb = sweep % 2 ? out : inn; const b = new Map(rows[r].map((v) => [v, bary(v, nb)])); rows[r].sort((x, y) => b.get(x) - b.get(y)); rows[r].forEach((v, j) => pos.set(v, j)); }
-  }
-  const stageW = svg.getBoundingClientRect().width || 1000;
-  const MAXW = Math.max(380, Math.min(1500, stageW / 0.78)), GX = 26, GY = two ? 84 : 62;
-  let y = 0, width = 0;
-  const place = (list, gapY) => {
-    let line = [], lw = 0; const lines = [];
-    for (const v of list) { const b = boxes.get(v); if (line.length && lw + b.w > MAXW) { lines.push([line, lw]); line = []; lw = 0; } line.push(b); lw += b.w + GX; }
-    if (line.length) lines.push([line, lw]);
-    for (const [ln, w] of lines) { let x = -(w - GX) / 2; for (const b of ln) { b.x = x + b.w / 2; b.y = y; x += b.w + GX; } width = Math.max(width, w); y += ln[0].h + (lines.length > 1 ? 16 : 0); }
-    y += gapY - (lines.length > 1 ? 16 : 0);
+  const sweep = (rows, up, down, times) => {
+    rows.forEach((r) => r.forEach((v, j) => pos.set(v, j)));
+    for (let k = 0; k < times; k++) {
+      const seq = k % 2 ? [...rows.keys()].reverse() : [...rows.keys()];
+      for (const r of seq) { const nb = k % 2 ? down : up; const b = new Map(rows[r].map((v) => { const ns = (nb.get(v) || []).filter((u) => pos.has(u)); return [v, ns.length ? ns.reduce((t, u) => t + pos.get(u), 0) / ns.length : pos.get(v)]; })); rows[r].sort((x, y) => b.get(x) - b.get(y)); rows[r].forEach((v, j) => pos.set(v, j)); }
+    }
   };
-  for (const r of rows) if (r) place(r, GY);
+  const dense = layers.filter(Boolean);
+  const rankLayer = new Map(); dense.forEach((r, k) => r.forEach((v) => rankLayer.set(v, k)));
+  const upL = new Map(), downL = new Map();
+  for (const v of linked) { upL.set(v, [...inn.get(v), ...out.get(v)].filter((u) => rankLayer.get(u) < rankLayer.get(v))); downL.set(v, [...inn.get(v), ...out.get(v)].filter((u) => rankLayer.get(u) > rankLayer.get(v))); }
+  sweep(dense, upL, downL, 4);
+  // Wide layers wrap into several ranks, so the map stays readable on narrow screens.
+  const stageW = svg.getBoundingClientRect().width || 1000;
+  const MAXW = Math.max(380, Math.min(1500, stageW / 0.78)), GX = 26, GY = two ? 84 : 62, rowH = two ? 46 : 30;
+  const ranks = [];
+  for (const r of dense) { let line = [], lw = 0; for (const v of r) { const b = boxes.get(v); if (line.length && lw + b.w > MAXW) { ranks.push(line); line = []; lw = 0; } line.push(v); lw += b.w + GX; } if (line.length) ranks.push(line); }
+  const rank = new Map(); ranks.forEach((r, k) => r.forEach((v) => rank.set(v, k)));
+  // An edge that skips ranks gets a waypoint in each rank it crosses, so it runs between boxes, not behind them.
+  const up = new Map(), down = new Map();
+  const link = (a, b) => { (down.get(a) || down.set(a, []).get(a)).push(b); (up.get(b) || up.set(b, []).get(b)).push(a); };
+  for (const e of view.edges) {
+    e.chain = [];
+    const ra = rank.get(e.a), rb = rank.get(e.b);
+    if (ra == null || rb == null || ra === rb) continue;
+    const lo = Math.min(ra, rb), hi = Math.max(ra, rb), topNode = ra < rb ? e.a : e.b, botNode = ra < rb ? e.b : e.a;
+    let prev = topNode; const ids = [];
+    for (let r = lo + 1; r < hi; r++) { const id = "~" + e.key + "~" + r; boxes.set(id, { i: id, w: 2, h: rowH, x: 0, y: 0, dummy: true }); ranks[r].push(id); rank.set(id, r); link(prev, id); prev = id; ids.push(id); }
+    link(prev, botNode);
+    e.chain = ra < rb ? ids : ids.reverse();
+  }
+  sweep(ranks, up, down, 8);
+  let y = 0;
+  // Waypoints sit close together, so bundles of long edges take little room.
+  const gapAfter = (list, j) => { if (j === list.length - 1) return 0; const a = boxes.get(list[j]).dummy, b = boxes.get(list[j + 1]).dummy; return a && b ? 5 : a || b ? 12 : GX; };
+  const place = (list) => { const w = list.reduce((t, v, j) => t + boxes.get(v).w + gapAfter(list, j), 0); let x = -w / 2; list.forEach((v, j) => { const b = boxes.get(v); b.x = x + b.w / 2; b.y = y; x += b.w + gapAfter(list, j); }); };
+  for (const r of ranks) { place(r); y += rowH + GY; }
   let looseY = null;
-  if (loose.length) { if (linked.length) y += 6; looseY = y - 14; y += 8; place(loose.sort((a, b) => N[a].n.localeCompare(N[b].n)), 0); }
+  if (loose.length) {
+    if (linked.length) y += 6; looseY = y - 14; y += 8;
+    let line = [], lw = 0;
+    for (const v of loose.sort((a, b) => N[a].n.localeCompare(N[b].n))) { const b = boxes.get(v); if (line.length && lw + b.w > MAXW) { place(line); y += rowH + 16; line = []; lw = 0; } line.push(v); lw += b.w + GX; }
+    if (line.length) place(line);
+  }
   return { boxes, back, looseY, hasLinked: linked.length > 0 };
 }
 function metaLine(i) {
@@ -384,23 +449,29 @@ function draw() {
   const maxN = Math.max(1, ...S.view.edges.map((e) => e.n));
   svg.classList.toggle("dense", S.view.edges.length > 45);
   // Spread the ends of edges along each box so arrowheads do not pile up on one point.
-  const ports = new Map();
-  const slot = (box, side, other, key) => { const k = box.i + side; if (!ports.has(k)) ports.set(k, []); ports.get(k).push([other.x, key]); };
-  for (const e of S.view.edges) { const A = L.boxes.get(e.a), B = L.boxes.get(e.b); if (B.y > A.y + A.h - 1) { slot(A, "b", B, e.key); slot(B, "t", A, e.key); } else if (B.y + B.h < A.y + 1) { slot(A, "t", B, e.key); slot(B, "b", A, e.key); } }
-  const off = new Map();
-  for (const [k, list] of ports) { list.sort((p, q) => p[0] - q[0]); const box = L.boxes.get(+k.slice(0, -1)); const span = Math.min(box.w * 0.7, 18 * (list.length - 1)); list.forEach(([, key], j) => off.set(k + key, list.length > 1 ? -span / 2 + (span * j) / (list.length - 1) : 0)); }
+  const ports = new Map(), ends = new Map();
+  const slot = (box, side, otherX, key) => { const k = box.i + "|" + side; if (!ports.has(k)) ports.set(k, []); ports.get(k).push([otherX, key]); };
   for (const e of S.view.edges) {
     const A = L.boxes.get(e.a), B = L.boxes.get(e.b);
-    const g = el("g", { class: "edge" + (e.exact < e.n ? " heur" : ""), "data-key": e.key }, gE);
-    const dn = B.y > A.y + A.h - 1;
-    const d = route(A, B, off.get(e.a + (dn ? "b" : "t") + e.key) || 0, off.get(e.b + (dn ? "t" : "b") + e.key) || 0);
-    el("path", { class: "vis", d: d.path, "stroke-width": (1 + 2.2 * Math.log(1 + e.n) / Math.log(1 + maxN)).toFixed(2), "marker-end": "url(#arrow)" }, g);
+    const first = e.chain.length ? L.boxes.get(e.chain[0]) : B, last = e.chain.length ? L.boxes.get(e.chain[e.chain.length - 1]) : A;
+    if (first.y === A.y && !e.chain.length) continue;
+    const sa = first.y > A.y ? "b" : "t", sb = last.y < B.y ? "t" : "b";
+    slot(A, sa, first.x, e.key + "|a"); slot(B, sb, last.x, e.key + "|b"); ends.set(e.key, [sa, sb]);
+  }
+  const off = new Map();
+  for (const [k, list] of ports) { list.sort((p, q) => p[0] - q[0]); const box = L.boxes.get(isNaN(+k.split("|")[0]) ? k.split("|")[0] : +k.split("|")[0]); const span = Math.min(box.w * 0.7, 18 * (list.length - 1)); list.forEach(([, key], j) => off.set(key, list.length > 1 ? -span / 2 + (span * j) / (list.length - 1) : 0)); }
+  for (const e of S.view.edges) {
+    const A = L.boxes.get(e.a), B = L.boxes.get(e.b);
+    const g = el("g", { class: "edge" + (e.comm ? " comm" : e.guess === e.n ? " guess" : e.exact < e.n ? " heur" : ""), "data-key": e.key, "data-comm": e.comm ? 1 : 0 }, gE);
+    const d = route(A, B, e.chain.map((id) => L.boxes.get(id)), ends.get(e.key), off.get(e.key + "|a") || 0, off.get(e.key + "|b") || 0);
+    el("path", { class: "vis", d: d.path, "stroke-width": e.comm ? 1.8 : (1 + 2.2 * Math.log(1 + e.n) / Math.log(1 + maxN)).toFixed(2), "marker-end": `url(#arrow${e.comm ? "-c" : ""})` }, g);
     el("path", { class: "hit", d: d.path }, g);
-    if (S.level === "repo" || S.view.edges.length <= 14) { const t = el("text", { x: d.mx, y: d.my + 4, "text-anchor": "middle" }, g); t.textContent = e.n; }
+    if (e.comm || S.level === "repo" || S.view.edges.length <= 14) { const t = el("text", { x: d.mx, y: d.my + 4, "text-anchor": "middle" }, g); t.textContent = e.comm ? [...e.chans].join(", ") : e.n; }
     g.addEventListener("click", (ev) => { ev.stopPropagation(); select({ edge: e.key }); });
   }
   if (L.looseY != null && L.hasLinked) { const t = el("text", { class: "group-label", x: 0, y: L.looseY, "text-anchor": "middle" }, gN); t.textContent = "No links in this view"; }
   for (const b of L.boxes.values()) {
+    if (b.dummy) continue;
     const n = N[b.i];
     const g = el("g", { class: "node" + (b.stub ? " stub" : "") , transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
     el("rect", { width: b.w, height: b.h, rx: 5 }, g);
@@ -417,21 +488,28 @@ function draw() {
   mark();
   if (S.mode === "matrix") drawMatrix();
 }
-function route(A, B, o1, o2) {
-  const down = B.y > A.y + A.h - 1, upw = B.y + B.h < A.y + 1;
-  let x1, y1, x2, y2, c1, c2;
-  if (down || upw) {
-    x1 = A.x + o1; y1 = down ? A.y + A.h : A.y; x2 = B.x + o2; y2 = down ? B.y - 2 : B.y + B.h + 2;
-    const k = Math.max(26, Math.abs(y2 - y1) * 0.45) * (down ? 1 : -1);
-    c1 = [x1, y1 + k]; c2 = [x2, y2 - k];
-  } else {
+function route(A, B, chain, sides, o1, o2) {
+  if (!sides) { // same rank: bow over the top
     const right = B.x > A.x;
-    x1 = A.x + (right ? A.w / 2 : -A.w / 2); y1 = A.y + A.h / 2; x2 = B.x + (right ? -B.w / 2 - 2 : B.w / 2 + 2); y2 = B.y + B.h / 2;
+    const x1 = A.x + (right ? A.w / 2 : -A.w / 2), y1 = A.y + A.h / 2, x2 = B.x + (right ? -B.w / 2 - 2 : B.w / 2 + 2), y2 = B.y + B.h / 2;
     const bow = -Math.min(60, 18 + Math.abs(x2 - x1) * 0.12);
-    c1 = [x1 + (x2 - x1) * 0.3, y1 + bow]; c2 = [x1 + (x2 - x1) * 0.7, y2 + bow];
+    const c1 = [x1 + (x2 - x1) * 0.3, y1 + bow], c2 = [x1 + (x2 - x1) * 0.7, y2 + bow];
+    return { path: `M${x1} ${y1}C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${x2} ${y2}`, mx: (x1 + 3 * c1[0] + 3 * c2[0] + x2) / 8, my: (y1 + 3 * c1[1] + 3 * c2[1] + y2) / 8 };
   }
-  const mx = (x1 + 3 * c1[0] + 3 * c2[0] + x2) / 8, my = (y1 + 3 * c1[1] + 3 * c2[1] + y2) / 8;
-  return { path: `M${x1} ${y1}C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${x2} ${y2}`, mx, my };
+  const dir = sides[0] === "b" ? 1 : -1;
+  // Waypoints: leave A, pass straight through each crossed rank, arrive at B.
+  const pts = [[A.x + o1, dir > 0 ? A.y + A.h : A.y]];
+  for (const d of chain) { pts.push([d.x, dir > 0 ? d.y - 4 : d.y + d.h + 4]); pts.push([d.x, dir > 0 ? d.y + d.h + 4 : d.y - 4]); }
+  pts.push([B.x + o2, sides[1] === "t" ? B.y - 2 : B.y + B.h + 2]);
+  let path = `M${pts[0][0]} ${pts[0][1]}`, mx = 0, my = 0;
+  for (let k = 1; k < pts.length; k++) {
+    const [x1, y1] = pts[k - 1], [x2, y2] = pts[k];
+    if (k % 2 === 0) { path += `L${x2} ${y2}`; continue; } // straight through a crossed rank
+    const kk = Math.max(18, Math.abs(y2 - y1) * 0.45) * dir;
+    path += `C${x1} ${y1 + kk} ${x2} ${y2 - kk} ${x2} ${y2}`;
+    if (k === 1) { mx = (x1 + x2) / 2; my = (y1 + y2) / 2; }
+  }
+  return { path, mx, my };
 }
 function mark() {
   const sel = S.sel || {};
@@ -450,7 +528,7 @@ function mark() {
     const k = g.dataset.key, isSel = sel.edge === k, isNear = nearE.has(k);
     g.classList.toggle("sel", isSel); g.classList.toggle("near", isNear);
     g.classList.toggle("dim", focusOn && !isSel && !isNear);
-    g.querySelector(".vis").setAttribute("marker-end", `url(#arrow${isSel ? "-m" : isNear ? "-a" : ""})`);
+    g.querySelector(".vis").setAttribute("marker-end", `url(#arrow${isSel ? "-m" : g.dataset.comm === "1" ? "-c" : isNear ? "-a" : ""})`);
   }
   for (const td of $("matrix").querySelectorAll("td.on")) td.classList.toggle("sel", td.dataset.key === sel.edge);
 }
@@ -499,6 +577,8 @@ function open(i) {
 }
 function goTo(i) {
   const n = N[i];
+  if (n.k === "test") { const fi = FLOWS.findIndex((f) => f.entry === i); if (fi >= 0) return openFlow(fi, null); }
+  if (S.mode === "flows") { if (FLOWS[S.flow] && FLOWS[S.flow].steps.some((s) => s[0] === i)) { S.sel = { node: i }; drawFlow(); side(); const cur = $("flowview").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "center" }); return; } setMode("map"); }
   if (n.k === "repo") return setLevel("repo", null);
   if (n.k === "module") return setLevel("repo", null, { node: i });
   if (n.k === "external") { S.externals = true; return setLevel("repo", null, { node: i }); }
@@ -523,7 +603,9 @@ function crumbs() {
 function tools() {
   const t = $("tools"); t.textContent = "";
   const chip = (label, on, fn, cls) => { const b = document.createElement("button"); b.className = "chip" + (cls ? " " + cls : ""); b.textContent = label; if (on != null) b.setAttribute("aria-pressed", on); b.onclick = fn; t.appendChild(b); };
-  for (const [k, label] of [["calls", "Calls"], ["types", "Type use"], ["inherit", "Inheritance"], ["imports", "Imports"]]) {
+  if (S.mode === "flows") return;
+  for (const [k, label] of [["calls", "Calls"], ["types", "Type use"], ["inherit", "Inheritance"], ["imports", "Imports"], ["channels", "Events and processes"]]) {
+    if (k === "channels" && S.mode === "matrix") continue;
     if (k === "imports" && S.level !== "repo") continue;
     const f = S.filters[S.level];
     chip(label, f[k], () => { f[k] = !f[k]; S.sel = S.sel && S.sel.node != null ? S.sel : null; render(true); });
@@ -535,7 +617,7 @@ function tools() {
 
 /* ---------- inspector ---------- */
 const KIND = { module: "Module", file: "File", type: "Type", callable: "Function", field: "Field", external: "Outside package", repo: "Repository" };
-function kindName(i) { const n = N[i], x = n.x || {}; if (n.k === "type") return x.native_kind || "type"; if (n.k === "callable") return x.native_kind === "constructor" ? "constructor" : x.native_kind === "local_function" ? "local function" : x.native_kind || "function"; if (n.k === "field") return x.native_kind || "field"; return KIND[n.k] || n.k; }
+function kindName(i) { const n = N[i], x = n.x || {}; if (n.k === "test") return "test"; if (n.k === "type") return x.native_kind || "type"; if (n.k === "callable") return x.native_kind === "constructor" ? "constructor" : x.native_kind === "local_function" ? "local function" : x.native_kind || "function"; if (n.k === "field") return x.native_kind || "field"; return KIND[n.k] || n.k; }
 function where(i) { const n = N[i]; if (!n.f && n.k !== "module") return ""; return n.k === "module" ? (n.f || ".") + "/" : n.a && n.k !== "file" ? `${n.f}:${n.a}–${n.b}` : n.f; }
 function qual(i) { const n = N[i]; const u = unitOf[i]; if (isBody(i)) return N[fileOf[i]].n; if (n.k === "module" || u == null) return n.n; if (u === i) return n.n; const parts = []; for (let c = i; c != null && c !== N[u].p; c = N[c].p) parts.unshift(short(c)); return parts.join("."); }
 function listHtml(title, rows, total, empty) {
@@ -555,13 +637,15 @@ function around(i, dir, grain) {
     const me = dir === "out" ? Lk[1] : Lk[2], other = dir === "out" ? Lk[2] : Lk[1];
     if (!insideI(me) || insideI(other)) continue;
     const g = grain(other); if (g == null) continue;
-    let r = acc.get(g); if (!r) acc.set(g, r = { go: g, n: 0, kinds: {}, heur: 0 });
-    r.n += Lk[4]; r.kinds[Lk[0]] = (r.kinds[Lk[0]] || 0) + Lk[4]; if (!Lk[3]) r.heur += Lk[4];
+    let r = acc.get(g); if (!r) acc.set(g, r = { go: g, n: 0, kinds: {}, guess: 0 });
+    const kk = Lk[0] === "communicates" ? "communicates:" + Lk[6].channel : Lk[0];
+    r.n += Lk[4]; r.kinds[kk] = (r.kinds[kk] || 0) + Lk[4]; if (Lk[3] === 0) r.guess += Lk[4];
   }
   const home = N[i].k === "module" ? i : moduleOf[i];
   return [...acc.values()].sort((a, b) => b.n - a.n).map((r) => {
     const ks = Object.entries(r.kinds), far = N[r.go].k !== "module" && N[r.go].k !== "external" && moduleOf[r.go] !== home;
-    const sub = [ks.length > 1 || ks[0][0] !== "calls" ? ks.map(([k, v]) => `${LABEL[k]} ${v}`).join(" · ") : "", far ? "in " + N[moduleOf[r.go]].n : ""].filter(Boolean).join(" · ");
+    const lab = (k) => (k.startsWith("communicates:") ? (k.slice(13) === "event" ? (dir === "out" ? "its event is handled here" : "raises an event handled here") : (dir === "out" ? "launches it" : "launched from here")) : LABEL[k]);
+    const sub = [ks.length > 1 || ks[0][0] !== "calls" ? ks.map(([k, v]) => (k.startsWith("communicates:") ? lab(k) : `${lab(k)} ${v}`)).join(" · ") : "", far ? "in " + N[moduleOf[r.go]].n : "", r.guess ? (r.guess === r.n ? "guessed by name" : `${r.guess} guessed`) : ""].filter(Boolean).join(" · ");
     return { go: r.go, name: grainName(r.go, i), sub, ct: r.n };
   });
 }
@@ -573,13 +657,15 @@ const byMember = (j) => (N[j].k === "external" ? null : N[j].k === "callable" ||
 function side() {
   const s = $("side"), sel = S.sel || {};
   let html = "";
-  if (sel.edge) html = edgeHtml(sel.edge);
+  if (S.mode === "flows") html = sel.node != null ? nodeHtml(sel.node) : flowHtml();
+  else if (sel.edge) html = edgeHtml(sel.edge);
   else if (sel.node != null) html = nodeHtml(sel.node);
   else if (S.level === "repo") html = repoHtml();
   else html = nodeHtml(S.focus, true);
   s.innerHTML = html; s.scrollTop = 0;
   for (const b of s.querySelectorAll("[data-go]")) b.onclick = () => goTo(+b.dataset.go);
   for (const b of s.querySelectorAll("[data-open]")) b.onclick = () => open(+b.dataset.open);
+  for (const b of s.querySelectorAll("[data-flow]")) b.onclick = () => openFlow(+b.dataset.flow, b.dataset.at ? +b.dataset.at : null);
 }
 function repoHtml() {
   const r = D.repos[0] || {};
@@ -587,15 +673,16 @@ function repoHtml() {
   const facts = [[mods, "modules"], [N.filter((n) => n.k === "file").length, "files"], [linesOf(repoIdx).toLocaleString(), "lines"], [N.filter((n) => n.k === "type").length, "types"], [N.filter((n) => n.k === "callable").length, "functions"]];
   const entries = [...entryOf.entries()].filter(([t, e]) => (N[e].x || {}).trigger === "cli").map(([t, e]) => ({ go: t, name: qual(t), sub: isBody(t) ? N[moduleOf[t]].n + " · script" : N[t].f, ct: "" }));
   const ok = D.coverage.filter((c) => c.status === "ok"), na = D.coverage.filter((c) => c.status !== "ok");
-  const stat = ok.map((c) => { const st = c.stats || {}; const tot = st.calls_total || 0; return `<li><div class="plain"><span class="nm">${esc(c.extractor)}<small>${st.files || 0} files · ${tot.toLocaleString()} call sites: ${(st.calls_resolved || 0).toLocaleString()} linked, ${(st.calls_external || 0).toLocaleString()} to outside code, ${(st.calls_unresolved || 0).toLocaleString()} unresolved</small></span><span class="status ok">ran</span></div></li>`; }).join("");
+  const stat = ok.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: ").replace("flows:static", "flows (static)"))}<small>${esc(describe(c))}</small></span><span class="status ok">ran</span></div></li>`).join("");
   const nas = na.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: "))}</span><span class="status na">not analyzed</span></div></li>`).join("");
+  function describe(c) { const st = c.stats || {}; if (c.extractor.startsWith("tree-sitter")) { const tot = st.calls_total || 0; return `${st.files || 0} files · ${tot.toLocaleString()} call sites: ${(st.calls_resolved || 0).toLocaleString()} linked (${(st.calls_by_unique_name || 0).toLocaleString()} by guess), ${(st.calls_external || 0).toLocaleString()} to outside code, ${(st.calls_unresolved || 0).toLocaleString()} unresolved`; } if (c.extractor === "communicates:event") return `${st.events_declared || 0} events declared, ${st.links || 0} raiser-to-handler links, ${st.subscriptions_to_outside_events || 0} subscriptions to outside events`; if (c.extractor === "communicates:process") return `${st.launch_sites || 0} launch sites, ${st.links || 0} linked to a program in this repository`; if (c.extractor === "flows:static") return `${st.flows || 0} flows, ${(st.steps || 0).toLocaleString()} steps`; return ""; }
   return `<div class="eyebrow">Repository</div><h2>${esc(N[repoIdx].n)}</h2>
     <div class="where">${esc(r.url || "")}</div>
     <div class="facts">${facts.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("")}</div>
     <p class="note">Each box is a module. An arrow from A to B means A depends on B, and its number counts the links behind it. Select a box or an arrow for detail.</p>
     ${listHtml("Where execution starts", entries.slice(0, 12), entries.length)}
     <h3>What was analyzed</h3><ul class="list">${stat}${nas}</ul>
-    <p class="note">A channel that was not analyzed may still exist in the code. Events, sockets and pipes between processes are not on this map yet.</p>`;
+    <p class="note">A channel that was not analyzed may still exist in the code. Dependency injection, HTTP, queues, databases and shared files are not on this map yet.</p>`;
 }
 function nodeHtml(i, isFocus) {
   const n = N[i], x = n.x || {};
@@ -642,12 +729,26 @@ function nodeHtml(i, isFocus) {
     h += listHtml("Uses", dep.slice(0, 15), dep.length) + listHtml("Used by", usedBy.slice(0, 15), usedBy.length, "Nothing found. It may be reached through an entry point or a channel that was not analyzed.");
     return h;
   }
+  if (n.k === "test") {
+    const fi = FLOWS.findIndex((f) => f.entry === i);
+    if (fi >= 0 && S.mode !== "flows") h += `<button class="open" data-flow="${fi}">Trace this test</button>`;
+    const callees = around(i, "out", byMember).filter((r) => N[r.go].k === "callable");
+    h += listHtml("Calls", callees.slice(0, 40), callees.length);
+  }
   if (n.k === "callable") {
     const callees = around(i, "out", byMember).filter((r) => N[r.go].k === "callable"), callers = around(i, "in", byMember).filter((r) => N[r.go].k === "callable");
     const types = around(i, "out", byUnit).filter((r) => !callees.some((c) => unitOf[c.go] === r.go) );
-    h += listHtml("Calls", callees.slice(0, 30), callees.length, "No calls into this repository were found.");
-    h += listHtml("Called by", callers.slice(0, 30), callers.length, entryTargets.has(i) ? "Nothing calls it: execution starts here." : "No callers found. It may be called through an event, a delegate or an outside framework.");
+    const bases = basesOf.get(i) || [], impls = implsOf.get(i) || [];
+    const callersOf = (j) => LINKS.filter((l) => l[2] === j && l[0] === "calls").reduce((a, l) => a + l[4], 0);
+    h += listHtml("Calls", callees.slice(0, 30), callees.length, impls.length ? "" : "No calls into this repository were found.");
+    h += listHtml("Implements", bases.map((b) => ({ go: b, name: N[unitOf[b]].n + "." + short(b), sub: `${callersOf(b)} call sites go through it`, ct: "" })), bases.length);
+    h += listHtml("Implemented by", impls.slice(0, 20).map((m) => ({ go: m, name: N[unitOf[m]].n + "." + short(m), sub: moduleOf[m] !== moduleOf[i] ? "in " + N[moduleOf[m]].n : "", ct: "" })), impls.length);
+    h += listHtml("Called by", callers.slice(0, 30), callers.length, entryTargets.has(i) ? "Nothing calls it: execution starts here." : bases.length ? `No direct callers. Callers reach it through ${esc(N[unitOf[bases[0]]].n)}.${esc(short(bases[0]))}, listed above.` : "No callers found. It may be called through an event, a delegate or an outside framework.");
     h += listHtml("Other types it touches", types.slice(0, 12), types.length);
+    const fl = flowsOf.get(i) || [], tests = fl.filter((fi) => FLOWS[fi].kind === "test");
+    if (fl.length) h += `<h3>Flows through here <span>${fl.length} of ${FLOWS.length}</span></h3><ul class="list">${fl.slice(0, 12).map((fi) => `<li><button data-flow="${fi}" data-at="${i}"><span class="nm">${esc(flowName(FLOWS[fi]))}<small>${flowGroup(FLOWS[fi]).replace(/s$/, "").toLowerCase()}</small></span><span class="ct">step ${FLOWS[fi].steps.findIndex((s) => s[0] === i) + 1}</span></button></li>`).join("")}</ul>${fl.length > 12 ? `<div class="more">and ${fl.length - 12} more</div>` : ""}`;
+    else if (FLOWS.length) h += `<h3>Flows through here</h3><p class="note">None. No entry point or test reaches it through calls the indexer could resolve.</p>`;
+    if (fl.length && !tests.length) h += `<p class="note">No test reaches this function.</p>`;
   }
   const src = D.sources[n.f];
   if (src && n.a) {
@@ -662,14 +763,18 @@ function nodeHtml(i, isFocus) {
 function edgeHtml(key) {
   const e = S.view.edges.find((x) => x.key === key);
   if (!e) return repoHtml();
-  const kinds = Object.entries(e.kinds).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ name: LABEL[k], ct: v }));
+  const kinds = Object.entries(e.kinds).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ name: k, ct: v }));
   const pairs = new Map();
-  for (const Lk of e.links) { const k = Lk[1] + ">" + Lk[2] + ">" + Lk[0]; const p = pairs.get(k); if (p) p.n += Lk[4]; else pairs.set(k, { s: Lk[1], d: Lk[2], k: Lk[0], n: Lk[4] }); }
-  const rows = [...pairs.values()].sort((a, b) => b.n - a.n).map((p) => ({ go: p.s, name: `${qual(p.s)} → ${qual(p.d)}`, sub: `${LABEL[p.k]} · ${N[p.s].f || ""}`, ct: p.n > 1 ? "×" + p.n : "" }));
+  for (const Lk of e.links) { const k = Lk[1] + ">" + Lk[2] + ">" + Lk[0]; const p = pairs.get(k); if (p) p.n += Lk[4]; else pairs.set(k, { s: Lk[1], d: Lk[2], k: linkLabel(Lk), n: Lk[4], g: Lk[3] === 0, x: Lk[6] }); }
+  const rows = [...pairs.values()].sort((a, b) => b.n - a.n).map((p) => ({ go: p.s, name: `${qual(p.s)} → ${qual(p.d)}`, sub: [p.x ? "" : p.k, p.x && p.x.channel === "event" ? "event " + String(p.x.address).split(".").pop() : "", p.x && p.x.channel === "process" ? `the command mentions “${p.x.address}”${p.x.pipes ? " and wires up stdin and stdout" : ""}` : "", p.g ? "guessed by name" : "", N[p.s].f || ""].filter(Boolean).join(" · "), ct: p.n > 1 ? "×" + p.n : "" }));
   const heur = e.n - e.exact;
-  return `<div class="eyebrow">Dependency ${heur ? `<span class="tag heur">${heur === e.n ? "heuristic" : "partly heuristic"}</span>` : `<span class="tag">exact</span>`}</div>
+  if (e.comm) return `<div class="eyebrow">Channel <span class="tag chan">${esc([...e.chans].join(", "))}</span><span class="tag heur">${e.guess ? "partly guessed" : "from syntax"}</span></div>
     <h2>${esc(N[e.a].n)} → ${esc(N[e.b].n)}</h2>
-    <p class="note">${esc(N[e.a].n)} depends on ${esc(N[e.b].n)} through ${e.n.toLocaleString()} link${e.n === 1 ? "" : "s"}.${heur ? ` ${heur.toLocaleString()} of them were worked out from syntax alone and can be wrong.` : ""}</p>
+    <p class="note">${e.chans.has("process") ? `Code in ${esc(N[e.a].n)} starts ${esc(N[e.b].n)} as a separate program. No code reference connects them, so a compiler would not report this link.` : `Code in ${esc(N[e.a].n)} raises an event that code in ${esc(N[e.b].n)} handles. ${esc(N[e.a].n)} does not depend on ${esc(N[e.b].n)}: the handler subscribes at run time.`}</p>
+    ${listHtml("Links", rows.slice(0, 60), rows.length)}`;
+  return `<div class="eyebrow">Dependency ${heur ? `<span class="tag heur">${heur === e.n ? "from syntax" : "partly from syntax"}</span>` : `<span class="tag">exact</span>`}</div>
+    <h2>${esc(N[e.a].n)} → ${esc(N[e.b].n)}</h2>
+    <p class="note">${esc(N[e.a].n)} depends on ${esc(N[e.b].n)} through ${e.n.toLocaleString()} link${e.n === 1 ? "" : "s"}.${heur ? ` ${heur.toLocaleString()} of them were worked out from syntax alone and can be wrong.` : ""}${e.guess ? ` ${e.guess.toLocaleString()} of those are guesses: the target is the only function with that name.` : ""}</p>
     ${listHtml("What crosses", kinds, kinds.length)}
     ${listHtml("Links", rows.slice(0, 60), rows.length)}`;
 }
@@ -677,9 +782,9 @@ function edgeHtml(key) {
 /* ---------- matrix ---------- */
 function drawMatrix() {
   const m = $("matrix");
-  const ids = [...L.boxes.values()].filter((b) => !b.stub).sort((a, b) => b.y - a.y || a.x - b.x).map((b) => b.i);
+  const ids = [...L.boxes.values()].filter((b) => !b.stub && !b.dummy).sort((a, b) => b.y - a.y || a.x - b.x).map((b) => b.i);
   const at = new Map(ids.map((i, j) => [i, j]));
-  const cell = new Map(S.view.edges.filter((e) => at.has(e.a) && at.has(e.b)).map((e) => [e.a + ">" + e.b, e]));
+  const cell = new Map(S.view.edges.filter((e) => !e.comm && at.has(e.a) && at.has(e.b)).map((e) => [e.a + ">" + e.b, e]));
   let backs = 0;
   let h = `<table class="matrix"><thead><tr><th></th>${ids.map((i) => `<th class="col"><div>${esc(short(i))}</div></th>`).join("")}</tr></thead><tbody>`;
   ids.forEach((r, ri) => {
@@ -694,22 +799,59 @@ function drawMatrix() {
     h += "</tr>";
   });
   h += "</tbody></table>";
-  const note = `<p class="matrix-note">Each row depends on the columns it has numbers in. Rows are ordered so that dependencies sit below the diagonal. ${backs ? `${backs} cell${backs === 1 ? "" : "s"} above it, tinted, point back up the order: those are cycles.` : "Nothing sits above it, so there are no cycles at this level."}</p>`;
+  const note = `<p class="matrix-note">Each row depends on the columns it has numbers in. Rows are ordered so that dependencies sit below the diagonal. ${backs ? `${backs} cell${backs === 1 ? "" : "s"} above it, tinted, point back up the order: those are cycles.` : "Nothing sits above it, so there are no cycles at this level."} Events and process launches are left out, because they are not compile-time dependencies.</p>`;
   m.innerHTML = note + h;
   for (const td of m.querySelectorAll("td.on")) td.onclick = () => select({ edge: td.dataset.key });
   mark();
 }
+/* ---------- flows ---------- */
+const flowGroup = (f) => (f.kind === "test" ? "Tests" : f.detail === "lifecycle" ? "Framework callbacks" : "Program starts");
+const flowName = (f) => (f.kind === "test" ? f.name : qual(f.entry) + (isBody(f.entry) ? "" : "  ·  " + N[moduleOf[f.entry]].n));
+function drawFlow() {
+  const v = $("flowview");
+  if (!FLOWS.length) { v.innerHTML = `<p class="note">No flows were found. A flow needs an entry point or a test to start from.</p>`; return; }
+  const f = FLOWS[S.flow];
+  const groups = {};
+  FLOWS.forEach((x, i) => (groups[flowGroup(x)] = groups[flowGroup(x)] || []).push(i));
+  const opts = ["Tests", "Program starts", "Framework callbacks"].filter((g) => groups[g]).map((g) => `<optgroup label="${g} (${groups[g].length})">${groups[g].map((i) => `<option value="${i}"${i === S.flow ? " selected" : ""}>${esc(flowName(FLOWS[i]))} (${FLOWS[i].steps.length})</option>`).join("")}</optgroup>`).join("");
+  const mods = [...new Set(f.steps.map((s) => moduleOf[s[0]]))];
+  let prev = null;
+  const rows = f.steps.map((s, k) => {
+    const [i, d, via] = s, m = moduleOf[i], showMod = m !== prev; prev = m;
+    const cur = S.sel && S.sel.node === i;
+    return `<li><button data-step="${i}" style="--d:${d}"${cur ? ` aria-current="true"` : ""}><span class="seq">${k + 1}</span><span class="ind"></span><span class="dot lang-dot" style="background:var(--${langOf(i) === "python" ? "py" : langOf(i) === "csharp" ? "cs" : "edge"})"></span><span>${esc(N[i].k === "test" ? N[i].n : qual(i))}</span>${via === "event" || via === "process" || via === "dispatch" ? `<span class="via">${via === "event" ? "through an event" : via === "process" ? "starts a program" : "one implementation"}</span>` : ""}${showMod ? `<span class="mod">${esc(N[m].n)}</span>` : ""}</button></li>`;
+  }).join("");
+  v.innerHTML = `<div class="flow-head"><select id="flow-pick" aria-label="Flow">${opts}</select><span>${f.steps.length} steps across ${mods.length} module${mods.length === 1 ? "" : "s"}${f.truncated ? ", cut short" : ""}</span></div><ol class="steps" id="steps">${rows}</ol>`;
+  $("flow-pick").onchange = (e) => { S.flow = +e.target.value; S.sel = null; drawFlow(); side(); v.scrollTop = 0; };
+  for (const b of v.querySelectorAll("[data-step]")) b.onclick = () => { S.sel = { node: +b.dataset.step }; for (const o of v.querySelectorAll("[aria-current]")) o.removeAttribute("aria-current"); b.setAttribute("aria-current", "true"); side(); };
+  $("steps").onkeydown = (e) => { if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return; const bs = [...v.querySelectorAll("[data-step]")], at = bs.indexOf(document.activeElement); const n = bs[at + (e.key === "ArrowDown" ? 1 : -1)]; if (n) { e.preventDefault(); n.focus(); n.click(); } };
+}
+function flowHtml() {
+  const f = FLOWS[S.flow]; if (!f) return "";
+  const mods = [...new Set(f.steps.map((s) => moduleOf[s[0]]))].map((m) => ({ go: m, name: N[m].n, ct: f.steps.filter((s) => moduleOf[s[0]] === m).length + " steps" }));
+  return `<div class="eyebrow">Flow <span class="tag">${f.kind === "test" ? "test" : esc(f.detail || "entry")}</span><span class="tag heur">static</span></div><h2>${esc(f.kind === "test" ? f.name : qual(f.entry))}</h2>
+    <div class="where">${esc(where(f.entry))}</div>
+    <p class="note">Everything this ${f.kind === "test" ? "test" : "entry point"} can reach, in the order the code is written. Each function appears once, at its first call. Indentation is call depth. Select a step to read its source here.</p>
+    ${f.truncated ? `<p class="note">The walk stopped at ${f.steps.length} steps or 8 calls deep, so the deepest parts are missing.</p>` : ""}
+    <p class="note">This is what can run, not what did run. Branches not taken at run time are still listed, and calls the indexer could not resolve are missing.</p>
+    ${listHtml("Modules it passes through", mods, mods.length)}`;
+}
+function openFlow(fi, node) { S.flow = fi; S.sel = node != null ? { node } : null; setMode("flows"); const cur = $("flowview").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "center" }); }
 function setMode(mode) {
   S.mode = mode;
-  $("tab-map").setAttribute("aria-pressed", mode === "map"); $("tab-matrix").setAttribute("aria-pressed", mode === "matrix");
-  $("map").toggleAttribute("hidden", mode !== "map"); $("matrix").hidden = mode !== "matrix"; $("hint").hidden = mode !== "map";
-  tools(); if (mode === "matrix") drawMatrix(); else requestAnimationFrame(fit);
+  for (const m of ["map", "matrix", "flows"]) $("tab-" + m).setAttribute("aria-pressed", mode === m);
+  $("map").toggleAttribute("hidden", mode !== "map"); $("matrix").hidden = mode !== "matrix"; $("flowview").hidden = mode !== "flows"; $("hint").hidden = mode !== "map";
+  $("crumbs").style.visibility = mode === "flows" ? "hidden" : "";
+  tools();
+  if (mode === "matrix") drawMatrix(); else if (mode === "flows") drawFlow(); else requestAnimationFrame(fit);
+  side();
 }
 $("tab-map").onclick = () => setMode("map"); $("tab-matrix").onclick = () => setMode("matrix");
+$("tab-flows").onclick = () => { if (S.sel && S.sel.edge) S.sel = null; setMode("flows"); };
 
 /* ---------- search ---------- */
-const searchable = N.filter((n) => ["module", "file", "type", "callable", "field"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
-const rank = { module: 0, type: 1, file: 2, callable: 3, field: 4 };
+const searchable = N.filter((n) => ["module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
+const rank = { module: 0, type: 1, file: 2, callable: 3, field: 4, test: 5 };
 $("q").addEventListener("input", () => {
   const q = $("q").value.trim().toLowerCase(), box = $("results");
   if (q.length < 2) { box.hidden = true; return; }
@@ -719,12 +861,12 @@ $("q").addEventListener("input", () => {
     const hay = (n.i.split(":").slice(2).join(":") + " " + (n.f || "")).toLowerCase(), name = n.n.toLowerCase();
     if (!words.every((w) => hay.includes(w))) continue;
     const last = words[words.length - 1];
-    hits.push([(name === last ? 0 : name.startsWith(last) ? 1 : name.includes(last) ? 2 : 3) * 10 + rank[n.k], n.i.length, n]);
+    hits.push([(name === q ? -2 : name.includes(q) && words.length > 1 ? -1 : name === last ? 0 : name.startsWith(last) ? 1 : name.includes(last) ? 2 : 3) * 10 + rank[n.k], n.i.length, n]);
   }
   hits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   box.innerHTML = hits.slice(0, 14).map(([, , n]) => `<button data-go="${n.idx}"><b>${esc(n.k === "callable" || n.k === "field" ? qual(n.idx) : n.n)}</b><span>${esc(kindName(n.idx))} · ${esc(where(n.idx))}</span></button>`).join("") || `<button disabled><span>Nothing matches “${esc(q)}”.</span></button>`;
   box.hidden = false;
-  for (const b of box.querySelectorAll("[data-go]")) b.onclick = () => { box.hidden = true; $("q").value = ""; if (S.mode !== "map") setMode("map"); goTo(+b.dataset.go); };
+  for (const b of box.querySelectorAll("[data-go]")) b.onclick = () => { box.hidden = true; $("q").value = ""; if (S.mode === "matrix") setMode("map"); goTo(+b.dataset.go); };
 });
 $("q").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("results").hidden = true; $("q").blur(); } if (e.key === "Enter") { const b = $("results").querySelector("[data-go]"); if (b) b.click(); } });
 document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });

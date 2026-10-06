@@ -32,6 +32,8 @@ def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
     con.execute(f"DELETE FROM edges WHERE layer = 'fact' AND src_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM ancestry WHERE node_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM search WHERE node_id IN ({ids})", (repo_id,))
+    con.execute(f"DELETE FROM flow_steps WHERE flow_id IN (SELECT id FROM flows WHERE entry_id IN ({ids}))", (repo_id,))
+    con.execute(f"DELETE FROM flows WHERE layer = 'fact' AND entry_id IN ({ids})", (repo_id,))
     con.execute("DELETE FROM nodes WHERE repo_id = ? AND layer = 'fact'", (repo_id,))
     con.execute("DELETE FROM extractor_coverage WHERE repo_id = ?", (repo_id,))
 
@@ -68,6 +70,16 @@ def write_calls(con, rows: Iterable[tuple], commit: str | None) -> None:
         " VALUES (?,?,?,?,?,?,?)",
         [(s, d, disp, prec, line, line, commit) for (s, d, disp, prec, line) in rows],
     )
+
+
+def write_flows(con, repo_id: str, flows, steps) -> None:
+    con.executemany(
+        "INSERT OR REPLACE INTO flows (id, name, origin, entry_id, weight, group_id, layer, source, attrs)"
+        " VALUES (?,?,?,?,?,?,?,?,?)",
+        [(f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], json.dumps(f[8])) for f in flows])
+    con.executemany(
+        "INSERT INTO flow_steps (flow_id, seq, depth, callable_id, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
+        steps)
 
 
 def write_coverage(con, repo_id, extractor, version, status, commit, stats: dict) -> None:

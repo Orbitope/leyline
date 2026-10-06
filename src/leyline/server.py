@@ -68,6 +68,32 @@ def source(node_id: str, max_lines: int = 200) -> dict:
     return query.source(_db(), node_id, max_lines)
 
 
+@mcp.tool()
+def flows(kind: Optional[str] = None, through: Optional[str] = None) -> dict:
+    """List flows: paths walked from each entry point and each test. `kind` is entry or test.
+    `through` keeps only flows that pass a given node id."""
+    return query.flows(_db(), kind, through)
+
+
+@mcp.tool()
+def flow(flow_id: str, max_steps: int = 400) -> dict:
+    """One flow step by step, in source order, with call depth. Ids come from `flows`."""
+    return query.flow(_db(), flow_id, max_steps)
+
+
+@mcp.tool()
+def trace(from_id: str, to_id: str) -> dict:
+    """The shortest chain of calls and channels from one function to another."""
+    return query.trace(_db(), from_id, to_id)
+
+
+@mcp.tool()
+def impact(node_id: str, max_depth: int = 6) -> dict:
+    """What can reach a node: callers grouped by module and the flows that pass through it.
+    Call this before proposing a change to the node."""
+    return query.impact(_db(), node_id, max_depth)
+
+
 def main() -> None:
     mcp.run()
 
