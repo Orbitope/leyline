@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from importlib import resources
@@ -80,6 +81,54 @@ def write_flows(con, repo_id: str, flows, steps) -> None:
     con.executemany(
         "INSERT INTO flow_steps (flow_id, seq, depth, callable_id, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
         steps)
+
+
+def evidence_hash(con, evidence: Iterable[str]) -> str:
+    """A hash of the files the evidence nodes live in. It changes when any of them is edited."""
+    parts = []
+    for node_id in sorted(set(evidence)):
+        row = con.execute(
+            "SELECT COALESCE(f.content_hash, n.content_hash, '') FROM nodes n"
+            " LEFT JOIN ancestry a ON a.node_id = n.id LEFT JOIN nodes f ON f.id = a.file_id WHERE n.id = ?",
+            (node_id,)).fetchone()
+        parts.append(f"{node_id}:{row[0] if row else 'missing'}")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def annotate(con, node_id: str, key: str, value: str, layer: str, source: str,
+             confidence: float | None, evidence: list[str]) -> dict:
+    """Write one inferred or intent statement about a node, replacing an earlier one with the same key."""
+    if layer not in ("inferred", "intent"):
+        raise ValueError("layer must be 'inferred' or 'intent'; facts come only from extractors")
+    if con.execute("SELECT 1 FROM nodes WHERE id = ?", (node_id,)).fetchone() is None:
+        raise ValueError(f"no node with id {node_id!r}")
+    if layer == "inferred":
+        if not evidence:
+            raise ValueError("an inferred annotation needs evidence: the node ids it is based on")
+        missing = [e for e in evidence if con.execute("SELECT 1 FROM nodes WHERE id = ?", (e,)).fetchone() is None]
+        if missing:
+            raise ValueError(f"evidence ids not in the store: {missing[:3]}")
+    with con:
+        con.execute("DELETE FROM annotations WHERE node_id = ? AND key = ? AND layer = ?", (node_id, key, layer))
+        con.execute(
+            "INSERT INTO annotations (node_id, key, value, layer, source, confidence, evidence, evidence_hash, stale)"
+            " VALUES (?,?,?,?,?,?,?,?,0)",
+            (node_id, key, value, layer, source, confidence, json.dumps(evidence or []),
+             evidence_hash(con, evidence or [])))
+    return {"node_id": node_id, "key": key, "layer": layer, "evidence": len(evidence or [])}
+
+
+def refresh_stale(con) -> int:
+    """Flag annotations whose evidence changed or whose node is gone. Returns how many are stale."""
+    stale = 0
+    with con:
+        for a in con.execute("SELECT id, node_id, evidence, evidence_hash FROM annotations").fetchall():
+            gone = con.execute("SELECT 1 FROM nodes WHERE id = ?", (a["node_id"],)).fetchone() is None
+            changed = evidence_hash(con, json.loads(a["evidence"] or "[]")) != a["evidence_hash"]
+            flag = 1 if gone or (changed and a["evidence"] not in (None, "[]")) else 0
+            con.execute("UPDATE annotations SET stale = ? WHERE id = ?", (flag, a["id"]))
+            stale += flag
+    return stale
 
 
 def write_coverage(con, repo_id, extractor, version, status, commit, stats: dict) -> None:

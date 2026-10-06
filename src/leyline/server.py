@@ -1,4 +1,4 @@
-"""MCP server over a Leyline store. Read-only in this version."""
+"""MCP server over a Leyline store. Reads everything; writes only annotations."""
 
 from __future__ import annotations
 
@@ -92,6 +92,16 @@ def impact(node_id: str, max_depth: int = 6) -> dict:
     """What can reach a node: callers grouped by module and the flows that pass through it.
     Call this before proposing a change to the node."""
     return query.impact(_db(), node_id, max_depth)
+
+
+@mcp.tool()
+def annotate(node_id: str, key: str, value: str, evidence: Optional[list[str]] = None,
+             confidence: Optional[float] = None, layer: str = "inferred") -> dict:
+    """Record a statement about a node: for example key `name` or `responsibility` on a system, or
+    `summary` on a module. `layer` is `inferred` (yours; must list the node ids it is based on as
+    `evidence`, with a confidence from 0 to 1) or `intent` (the user's own statement). The store flags
+    an inferred annotation as stale when the files behind its evidence change. Facts cannot be written."""
+    return query.annotate(_db(), node_id, key, value, evidence, confidence, layer, "mcp")
 
 
 def main() -> None:

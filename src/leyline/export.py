@@ -42,6 +42,9 @@ def graph(con, with_sources: bool = True) -> dict:
         if r["span_start"]:
             n["a"], n["b"] = r["span_start"], r["span_end"]
         x = {k: attrs[k] for k in KEEP_ATTRS if attrs.get(k) not in (None, "", [], False)}
+        if r["kind"] == "system":
+            x.update({k: attrs[k] for k in ("members", "cohesion", "top") if k in attrs})
+            x["layer"] = r["layer"]
         if x:
             n["x"] = x
         nodes.append(n)
@@ -74,6 +77,11 @@ def graph(con, with_sources: bool = True) -> dict:
     coverage = [{"repo": r["repo_id"], "extractor": r["extractor"], "status": r["status"],
                  "stats": json.loads(r["stats"]) if r["stats"] else {}}
                 for r in con.execute("SELECT * FROM extractor_coverage ORDER BY extractor")]
+    notes: dict[int, dict] = {}
+    for a in con.execute("SELECT * FROM annotations ORDER BY layer = 'intent'"):
+        if a["node_id"] in index:
+            notes.setdefault(index[a["node_id"]], {})[a["key"]] = {
+                "v": a["value"], "layer": a["layer"], "c": a["confidence"], "stale": bool(a["stale"])}
     repos = [{"id": r["id"], "commit": r["commit_sha"], **(json.loads(r["attrs"]) if r["attrs"] else {})}
              for r in rows if r["kind"] == "repo"]
     sources = {}
@@ -84,7 +92,7 @@ def graph(con, with_sources: bool = True) -> dict:
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 if p.is_file():
                     sources[r["path"]] = p.read_text(errors="replace")
-    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows,
+    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes,
             "coverage": coverage, "sources": sources}
 
 

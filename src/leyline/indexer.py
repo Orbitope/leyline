@@ -800,8 +800,16 @@ def _normalize(parts: tuple) -> list[str]:
 
 
 def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None) -> dict:
+    from . import cluster
+
     con = store.connect(db_path)
     try:
-        return Indexer(root, repo_id).run(con)
+        ix = Indexer(root, repo_id)
+        stats = ix.run(con)
+        stats["systems"] = cluster.propose(con, ix.repo)
+        with con:
+            store.rebuild_derived(con)
+        stats["stale_annotations"] = store.refresh_stale(con)
+        return stats
     finally:
         con.close()

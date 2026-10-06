@@ -250,7 +250,7 @@ const moduleOf = N.map((n, i) => up(i, (m) => m.k === "module"));
 const fileOf = N.map((n, i) => up(i, (m) => m.k === "file"));
 // The unit a node belongs to: its outermost type, or its file when it sits loose in one.
 const unitOf = N.map((n, i) => {
-  if (n.k === "module" || n.k === "repo" || n.k === "external") return null;
+  if (n.k === "module" || n.k === "repo" || n.k === "external" || n.k === "system") return null;
   if (n.k === "file") return i;
   let c = i;
   while (N[c].p != null && N[N[c].p].k !== "file") c = N[c].p;
@@ -273,6 +273,12 @@ const LABEL = { calls: "calls", uses_type: "uses type", instantiates: "creates",
 const LINKS = [];
 for (const [k, s, d, x, extra] of D.edges) if (GROUPS[k]) LINKS.push([k, s, d, x, 1, 0, k === "communicates" ? extra : null]);
 for (const [s, d, n, line, x] of D.calls) LINKS.push(["calls", s, d, x, n, line, null]);
+// Systems: groups of units inside a module. A note named "name" renames a proposed system.
+const NOTES = D.notes || {};
+const sysOf = new Map(), unitsOf = new Map();
+for (const [k, s, d] of D.edges) if (k === "groups") { sysOf.set(d, s); (unitsOf.get(s) || unitsOf.set(s, []).get(s)).push(d); }
+N.forEach((n, i) => { if (n.k === "system" && NOTES[i] && NOTES[i].name) { n.proposed = n.n; n.n = NOTES[i].name.v; } });
+const grp = (u) => (sysOf.has(u) ? sysOf.get(u) : u);
 // Interface and base methods, and the methods that implement them.
 const implsOf = new Map(), basesOf = new Map();
 for (const [k, s, d] of D.edges) if (k === "overrides") { (implsOf.get(d) || implsOf.set(d, []).get(d)).push(s); (basesOf.get(s) || basesOf.set(s, []).get(s)).push(d); }
@@ -300,9 +306,10 @@ const langOf = (i) => { const n = N[i]; if (n.l) return n.l; if (n.k === "module
 const S = { level: "repo", focus: null, sel: null, hover: null, mode: "map", externals: false, view: null,
   filters: { repo: { calls: true, types: true, inherit: true, imports: true, channels: true },
              module: { calls: true, types: false, inherit: true, imports: false, channels: true },
+             system: { calls: true, types: false, inherit: true, imports: false, channels: true },
              unit: { calls: true, types: false, inherit: true, imports: false, channels: true } },
   flow: 0,
-  outside: { module: false, unit: true } };
+  outside: { module: false, system: true, unit: true } };
 const cam = { x: 0, y: 0, k: 1 };
 
 /* ---------- build the graph for the current level ---------- */
@@ -310,14 +317,17 @@ function rep(i) {
   const n = N[i];
   if (S.level === "repo") return n.k === "external" ? (S.externals ? i : null) : n.k === "module" ? i : moduleOf[i];
   if (n.k === "external") return null;
-  if (S.level === "module") return moduleOf[i] === S.focus ? unitOf[i] : (n.k === "module" ? i : moduleOf[i]);
+  if (n.k === "system") return null;
+  if (S.level === "module") return moduleOf[i] === S.focus ? (unitOf[i] == null ? null : grp(unitOf[i])) : (n.k === "module" ? i : moduleOf[i]);
+  if (S.level === "system") { const u = unitOf[i]; if (u == null) return n.k === "module" ? i : null; return sysOf.get(u) === S.focus ? u : moduleOf[i] === moduleOf[S.focus] ? grp(u) : moduleOf[i]; }
   const u = unitOf[i];
   if (u === S.focus) { const m = memberOf(i); return m != null && N[m].k !== "field" && N[m].k !== "entry_point" ? m : null; }
   return u;
 }
 function inside(i) {
   if (S.level === "repo") return N[i].k === "module" || N[i].k === "external";
-  if (S.level === "module") return moduleOf[i] === S.focus && unitOf[i] === i;
+  if (S.level === "module") return N[i].k === "system" ? N[i].p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i);
+  if (S.level === "system") return unitOf[i] === i && sysOf.get(i) === S.focus;
   return unitOf[i] === S.focus && memberOf(i) === i;
 }
 function buildView() {
@@ -342,7 +352,8 @@ function buildView() {
   }
   const nodes = [];
   if (S.level === "repo") { N.forEach((n, i) => { if (n.k === "module" || (S.externals && n.k === "external" && used.has(i))) nodes.push(i); }); }
-  else if (S.level === "module") { N.forEach((n, i) => { if (moduleOf[i] === S.focus && unitOf[i] === i && (n.k === "type" || kids[i].some((c) => N[c].k === "callable"))) nodes.push(i); }); }
+  else if (S.level === "module") { N.forEach((n, i) => { if (n.k === "system" ? n.p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i) && (n.k === "type" || kids[i].some((c) => N[c].k === "callable"))) nodes.push(i); }); }
+  else if (S.level === "system") { for (const u of unitsOf.get(S.focus) || []) nodes.push(u); }
   else { for (const c of kids[S.focus]) if (N[c].k === "callable" || N[c].k === "type") nodes.push(c); }
   const own = new Set(nodes);
   // Outside nodes: keep the heaviest, so a busy type does not drown the picture.
@@ -359,14 +370,14 @@ function buildView() {
 const meter = document.createElement("canvas").getContext("2d");
 function measure(text, font) { meter.font = font; return meter.measureText(text).width; }
 function layout(view) {
-  const two = S.level === "repo";
+  const two = S.level === "repo" || (S.level === "module" && view.nodes.some((i) => N[i].k === "system"));
   const boxes = new Map();
-  const homeMod = S.level === "module" ? S.focus : S.level === "unit" ? moduleOf[S.focus] : null;
+  const homeMod = S.level === "module" ? S.focus : S.level === "repo" ? null : moduleOf[S.focus];
   for (const i of view.nodes) {
     const far = homeMod != null && N[i].k !== "module" && moduleOf[i] !== homeMod;
     const label = (far ? N[moduleOf[i]].n + " / " : "") + short(i);
     const meta = two ? metaLine(i) : "";
-    const w = Math.max(measure(label, "500 12.5px IBM Plex Mono, monospace") + 34, two ? measure(meta, "11px IBM Plex Sans, sans-serif") + 24 : 0, 70);
+    const w = Math.max(measure(label, "500 12.5px IBM Plex Mono, monospace") + 34, two ? measure(meta, "11px IBM Plex Sans, sans-serif") + 32 : 0, 70);
     boxes.set(i, { i, w: Math.ceil(w), h: two ? 46 : 30, label, meta, x: 0, y: 0, stub: !view.own.has(i) });
   }
   const out = new Map(), inn = new Map();
@@ -435,6 +446,8 @@ function layout(view) {
 function metaLine(i) {
   const n = N[i];
   if (n.k === "external") return (n.x && (n.x.category || n.x.ecosystem)) || "external";
+  if (n.k === "system") { const us = unitsOf.get(i) || []; return `${us.length} types and files · ${us.reduce((t, u) => t + count(u, "callable"), 0)} functions`; }
+  if (n.k !== "module") return kindName(i);
   const f = kids[i].filter((c) => N[c].k === "file").length;
   return `${f} file${f === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines`;
 }
@@ -569,6 +582,7 @@ function setLevel(level, focus, sel) { S.level = level; S.focus = focus; S.sel =
 function open(i) {
   const n = N[i];
   if (n.k === "module") return setLevel("module", i);
+  if (n.k === "system") return setLevel("system", i);
   if (n.k === "external") return;
   const u = unitOf[i];
   if (u === i) return setLevel("unit", i);
@@ -583,14 +597,17 @@ function goTo(i) {
   if (n.k === "module") return setLevel("repo", null, { node: i });
   if (n.k === "external") { S.externals = true; return setLevel("repo", null, { node: i }); }
   if (n.k === "entry_point") { const t = D.edges.find((e) => e[0] === "exposes" && e[1] === i); if (t) return goTo(t[2]); }
+  if (n.k === "system") return setLevel("module", n.p, { node: i });
   const u = unitOf[i];
-  if (u === i) return setLevel("module", moduleOf[i], { node: i });
+  if (u === i) return sysOf.has(i) ? setLevel("system", sysOf.get(i), { node: i }) : setLevel("module", moduleOf[i], { node: i });
   return setLevel("unit", u, { node: i });
 }
 function render(refit) { crumbs(); tools(); draw(); side(); if (refit) requestAnimationFrame(fit); }
 function crumbs() {
   const parts = [[repoIdx, () => setLevel("repo", null)]];
   if (S.level !== "repo") { const m = S.level === "module" ? S.focus : moduleOf[S.focus]; parts.push([m, () => setLevel("module", m)]); }
+  const sy = S.level === "system" ? S.focus : S.level === "unit" ? sysOf.get(S.focus) : null;
+  if (sy != null) parts.push([sy, () => setLevel("system", sy)]);
   if (S.level === "unit") parts.push([S.focus, () => setLevel("unit", S.focus)]);
   const c = $("crumbs"); c.textContent = "";
   parts.forEach(([i, fn], j) => {
@@ -611,12 +628,12 @@ function tools() {
     chip(label, f[k], () => { f[k] = !f[k]; S.sel = S.sel && S.sel.node != null ? S.sel : null; render(true); });
   }
   if (S.level === "repo") chip("Outside packages", S.externals, () => { S.externals = !S.externals; render(true); });
-  else chip(S.level === "module" ? "Other modules" : "Outside callers", S.outside[S.level], () => { S.outside[S.level] = !S.outside[S.level]; render(true); });
+  else chip(S.level === "module" ? "Other modules" : S.level === "system" ? "Neighbouring systems" : "Outside callers", S.outside[S.level], () => { S.outside[S.level] = !S.outside[S.level]; render(true); });
   if (S.mode === "map") { chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom"); }
 }
 
 /* ---------- inspector ---------- */
-const KIND = { module: "Module", file: "File", type: "Type", callable: "Function", field: "Field", external: "Outside package", repo: "Repository" };
+const KIND = { system: "System", module: "Module", file: "File", type: "Type", callable: "Function", field: "Field", external: "Outside package", repo: "Repository" };
 function kindName(i) { const n = N[i], x = n.x || {}; if (n.k === "test") return "test"; if (n.k === "type") return x.native_kind || "type"; if (n.k === "callable") return x.native_kind === "constructor" ? "constructor" : x.native_kind === "local_function" ? "local function" : x.native_kind || "function"; if (n.k === "field") return x.native_kind || "field"; return KIND[n.k] || n.k; }
 function where(i) { const n = N[i]; if (!n.f && n.k !== "module") return ""; return n.k === "module" ? (n.f || ".") + "/" : n.a && n.k !== "file" ? `${n.f}:${n.a}–${n.b}` : n.f; }
 function qual(i) { const n = N[i]; const u = unitOf[i]; if (isBody(i)) return N[fileOf[i]].n; if (n.k === "module" || u == null) return n.n; if (u === i) return n.n; const parts = []; for (let c = i; c != null && c !== N[u].p; c = N[c].p) parts.unshift(short(c)); return parts.join("."); }
@@ -630,7 +647,7 @@ function listHtml(title, rows, total, empty) {
 }
 // Links touching a node (or anything inside it), grouped by the other end at a chosen grain.
 function around(i, dir, grain) {
-  const insideI = (j) => { for (let c = j; c != null; c = N[c].p) if (c === i) return true; return false; };
+  const insideI = N[i].k === "system" ? (j) => unitOf[j] != null && sysOf.get(unitOf[j]) === i : (j) => { for (let c = j; c != null; c = N[c].p) if (c === i) return true; return false; };
   const acc = new Map();
   for (const Lk of LINKS) {
     if (GROUPS[Lk[0]] === "imports" && N[i].k !== "module" && N[i].k !== "file") continue;
@@ -649,9 +666,14 @@ function around(i, dir, grain) {
     return { go: r.go, name: grainName(r.go, i), sub, ct: r.n };
   });
 }
-const grainName = (g, from) => { const n = N[g]; if (isBody(g)) return N[fileOf[g]].n + " (script body)"; if (n.k === "module" || n.k === "external" || unitOf[g] === g) return n.n; return (unitOf[g] !== unitOf[from] ? N[unitOf[g]].n + "." : "") + short(g); };
+const grainName = (g, from) => { const n = N[g]; if (n.k === "system") return n.n; if (isBody(g)) return N[fileOf[g]].n + " (script body)"; if (n.k === "module" || n.k === "external" || unitOf[g] === g) return n.n; return (unitOf[g] !== unitOf[from] ? N[unitOf[g]].n + "." : "") + short(g); };
 const byModule = (j) => (N[j].k === "external" ? j : N[j].k === "module" ? j : moduleOf[j]);
 const byUnit = (j) => (N[j].k === "external" ? null : unitOf[j]);
+const bySystem = (home) => (j) => (N[j].k === "external" || unitOf[j] == null ? null : moduleOf[j] === home ? grp(unitOf[j]) : moduleOf[j]);
+function notesHtml(i) {
+  const ns = NOTES[i]; if (!ns) return "";
+  return Object.entries(ns).filter(([k]) => k !== "name").map(([k, a]) => `<p class="note"><span class="tag${a.layer === "inferred" ? " heur" : ""}">${a.layer === "inferred" ? "inferred" : "yours"}${a.c != null ? " · " + Math.round(a.c * 100) + "%" : ""}</span>${a.stale ? ` <span class="tag entry">stale: the code changed</span>` : ""} ${esc(a.v)}</p>`).join("");
+}
 const byMember = (j) => (N[j].k === "external" ? null : N[j].k === "callable" || N[j].k === "type" ? j : memberOf(j) ?? unitOf[j]);
 
 function side() {
@@ -673,13 +695,14 @@ function repoHtml() {
   const facts = [[mods, "modules"], [N.filter((n) => n.k === "file").length, "files"], [linesOf(repoIdx).toLocaleString(), "lines"], [N.filter((n) => n.k === "type").length, "types"], [N.filter((n) => n.k === "callable").length, "functions"]];
   const entries = [...entryOf.entries()].filter(([t, e]) => (N[e].x || {}).trigger === "cli").map(([t, e]) => ({ go: t, name: qual(t), sub: isBody(t) ? N[moduleOf[t]].n + " · script" : N[t].f, ct: "" }));
   const ok = D.coverage.filter((c) => c.status === "ok"), na = D.coverage.filter((c) => c.status !== "ok");
-  const stat = ok.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: ").replace("flows:static", "flows (static)"))}<small>${esc(describe(c))}</small></span><span class="status ok">ran</span></div></li>`).join("");
+  const stat = ok.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: ").replace("flows:static", "flows (static)").replace("systems:louvain", "systems (clustering)"))}<small>${esc(describe(c))}</small></span><span class="status ok">ran</span></div></li>`).join("");
   const nas = na.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: "))}</span><span class="status na">not analyzed</span></div></li>`).join("");
-  function describe(c) { const st = c.stats || {}; if (c.extractor.startsWith("tree-sitter")) { const tot = st.calls_total || 0; return `${st.files || 0} files · ${tot.toLocaleString()} call sites: ${(st.calls_resolved || 0).toLocaleString()} linked (${(st.calls_by_unique_name || 0).toLocaleString()} by guess), ${(st.calls_external || 0).toLocaleString()} to outside code, ${(st.calls_unresolved || 0).toLocaleString()} unresolved`; } if (c.extractor === "communicates:event") return `${st.events_declared || 0} events declared, ${st.links || 0} raiser-to-handler links, ${st.subscriptions_to_outside_events || 0} subscriptions to outside events`; if (c.extractor === "communicates:process") return `${st.launch_sites || 0} launch sites, ${st.links || 0} linked to a program in this repository`; if (c.extractor === "flows:static") return `${st.flows || 0} flows, ${(st.steps || 0).toLocaleString()} steps`; return ""; }
+  function describe(c) { const st = c.stats || {}; if (c.extractor.startsWith("tree-sitter")) { const tot = st.calls_total || 0; return `${st.files || 0} files · ${tot.toLocaleString()} call sites: ${(st.calls_resolved || 0).toLocaleString()} linked (${(st.calls_by_unique_name || 0).toLocaleString()} by guess), ${(st.calls_external || 0).toLocaleString()} to outside code, ${(st.calls_unresolved || 0).toLocaleString()} unresolved`; } if (c.extractor === "communicates:event") return `${st.events_declared || 0} events declared, ${st.links || 0} raiser-to-handler links, ${st.subscriptions_to_outside_events || 0} subscriptions to outside events`; if (c.extractor === "communicates:process") return `${st.launch_sites || 0} launch sites, ${st.links || 0} linked to a program in this repository`; if (c.extractor === "systems:louvain") return Object.entries(st).map(([m, v]) => `${m}: ${v.systems ? v.systems + " groups" : "no clear split"}`).join(" · ") || "no module is large enough to split"; if (c.extractor === "flows:static") return `${st.flows || 0} flows, ${(st.steps || 0).toLocaleString()} steps`; return ""; }
   return `<div class="eyebrow">Repository</div><h2>${esc(N[repoIdx].n)}</h2>
     <div class="where">${esc(r.url || "")}</div>
     <div class="facts">${facts.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("")}</div>
     <p class="note">Each box is a module. An arrow from A to B means A depends on B, and its number counts the links behind it. Select a box or an arrow for detail.</p>
+    ${listHtml("Systems", N.map((m, k) => k).filter((k) => N[k].k === "system").map((k) => ({ go: k, name: N[k].n, sub: "in " + N[N[k].p].n + (NOTES[k] && NOTES[k].responsibility ? " · " + NOTES[k].responsibility.v : ""), ct: (unitsOf.get(k) || []).length + " types" })), N.filter((m) => m.k === "system").length)}
     ${listHtml("Where execution starts", entries.slice(0, 12), entries.length)}
     <h3>What was analyzed</h3><ul class="list">${stat}${nas}</ul>
     <p class="note">A channel that was not analyzed may still exist in the code. Dependency injection, HTTP, queues, databases and shared files are not on this map yet.</p>`;
@@ -696,6 +719,19 @@ function nodeHtml(i, isFocus) {
   if (x.signature && n.k !== "file") h += `<div class="sig">${esc(x.signature)}</div>`;
   if (n.k === "field" && x.declared_type) h += `<div class="sig">${esc(x.declared_type)} ${esc(n.n)}</div>`;
   const w = where(i); if (w) h += `<div class="where">${esc(w)}${x.also_in ? " and " + x.also_in.map(esc).join(", ") : ""}</div>`;
+  h += notesHtml(i);
+  if (n.k === "system") {
+    const us = (unitsOf.get(i) || []).slice().sort((a, b) => count(b, "callable") - count(a, "callable")), x2 = n.x || {};
+    const named = NOTES[i] && NOTES[i].name;
+    h = `<div class="eyebrow">System <span class="tag heur">${named ? "grouped by clustering, named by inference" : "proposed by clustering"}</span></div><h2>${esc(n.n)}</h2><div class="where">in ${esc(N[n.p].n)}</div>` + notesHtml(i);
+    h += `<div class="facts"><div><b>${us.length}</b><span>types and files</span></div><div><b>${us.reduce((t, u) => t + count(u, "callable"), 0)}</b><span>functions</span></div><div><b>${x2.cohesion != null ? Math.round(x2.cohesion * 100) + "%" : "–"}</b><span>of its links stay inside</span></div></div>`;
+    if (!isFocus) h += `<button class="open" data-open="${i}">Open system</button>`;
+    if (!named) h += `<p class="note">This group has no real name yet. It is called after its most connected type.</p>`;
+    const dep = around(i, "out", bySystem(n.p)), usedBy = around(i, "in", bySystem(n.p));
+    h += listHtml("Members", us.slice(0, 40).map((u) => ({ go: u, name: N[u].n, ct: count(u, "callable") + " fn" })), us.length);
+    h += listHtml("Depends on", dep.slice(0, 12), dep.length) + listHtml("Used by", usedBy.slice(0, 12), usedBy.length);
+    return h;
+  }
   if (n.k === "external") return h + `<p class="note">Code from outside this repository${x.version ? `, version ${esc(x.version)}` : ""}.</p>` + listHtml("Used by", around(i, "in", byModule), around(i, "in", byModule).length);
   if (n.k === "module") {
     const types = []; const st = [...kids[i]]; while (st.length) { const c = st.pop(); if (N[c].k === "type" && unitOf[c] === c) types.push(c); else if (N[c].k === "file") st.push(...kids[c]); }
@@ -707,6 +743,8 @@ function nodeHtml(i, isFocus) {
     h += listHtml("Depends on", dep.slice(0, 12), dep.length, "Nothing in this repository.");
     h += listHtml("Used by", usedBy.slice(0, 12), usedBy.length, "Nothing in this repository.");
     const eps = [...entryTargets].filter((t) => moduleOf[t] === i).map((t) => ({ go: t, name: qual(t), sub: N[t].f, ct: (N[entryOf.get(t)].x || {}).trigger }));
+    const syss = N.map((m, k) => k).filter((k) => N[k].k === "system" && N[k].p === i);
+    h += listHtml("Systems", syss.map((k) => ({ go: k, name: N[k].n, sub: NOTES[k] && NOTES[k].responsibility ? NOTES[k].responsibility.v : "", ct: (unitsOf.get(k) || []).length + " types" })), syss.length);
     h += listHtml("Entry points", eps.slice(0, 10), eps.length);
     h += listHtml("Public types", pub.slice(0, 40).map((t) => ({ go: t, name: N[t].n, ct: (N[t].x || {}).native_kind })), pub.length);
     if (types.length > pub.length) h += `<p class="note">${types.length - pub.length} more types are internal to this module.</p>`;
@@ -717,6 +755,7 @@ function nodeHtml(i, isFocus) {
   if (isUnit || n.k === "type") {
     const fns = kids[i].filter((c) => N[c].k === "callable"), fields = kids[i].filter((c) => N[c].k === "field"), nested = kids[i].filter((c) => N[c].k === "type");
     if (isUnit && !isFocus) h += `<button class="open" data-open="${i}">Open ${n.k === "file" ? "file" : "type"}</button>`;
+    if (sysOf.has(i)) h += listHtml("Part of", [{ go: sysOf.get(i), name: N[sysOf.get(i)].n, ct: "system" }], 1);
     const bases = LINKS.filter((l) => l[1] === i && GROUPS[l[0]] === "inherit").map((l) => ({ go: l[2], name: N[l[2]].n, ct: LABEL[l[0]] }));
     const subs = LINKS.filter((l) => l[2] === i && GROUPS[l[0]] === "inherit").map((l) => ({ go: l[1], name: N[l[1]].n, ct: l[0] === "implements" ? "implements this" : "extends this" }));
     h += listHtml("Built on", bases, bases.length) + listHtml("Built on by", subs.slice(0, 20), subs.length);
@@ -850,8 +889,8 @@ $("tab-map").onclick = () => setMode("map"); $("tab-matrix").onclick = () => set
 $("tab-flows").onclick = () => { if (S.sel && S.sel.edge) S.sel = null; setMode("flows"); };
 
 /* ---------- search ---------- */
-const searchable = N.filter((n) => ["module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
-const rank = { module: 0, type: 1, file: 2, callable: 3, field: 4, test: 5 };
+const searchable = N.filter((n) => ["system", "module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
+const rank = { system: 0, module: 0, type: 1, file: 2, callable: 3, field: 4, test: 5 };
 $("q").addEventListener("input", () => {
   const q = $("q").value.trim().toLowerCase(), box = $("results");
   if (q.length < 2) { box.hidden = true; return; }

@@ -7,8 +7,8 @@ Every record belongs to one of three layers:
 - **inferred**: written by an LLM, with evidence and a confidence
 - **intent**: written by you, such as boundaries and rules
 
-This version builds the fact layer and serves it. The inferred and intent layers have tables but
-nothing writes to them yet.
+This version builds the fact layer, proposes systems by clustering, and accepts inferred and intent
+annotations through `annotate`. Rules and change proposals have tables but no code yet.
 
 ## Use
 
@@ -27,11 +27,12 @@ To use it from an MCP client, register the command `leyline --db <path> serve`.
 
 ## The map
 
-`view` and `export` open the same page. It has three zoom levels:
+`view` and `export` open the same page. It has up to four zoom levels:
 
 1. **Modules.** One box per module, with an arrow for each dependency and a count of the links behind it.
-2. **Inside a module.** One box per type, or per file where functions sit outside any type.
-3. **Inside a type or file.** One box per function, with the outside callers and callees around it.
+2. **Inside a module.** One box per system where the module was split, otherwise one per type or file.
+3. **Inside a system.** One box per type, or per file where functions sit outside any type.
+4. **Inside a type or file.** One box per function, with the outside callers and callees around it.
 
 Select a box or an arrow to see detail in the side panel: members, callers, callees, the links that
 make up an arrow, and source text. Double-click a box to open it. Solid arrows are exact, dashed
@@ -57,6 +58,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `flow(flow_id)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |
 | `impact(node_id)` | What can reach a node: callers by module and the flows through it |
+| `annotate(node_id, key, value, evidence, confidence, layer)` | Write an inferred or intent statement about a node |
 
 ## What is indexed
 
@@ -99,6 +101,21 @@ moves, and carries a `channel` and an `address`.
   file names it, the edge is a `guess`.
 
 Dependency injection, HTTP, queues, databases and shared files are recorded as `not_analyzed`.
+
+### Systems
+
+A module with at least 12 types is split into systems by Louvain community detection over calls,
+type use and inheritance between its types. A module that does not split cleanly (modularity under
+0.3) is left whole. Each proposed system is named after its most connected type until something
+better is written with `annotate`, using the keys `name` and `responsibility`.
+
+The grouping is deterministic. The names are not: they belong to the inferred layer.
+
+### Annotations
+
+`annotate` is the only write. An inferred annotation must list the node ids it is based on; the
+store hashes the files behind them and marks the annotation stale when any of those files changes.
+An intent annotation is the user's own statement and needs no evidence. Facts cannot be written.
 
 ### Flows
 

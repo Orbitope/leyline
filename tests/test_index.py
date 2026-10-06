@@ -200,3 +200,35 @@ def test_implementations_link_to_interface_methods(con):
     # And changing the implementation is reported as reaching the interface's callers.
     i = query.impact(con, "fx:csharp:Lib::Lib.Circle.Area()")
     assert i["reached_by"] >= 2 and i["flows_through"]["total"] >= 1
+
+
+def test_systems_are_proposed_and_named_through_annotations(tmp_path):
+    import shutil
+
+    from leyline import cluster, query
+
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE, work)
+    db = tmp_path / "s.db"
+    index(work, db, "fx")
+    c = store.connect(db)
+    # The fixture is too small to split by default; lower the bar to exercise the path.
+    made = cluster.propose(c, "fx", min_units=2, min_modularity=0.0)
+    assert made["Lib"]["systems"] >= 1
+    systems = query.systems_list(c)
+    lib = next(s for s in systems if s["module"] == "Lib")
+    assert not lib["named"] and len(lib["members"]) >= 2
+    evidence = [r[0] for r in c.execute("SELECT dst_id FROM edges WHERE kind = 'groups' AND src_id = ?", (lib["id"],))]
+
+    assert "error" in query.annotate(c, lib["id"], "name", "Shapes", [], 0.8)            # no evidence
+    assert "error" in query.annotate(c, lib["id"], "name", "Shapes", evidence, 0.8, "fact")
+    assert "error" not in query.annotate(c, lib["id"], "name", "Shapes", evidence, 0.8)
+    named = next(s for s in query.systems_list(c) if s["id"] == lib["id"])
+    assert named["name"] == "Shapes" and named["named"] and not named["stale"]
+
+    # Editing a file behind the evidence marks the annotation stale on the next index.
+    target = work / "Lib" / "Shapes.cs"
+    target.write_text(target.read_text() + "\n// changed\n")
+    c.close()
+    stats = index(work, db, "fx")
+    assert stats["stale_annotations"] >= 1

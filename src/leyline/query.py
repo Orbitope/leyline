@@ -85,16 +85,51 @@ def overview(con) -> dict:
     coverage = [{"repo": r["repo_id"], "extractor": r["extractor"], "status": r["status"],
                  **({"stats": json.loads(r["stats"])} if r["stats"] and r["stats"] != "{}" else {})}
                 for r in con.execute("SELECT * FROM extractor_coverage ORDER BY repo_id, status, extractor")]
-    systems = [_brief(r) for r in con.execute("SELECT * FROM nodes WHERE kind = 'system'")]
+    systems = systems_list(con)
     return {
         "repos": repos,
         "systems": systems,
         "module_edges": module_edges(con),
         "externals": externals,
         "coverage": coverage,
-        "notes": ([] if systems else ["No systems yet: clustering and naming have not been run."])
+        "notes": ([] if systems else ["No systems: no module is large enough to be split."])
         + ["Call, type-use and inheritance edges are heuristic (tree-sitter). Import and containment edges are exact."],
     }
+
+
+def _notes(con, node_id: str) -> dict:
+    """Annotations on a node, keyed by annotation key. Intent wins over inferred."""
+    out: dict = {}
+    for a in con.execute("SELECT * FROM annotations WHERE node_id = ? ORDER BY layer = 'intent'", (node_id,)):
+        out[a["key"]] = {"value": a["value"], "layer": a["layer"], "confidence": a["confidence"],
+                         "stale": bool(a["stale"]), "source": a["source"]}
+    return out
+
+
+def systems_list(con) -> list[dict]:
+    """Proposed and confirmed systems, with their members."""
+    out = []
+    for s in con.execute("SELECT * FROM nodes WHERE kind = 'system' ORDER BY parent_id, id"):
+        a, notes = _attrs(s), _notes(con, s["id"])
+        members = [r[0] for r in con.execute(
+            "SELECT n.name FROM edges e JOIN nodes n ON n.id = e.dst_id WHERE e.kind = 'groups' AND e.src_id = ?"
+            " ORDER BY n.name", (s["id"],))]
+        out.append({"id": s["id"], "name": notes.get("name", {}).get("value", s["name"]),
+                    "named": "name" in notes, "module": (s["parent_id"] or "").split(":module:")[-1],
+                    "layer": s["layer"], "responsibility": notes.get("responsibility", {}).get("value"),
+                    "cohesion": a.get("cohesion"), "members": members,
+                    "stale": any(n["stale"] for n in notes.values())})
+    return out
+
+
+def annotate(con, node_id: str, key: str, value: str, evidence: Optional[list[str]] = None,
+             confidence: Optional[float] = None, layer: str = "inferred", source: str = "mcp") -> dict:
+    """Record an inferred or intent statement about a node. Inferred statements must cite evidence."""
+    from . import store
+    try:
+        return store.annotate(con, node_id, key, value, layer, source, confidence, evidence or [])
+    except ValueError as exc:
+        return {"error": str(exc)}
 
 
 def _edge_rows(con, node_id: str, direction: str, limit: int) -> dict:
@@ -138,6 +173,10 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
         return {"error": f"No node with id {node_id!r}.", "did_you_mean": hits}
     out = _brief(row)
     out.update({k: v for k, v in _attrs(row).items() if k not in out and v not in (None, [], "")})
+    if row["kind"] == "system":
+        out["members"] = [_brief(r) for r in con.execute(
+            "SELECT n.* FROM edges e JOIN nodes n ON n.id = e.dst_id WHERE e.kind = 'groups' AND e.src_id = ?"
+            " ORDER BY n.name", (node_id,))]
     out["layer"], out["source"] = row["layer"], row["source"]
     if row["parent_id"]:
         p = _node(con, row["parent_id"])
