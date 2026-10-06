@@ -40,4 +40,6 @@ often the user wants that, or a narrower tour that starts where it ends.
 - Do not restate the orientation tour. Link to where it left off.
 - State blind spots: if the path crosses a process, an event or a file, say the link is not in the
   type system and name both sides.
+- Before saving, check every sentence against the source you read. A wrong sentence in a tour does
+  more harm than a missing stop, because the reader trusts the order.
 - Keep sentences plain. No stop needs more than four.
