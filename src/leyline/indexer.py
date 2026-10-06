@@ -66,6 +66,11 @@ def _module_for(path: str, module_dirs: set[str]) -> str:
     return d  # no marker: the file's own directory ("" is the repo root)
 
 
+def _arity(type_id: str) -> int:
+    tail = type_id.rsplit("`", 1)
+    return int(tail[1]) if len(tail) == 2 and tail[1].isdigit() else 0
+
+
 class Indexer:
     def __init__(self, root: str | Path, repo_id: Optional[str] = None):
         self.root = Path(root).resolve()
@@ -223,6 +228,16 @@ class Indexer:
                     self.py_modules[d] = fid
             for n in res.nodes:
                 self.file_of[n.id] = fid
+        # A package under a source root (src/flask) is imported by its own name (flask), not by its path.
+        py_files = {self.nodes[f].path: f for f in self.results if self.file_lang[f] == "python"}
+        dirs_with_init = {p.rsplit("/", 1)[0] if "/" in p else "" for p in py_files if p.endswith("__init__.py")}
+        for path, fid in sorted(py_files.items()):
+            parts = path.split("/")
+            start = len(parts) - 1
+            while start > 0 and "/".join(parts[:start]) in dirs_with_init:
+                start -= 1
+            if 0 < start < len(parts) - 1:
+                self.py_modules.setdefault(module_path("/".join(parts[start:])), fid)
 
     # -- imports -------------------------------------------------------------
     def _resolve_imports(self) -> None:
@@ -246,13 +261,18 @@ class Indexer:
                         ns = imp.target.rsplit(".", 1)[0]
                         mods = self.ns_modules.get(ns)
                     self.cs_usings[fid].add(ns)
+                    vis = self._visible(fid)
+                    declared = bool(mods)
+                    if mods and vis is not None:
+                        # A namespace can be declared by several projects; only the referenced ones count.
+                        mods = {m for m in mods if m in vis or m == self.nodes[fid].parent_id}
                     if mods:
                         for m in sorted(mods):
                             key = (fid, m, ns)
                             if key not in seen and m != self.nodes[fid].parent_id:
                                 seen.add(key)
                                 self.edges.append(Edge("imports", fid, m, "exact", {"namespace": ns}))
-                    else:
+                    elif not declared:
                         xid = self._external("dotnet", imp.target if not (imp.is_static or imp.alias) else ns,
                                              {"category": "namespace"})
                         if (fid, xid) not in seen:
@@ -289,6 +309,72 @@ class Indexer:
             return self.py_modules[sibling]
         return None
 
+    def _py_export(self, target_fid: str, symbol: str, depth: int = 0) -> Optional[str]:
+        """The node a module exposes under a name, following re-exports (`from .app import Flask`)."""
+        cand = f"{self.repo}:python:{module_path(self.nodes[target_fid].path)}.{symbol}"
+        if cand in self.nodes:
+            return cand
+        if depth < 5 and symbol in self.py_names.get(target_fid, {}):
+            nxt, sub = self.py_names[target_fid][symbol]
+            if sub is not None:
+                return self._py_export(nxt, sub, depth + 1)
+        return None
+
+    def _py_fixtures(self) -> None:
+        """pytest passes a test each fixture named by its parameters. Link them, and give the
+        parameter the fixture's return type so calls on it can be resolved."""
+        self.py_param_type: dict[tuple, str] = {}
+        by_file: dict[str, dict[str, Node]] = defaultdict(dict)
+        for n in self.nodes.values():
+            if n.language == "python" and n.kind == "callable" and n.attrs.get("is_fixture"):
+                by_file[self.file_of[n.id]][n.name] = n
+        if not by_file:
+            return
+        conftests = {self.nodes[f].path.rsplit("/", 1)[0] if "/" in self.nodes[f].path else "": f
+                     for f in by_file if self.nodes[f].path.rsplit("/", 1)[-1] == "conftest.py"}
+
+        def find(fid: str, name: str, skip: Optional[str] = None) -> Optional[Node]:
+            hit = by_file.get(fid, {}).get(name)
+            if hit is not None and hit.id != skip:
+                return hit
+            d = self.nodes[fid].path.rsplit("/", 1)[0] if "/" in self.nodes[fid].path else ""
+            while True:
+                hit = by_file.get(conftests.get(d, ""), {}).get(name)
+                if hit is not None and hit.id != skip:
+                    return hit
+                if not d:
+                    return None
+                d = d.rsplit("/", 1)[0] if "/" in d else ""
+        memo: dict[str, Optional[str]] = {}
+
+        def returns(fx: Node, depth: int = 0) -> Optional[str]:
+            if fx.id in memo or depth > 4:
+                return memo.get(fx.id)
+            memo[fx.id] = None
+            out = None
+            if fx.attrs.get("returns"):
+                out = self._type("python", fx.attrs["returns"], fx.id)
+            elif fx.attrs.get("returns_call"):
+                recv, method = fx.attrs["returns_call"]
+                dep = find(self.file_of[fx.id], recv, fx.id) if recv in (fx.attrs.get("params") or []) else None
+                owner = returns(dep, depth + 1) if dep is not None else None
+                for m in self._methods(owner, method, 0) if owner else []:
+                    if m.attrs.get("returns"):
+                        out = self._type("python", m.attrs["returns"], m.id)
+            memo[fx.id] = out
+            return out
+        for n in list(self.nodes.values()):
+            if n.language != "python" or n.kind != "callable" or not (n.attrs.get("is_test") or n.attrs.get("is_fixture")):
+                continue
+            for pname in n.attrs.get("params") or []:
+                fx = find(self.file_of[n.id], pname, n.id)
+                if fx is None:
+                    continue
+                self.calls.append((n.id, fx.id, "fixture", "heuristic", n.span_start))
+                tid = returns(fx)
+                if tid:
+                    self.py_param_type[(n.id, pname)] = tid
+
     # -- visibility ----------------------------------------------------------
     def _visible(self, fid: str) -> Optional[set]:
         """Modules whose symbols a file can reference, or None when that is not knowable."""
@@ -322,16 +408,25 @@ class Indexer:
     # -- types ---------------------------------------------------------------
     def _type(self, lang: str, name: str, from_id: Optional[str]) -> Optional[str]:
         fid = self.file_of.get(from_id or "")
-        if lang == "csharp" and fid:
-            name = self.cs_alias[fid].get(name, name)
+        arity = None
+        if lang == "csharp":
+            name, tick, count = name.partition("`")
+            arity = int(count) if tick and count.isdigit() else 0
+            if fid:
+                name = self.cs_alias[fid].get(name, name)
         if lang == "python" and fid and name in self.py_names[fid]:
             target, symbol = self.py_names[fid][name]
-            cand = f"{self.repo}:python:{module_path(self.nodes[target].path)}.{symbol or name}"
-            if cand in self.nodes and self.nodes[cand].kind == "type":
+            cand = self._py_export(target, symbol or name)
+            if cand and self.nodes[cand].kind == "type":
                 return cand
         cands = self.types_by_name.get((lang, name), [])
         if lang == "csharp" and fid:
             cands = [c for c in cands if self._can_see(fid, c)]
+        if arity is not None and cands:
+            # Foo and Foo<T> are different types. A plain name falls back to the generic one, because
+            # some callers (a receiver's inferred type) do not carry the type arguments.
+            exact = [c for c in cands if _arity(c) == arity]
+            cands = exact or ([] if arity else cands)
         if not cands:
             return None
         if len(cands) == 1:
@@ -341,7 +436,11 @@ class Indexer:
             if same_file:
                 return same_file[0]
             if lang == "csharp":
-                here = set(self.results[fid].declares) | self.cs_usings[fid]
+                here = set(self.cs_usings[fid])
+                for ns in self.results[fid].declares:  # a namespace sees its parents
+                    parts = ns.split(".")
+                    here.update(".".join(parts[:i]) for i in range(1, len(parts) + 1))
+                here.add("")
                 visible = [c for c in cands if self.nodes[c].attrs.get("namespace") in here]
                 if len(visible) >= 1:
                     return visible[0]
@@ -394,6 +493,33 @@ class Indexer:
 
     def _pick(self, cands: list[Node], argc: int) -> list[Node]:
         fit = [c for c in cands if c.attrs.get("argc_min", 0) <= argc <= c.attrs.get("argc_max", 99)]
+        call = getattr(self, "_call", None)
+        if len(fit) > 1 and call is not None:
+            # Several overloads take this many arguments. Narrow by what the call site shows.
+            if call.targs:
+                fit = [c for c in fit if c.attrs.get("generic_arity") == call.targs] or fit
+            hints = call.args
+
+            def possible(c: Node) -> bool:
+                want = c.attrs.get("delegate_arity") or []
+                for i, h in enumerate(hints):
+                    if isinstance(h, int) and not isinstance(h, bool) and i < len(want):
+                        if want[i] == -2 or (want[i] >= 0 and want[i] != h):
+                            return False  # a lambda passed where no delegate of that shape is taken
+                return True
+
+            def score(c: Node) -> int:
+                want, types = c.attrs.get("delegate_arity") or [], c.attrs.get("param_types") or []
+                n = 0
+                for i, h in enumerate(hints):
+                    if isinstance(h, int) and i < len(want) and want[i] == h:
+                        n += 1
+                    elif isinstance(h, str) and i < len(types) and types[i] == h:
+                        n += 1
+                return n
+            fit = [c for c in fit if possible(c)] or fit
+            best = max(score(c) for c in fit)
+            fit = [c for c in fit if score(c) == best]
         return fit or cands
 
     def _methods(self, type_id: Optional[str], name: str, argc: int) -> list[Node]:
@@ -424,6 +550,15 @@ class Indexer:
             if names and not ids:
                 return None, True  # every field of that name has an external type
             return None, False
+        if lang == "python":
+            # A parameter filled by a pytest fixture, seen from the test or a function nested in it.
+            cur = call.src_id
+            while cur in self.nodes and self.nodes[cur].kind == "callable":
+                if (cur, r) in self.py_param_type:
+                    return self.py_param_type[(cur, r)], True
+                if r in (self.nodes[cur].attrs.get("params") or []):
+                    break
+                cur = self.nodes[cur].parent_id
         # A bare identifier: a field of the enclosing type chain, or a type name (static call).
         for t in self._chain(call.enclosing_type):
             tn = self.field_type.get(t, {}).get(r)
@@ -441,6 +576,7 @@ class Indexer:
         # Names seen on receivers of a known outside type (List.Add, dict.get). A call to such a
         # name on a receiver of unknown type is never guessed.
         self.outside_names: set = set()
+        self._py_fixtures()
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
             for call in res.calls:
@@ -457,6 +593,7 @@ class Indexer:
             for call in res.calls:
                 st["calls_total"] += 1
                 self._guessed = False
+                self._call = call
                 targets = self._resolve_call(lang, fid, call)
                 if targets is None:
                     st["calls_external"] += 1
@@ -502,10 +639,9 @@ class Indexer:
             return [] if defined_here else None
         if lang == "python" and call.receiver not in ("this",) and call.receiver in self.py_names[fid]:
             target, symbol = self.py_names[fid][call.receiver]
-            mod = module_path(self.nodes[target].path)
             if symbol is None:
-                return self._py_symbol(f"{self.repo}:python:{mod}.{name}", argc)
-            tid = f"{self.repo}:python:{mod}.{symbol}"
+                return self._py_symbol(self._py_export(target, name) or "", argc)
+            tid = self._py_export(target, symbol)
             found = self._methods(tid, name, argc)
             return found or ([] if defined_here else None)
         tid, known = self._receiver_type(lang, call)
@@ -750,8 +886,7 @@ class Indexer:
             return hit
         if call.name in self.py_names[fid]:
             target, symbol = self.py_names[fid][call.name]
-            tmod = module_path(self.nodes[target].path)
-            return self._py_symbol(f"{self.repo}:python:{tmod}.{symbol or call.name}", call.argc)
+            return self._py_symbol(self._py_export(target, symbol or call.name) or "", call.argc)
         if f"{self.repo}:python:{mod}.{call.name}" in self.nodes:
             return None  # a class with no __init__
         return None  # builtins and star imports

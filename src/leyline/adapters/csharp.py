@@ -32,6 +32,53 @@ CALLABLE_DECLS = {
 }
 ACCESS = ("public", "private", "protected", "internal")
 LAMBDAS = ("lambda_expression", "anonymous_method_expression")
+
+
+LITERALS = {"integer_literal": "int", "real_literal": "double", "boolean_literal": "bool", "character_literal": "char",
+            "string_literal": "string", "verbatim_string_literal": "string", "raw_string_literal": "string",
+            "interpolated_string_expression": "string"}
+
+
+def _arg_hint(arg, scope: dict):
+    """What is known about one argument: a lambda's parameter count (int), a type name (str), or None."""
+    if arg.type == "lambda_expression":
+        params = arg.child_by_field_name("parameters")
+        if params is None:
+            return None
+        if params.type in ("identifier", "implicit_parameter"):
+            return 1
+        return len([c for c in params.children if c.type in ("parameter", "identifier", "implicit_parameter")])
+    if arg.type in LITERALS:
+        return LITERALS[arg.type]
+    if arg.type == "object_creation_expression":
+        names = _type_names(arg.child_by_field_name("type"))
+        return names[0].split("`")[0] if names else None
+    if arg.type == "identifier":
+        known = scope.get(_text(arg))
+        return known.split("`")[0] if known else None
+    return None
+
+
+PREDEFINED = {"int", "long", "short", "byte", "uint", "ulong", "float", "double", "decimal", "bool", "string",
+              "char", "TimeSpan", "DateTime", "DateTimeOffset", "Guid", "CancellationToken"}
+
+
+def _delegate_arity(ptype: str) -> int:
+    """How many arguments a delegate-typed parameter takes; -1 when the type is not a known delegate."""
+    head, _, rest = ptype.rstrip("?").partition("<")
+    head = head.rsplit(".", 1)[-1]
+    if head in PREDEFINED:
+        return -2  # certainly not a delegate: a lambda cannot be passed here
+    if head not in ("Action", "Func", "Predicate", "Comparison"):
+        return -1
+    if not rest:
+        return 0
+    depth, n = 0, 1
+    for ch in rest[:-1]:
+        depth += ch == "<"
+        depth -= ch == ">"
+        n += ch == "," and depth == 0
+    return {"Action": n, "Func": n - 1, "Predicate": 1, "Comparison": 2}[head]
 STRINGS = ("string_literal", "verbatim_string_literal", "raw_string_literal", "interpolated_string_expression")
 # Calls of the shape Run("name", () => { ... }) declare a test inline.
 TEST_RUNNERS = {"Run", "Test", "It", "Case", "Scenario", "Fact", "Check", "Spec"}
@@ -74,6 +121,13 @@ def _type_names(node) -> list[str]:
         n = stack.pop()
         if n.type == "identifier":
             out.append(_text(n))
+        elif n.type == "generic_name":
+            # Foo<A, B> is written Foo`2, so it is told apart from a non-generic Foo.
+            targs = _child(n, "type_argument_list")
+            count = len([c for c in targs.named_children]) if targs is not None else 0
+            out.append(f"{_text(_child(n, 'identifier'))}`{count}" if count else _text(_child(n, "identifier")))
+            if targs is not None:
+                stack.extend(reversed(targs.children))
         elif n.type == "qualified_name":
             # A.B.C: the last segment is the type; keep it only.
             ids = [c for c in n.children if c.type in ("identifier", "generic_name")]
@@ -99,7 +153,7 @@ def _elem_type(node) -> Optional[str]:
     text = _text(node)
     if text.rstrip("?").endswith("]"):
         return names[0]
-    if len(names) == 2 and names[0] in SEQUENCES:
+    if len(names) == 2 and names[0].split("`")[0] in SEQUENCES:
         return names[1]
     return None
 
@@ -160,6 +214,9 @@ class _Walker:
                     self.res.declares.append(full)
                 body = c.child_by_field_name("body") or c
                 self._members(body, full, parent_id, type_id, full)
+                if t == "file_scoped_namespace_declaration":
+                    # `namespace X;` covers the rest of the file: what follows is a sibling, not a child.
+                    ns = qual = full
             elif t in TYPE_DECLS:
                 self._type(c, ns, parent_id, qual)
             elif t == "declaration_list":
@@ -291,7 +348,7 @@ class _Walker:
         plist = [p for p in params.children if p.type == "parameter"] if params is not None else []
         for p in plist:
             ptype = p.child_by_field_name("type")
-            ptypes.append(_squash(_text(ptype)))
+            ptypes.append(_squash(_text(ptype)).replace(", ", ","))
             pname = _text(p.child_by_field_name("name"))
             outer = _outer_type(ptype)
             if pname and outer:
@@ -304,7 +361,10 @@ class _Walker:
             if not has_default and not is_params:
                 required += 1
         sep = "/" if t == "local_function_statement" else "."
-        cid = f"{parent_id}{sep}{name}({','.join(ptypes)})"
+        tparams = _child(node, "type_parameter_list")
+        generic_arity = len([c for c in tparams.children if c.type == "type_parameter"]) if tparams is not None else 0
+        # M(int) and M<T>(int) are different methods, so the count of type parameters is part of the id.
+        cid = f"{parent_id}{sep}{name}{'`' + str(generic_arity) if generic_arity else ''}({','.join(ptypes)})"
         mods = _modifiers(node)
         body = node.child_by_field_name("body") or _child(node, "block", "arrow_expression_clause")
         head_end = body.start_byte if body is not None else node.end_byte
@@ -319,6 +379,8 @@ class _Walker:
                    "is_virtual": in_interface or any(m in mods for m in ("virtual", "abstract", "override")),
                    "native_kind": t.replace("_declaration", "").replace("_statement", ""),
                    "argc_min": required, "argc_max": 99 if is_variadic else len(plist),
+                   "delegate_arity": [_delegate_arity(x) for x in ptypes], "generic_arity": generic_arity,
+                   "param_types": [re.split(r"[<\[?]", x, maxsplit=1)[0].rsplit(".", 1)[-1] for x in ptypes],
                    "type_id": type_id}))
         for p, ptext in zip(plist, ptypes):
             names = _type_names(p.child_by_field_name("type"))
@@ -410,8 +472,11 @@ class _Walker:
             argc = len([a for a in args.children if a.type == "argument"]) if args is not None else 0
             if names:
                 self.res.type_refs.append(TypeRef(cid, names, "instantiate", node.start_point[0] + 1))
+                ctor_args = [a.named_children[-1] for a in args.children
+                             if a.type == "argument" and a.named_children] if args is not None else []
                 self.res.calls.append(CallSite(cid, ".ctor", names[0], names[0], argc,
-                                               node.start_point[0] + 1, type_id, node.start_point[1]))
+                                               node.start_point[0] + 1, type_id, node.start_point[1],
+                                               tuple(_arg_hint(a, scope) for a in ctor_args) if len(ctor_args) == argc else ()))
         for c in node.children:
             self._body(c, cid, type_id, scope)
 
@@ -469,6 +534,12 @@ class _Walker:
         name = None
         receiver = None
         rtype = None
+        targs = 0
+        generic = fn if fn.type == "generic_name" else (
+            fn.child_by_field_name("name") if fn.type == "member_access_expression" else None)
+        if generic is not None and generic.type == "generic_name":
+            tl = _child(generic, "type_argument_list")
+            targs = len(tl.named_children) if tl is not None else 0
         if fn.type in ("identifier", "generic_name"):
             name = _text(_child(fn, "identifier")) if fn.type == "generic_name" else _text(fn)
         elif fn.type == "member_access_expression":
@@ -501,7 +572,9 @@ class _Walker:
                 span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
                 attrs={"framework": "inline runner", "runner": name}))
             self.redirect[(lam.start_byte, lam.end_byte)] = tid
-        self.res.calls.append(CallSite(cid, name, receiver, rtype, argc, line, type_id, node.start_point[1]))
+        self.res.calls.append(CallSite(cid, name, receiver, rtype, argc, line, type_id, node.start_point[1],
+                                       tuple(_arg_hint(a, scope) for a in arg_nodes) if len(arg_nodes) == argc else (),
+                                       targs))
 
     def _receiver(self, expr, scope: dict[str, str], type_id: Optional[str]):
         if expr is None:

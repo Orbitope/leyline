@@ -22,3 +22,8 @@ leyline = "leyline.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leyline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixture", "fixture2"]
+python_files = ["test_index.py"]

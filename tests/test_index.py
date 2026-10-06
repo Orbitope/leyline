@@ -354,3 +354,51 @@ def test_review_compares_an_implemented_change_with_its_proposal(tmp_path):
     assert view["kind"] == "review" and {m["role"] for m in view["marks"]} == {"edited as predicted", "edited, not predicted"}
     exported = next(v for v in export.graph(c, with_sources=False)["views"] if v["kind"] == "review")
     assert all(isinstance(n["i"], int) for n in exported["review"]["not_predicted"])
+
+
+FIXTURE2 = Path(__file__).parent / "fixture2"
+
+
+@pytest.fixture(scope="module")
+def con2(tmp_path_factory):
+    db = tmp_path_factory.mktemp("db2") / "t.db"
+    index(FIXTURE2, db, "f2")
+    c = store.connect(db)
+    yield c
+    c.close()
+
+
+def test_file_scoped_namespace_and_generic_arity(con2):
+    types = ids(con2, "SELECT id FROM nodes WHERE kind = 'type' AND language = 'csharp'")
+    assert {"f2:csharp:cs/Mod::Mod.Boxes.Box", "f2:csharp:cs/Mod::Mod.Boxes.Box`1", "f2:csharp:cs/Mod::Mod.Limit"} <= types
+    links = {(r[0], r[1].split("::")[1], r[2].split("::")[1]) for r in con2.execute(
+        "SELECT kind, src_id, dst_id FROM edges WHERE kind IN ('extends', 'implements') AND src_id LIKE 'f2:csharp:%'")}
+    assert ("implements", "Mod.Boxes.Box", "Mod.Boxes.IBox") in links
+    assert ("extends", "Mod.Boxes.Box`1", "Mod.Boxes.Box") in links          # the non-generic base, not itself
+    assert ("extends", "Mod.Boxes.Crate", "Mod.Boxes.Box`1") in links        # Box<string> is the generic one
+    made = {r[1].split("::")[1] for r in con2.execute(
+        "SELECT kind, dst_id FROM edges WHERE kind = 'instantiates' AND src_id LIKE '%Runner.Main()'")}
+    assert {"Mod.Boxes.Box", "Mod.Boxes.Box`1", "Mod.Limit"} == made
+
+
+def test_overloads_are_told_apart_by_what_the_call_passes(con2):
+    main = {r[0].split("Runner.")[1] for r in con2.execute("SELECT dst_id FROM calls WHERE src_id LIKE '%Runner.Main()'")
+            if "Runner." in r[0]}
+    assert main == {"Run(Action<int>)", "Run(Action<int,int>)", "Wait(Limit)"}
+    make = calls(con2, "%Runner.Make(int)")
+    assert make == {"f2:csharp:cs/Mod::Mod.Runner.Make`1(int)"}              # Make<int>(...) is not recursion
+
+
+def test_python_package_roots_reexports_and_fixtures(con2):
+    p = "f2:python:py."
+    assert (p + "tests.conftest.engine", p + "src.pkg.core.Engine.__init__") in {
+        (r[0], r[1]) for r in con2.execute("SELECT src_id, dst_id FROM calls")}       # pkg.Engine through __init__
+    assert calls(con2, p + "tests.test_engine.test_start") == {p + "tests.conftest.engine", p + "src.pkg.core.Engine.start"}
+    assert p + "tests.conftest.child" in calls(con2, p + "tests.test_engine.test_child")
+    assert calls(con2, p + "tests.test_engine.test_child.inner") == {p + "src.pkg.core.Engine.start"}   # typed by the fixture
+    assert calls(con2, p + "tests.conftest.child") == {p + "tests.conftest.engine", p + "src.pkg.core.Engine.child"}
+    assert calls(con2, p + "tests.test_engine.test_made") == {p + "src.pkg.core.make_engine"}
+    assert calls(con2, p + "src.pkg.core.Engine.stop") == {p + "src.pkg.core.Base.stop"}               # super()
+    flow = con2.execute("SELECT id FROM flows WHERE name LIKE '%test_start'").fetchone()
+    steps = ids(con2, "SELECT callable_id FROM flow_steps WHERE flow_id = ?", flow[0])
+    assert p + "src.pkg.core.Engine.__init__" in steps

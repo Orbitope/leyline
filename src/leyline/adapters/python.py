@@ -49,6 +49,17 @@ def module_path(rel_path: str) -> str:
     return p.replace("/", ".")
 
 
+WRAPPERS = {"Optional", "Union", "Iterator", "Iterable", "Generator", "AsyncIterator", "AsyncGenerator", "Awaitable",
+            "Callable", "Any", "Type", "List", "Dict", "Set", "Tuple", "Sequence", "Mapping", "None", "Annotated",
+            "ClassVar", "Final", "Literal", "Self", "TypeVar", "Collection", "NoReturn", "IO"}
+
+
+def _annotation_types(text: str) -> list[str]:
+    """Class names in an annotation, without the typing wrappers around them: Iterator[Flask] -> [Flask]."""
+    names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)
+    return [x for x in names if x[:1].isupper() and x not in WRAPPERS]
+
+
 class _Walker:
     def __init__(self, repo: str, rel_path: str, file_id: str, src: bytes):
         self.repo = repo
@@ -170,12 +181,13 @@ class _Walker:
                    "visibility": "private" if name.startswith("_") else "public", "is_mutable": True}))
         self.res.edges.append(Edge("has_field", tid, fid))
 
-    def _function(self, node, outer, parent_id, qual, class_id, decorators) -> None:
+    def _function(self, node, outer, parent_id, qual, class_id, decorators, outer_scope=None) -> None:
         name = _text(node.child_by_field_name("name"))
         cid = f"{self.repo}:python:{qual}.{name}"
         params = node.child_by_field_name("parameters")
         body = node.child_by_field_name("body")
-        scope: dict[str, str] = {}
+        scope: dict[str, str] = dict(outer_scope or {})  # a nested function sees the enclosing locals
+        pnames: list[str] = []
         required = total = 0
         variadic = False
         is_method = class_id is not None and parent_id == class_id
@@ -201,16 +213,20 @@ class _Walker:
                     continue
                 first = False
                 total += 1
+                if pname:
+                    pnames.append(pname)
+                    scope.pop(pname, None)  # a parameter hides an outer local of the same name
                 if not has_default:
                     required += 1
                 if ptype is not None:
-                    tn = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", _text(ptype))
-                    tn = [x for x in tn if x[:1].isupper()]
+                    tn = _annotation_types(_text(ptype))
                     if tn:
                         scope[pname] = tn[0]
                         self.res.type_refs.append(TypeRef(cid, tn, "param", p.start_point[0] + 1))
         head_end = body.start_byte if body is not None else node.end_byte
-        self.res.nodes.append(Node(
+        ret = node.child_by_field_name("return_type")
+        returns = (_annotation_types(_text(ret)) or [None])[0] if ret is not None else None
+        fn_node = Node(
             id=cid, kind="callable", name=name, parent_id=parent_id, language=LANGUAGE, path=self.path,
             span_start=outer.start_point[0] + 1, span_end=outer.end_point[0] + 1,
             attrs={"signature": _squash(self.src[node.start_byte:head_end].decode("utf8", "replace")).rstrip(":"),
@@ -220,9 +236,39 @@ class _Walker:
                    "is_test": bool(self.is_test_file and name.startswith("test")) or None,
                    "framework": "pytest" if self.is_test_file and name.startswith("test") else None,
                    "native_kind": "method" if is_method else "function",
-                   "argc_min": required, "argc_max": 99 if variadic else total, "type_id": class_id if is_method else None}))
+                   "argc_min": required, "argc_max": 99 if variadic else total, "type_id": class_id if is_method else None,
+                   "params": pnames, "returns": returns,
+                   "is_fixture": any(re.search(r"\bfixture\b", d) for d in decorators) or None})
+        self.res.nodes.append(fn_node)
         if body is not None:
             self._body(body, cid, class_id if is_method else None, scope, qual=f"{qual}.{name}")
+            if returns is None:
+                # No annotation: read the type off what is returned or yielded.
+                kind, value = self._returned(body, scope)
+                if kind == "type":
+                    fn_node.attrs["returns"] = value
+                elif kind == "call":
+                    fn_node.attrs["returns_call"] = value
+
+    def _returned(self, body, scope):
+        stack = list(body.children)
+        while stack:
+            n = stack.pop()
+            if n.type in ("function_definition", "class_definition", "decorated_definition", "lambda"):
+                continue
+            if n.type in ("return_statement", "yield"):
+                expr = n.named_children[0] if n.named_children else None
+                if expr is not None and expr.type == "identifier" and _text(expr) in scope:
+                    return "type", scope[_text(expr)]
+                if expr is not None and expr.type == "call":
+                    fn = expr.child_by_field_name("function")
+                    last = _text(fn).split(".")[-1]
+                    if last[:1].isupper():
+                        return "type", last
+                    if fn is not None and fn.type == "attribute" and fn.child_by_field_name("object").type == "identifier":
+                        return "call", [_text(fn.child_by_field_name("object")), last]
+            stack.extend(n.children)
+        return None, None
 
     def _import(self, node) -> None:
         if node.type == "import_statement":
@@ -237,7 +283,10 @@ class _Walker:
             mod = node.child_by_field_name("module_name")
             target = _text(mod)
             if target.startswith("."):
-                base = self.mod.rsplit(".", 1)[0] if "." in self.mod else ""
+                if self.path.endswith("__init__.py"):
+                    base = self.mod  # inside a package's __init__, `.` is the package itself
+                else:
+                    base = self.mod.rsplit(".", 1)[0] if "." in self.mod else ""
                 dots = len(target) - len(target.lstrip("."))
                 for _ in range(dots - 1):
                     base = base.rsplit(".", 1)[0] if "." in base else ""
@@ -262,7 +311,7 @@ class _Walker:
             if cid is not None and qual is not None and t != "class_definition":
                 target = node.child_by_field_name("definition") if t == "decorated_definition" else node
                 if target is not None and target.type == "function_definition":
-                    self._function(target, node, cid, qual, None, [])
+                    self._function(target, node, cid, qual, None, [], scope)
             return
         if t == "assignment":
             left = node.child_by_field_name("left")
@@ -302,7 +351,9 @@ class _Walker:
                     obj = fn.child_by_field_name("object")
                     name = _text(fn.child_by_field_name("attribute"))
                     otext = _text(obj)
-                    if otext == "self":
+                    if obj is not None and obj.type == "call" and _text(obj.child_by_field_name("function")) == "super":
+                        self.res.calls.append(CallSite(cid, name, "base", None, argc, line, class_id, node.start_point[1]))
+                    elif otext == "self":
                         self.res.calls.append(CallSite(cid, name, "this", None, argc, line, class_id, node.start_point[1]))
                     elif obj is not None and obj.type == "identifier":
                         self.res.calls.append(CallSite(cid, name, otext, scope.get(otext), argc, line, class_id, node.start_point[1]))
