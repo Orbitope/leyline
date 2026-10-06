@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leyline-code"
+version = "0.0.1"
+description = "Map a codebase into a layered graph: deterministic facts, LLM inferences, and your intent."
+requires-python = ">=3.10"
+dependencies = [
+  "tree-sitter>=0.23",
+  "tree-sitter-c-sharp>=0.23",
+  "tree-sitter-python>=0.23",
+  "mcp>=1.0",
+]
+
+[project.scripts]
+leyline = "leyline.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/leyline"]

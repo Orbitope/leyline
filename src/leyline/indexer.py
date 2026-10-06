@@ -1,0 +1,596 @@
+"""Walk a repo, run the language adapters, resolve names across files, and write facts."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Optional
+
+from . import store
+from .adapters import BY_EXTENSION
+from .adapters.python import module_path
+from .model import CallSite, Edge, FileResult, Node
+
+SOURCE = "leyline-indexer/0.1"
+MODULE_MARKERS = ("pyproject.toml", "setup.py", "package.json", "__init__.py")
+SKIP_DIRS = {".git", "node_modules", "bin", "obj", "__pycache__", ".venv", "venv", ".godot", ".leyline"}
+
+
+def _git(root: Path, *args: str) -> Optional[str]:
+    try:
+        out = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
+        return out.stdout.strip() if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def list_files(root: Path) -> list[str]:
+    tracked = _git(root, "ls-files", "--cached", "--others", "--exclude-standard")
+    if tracked is not None:
+        files = [f for f in tracked.splitlines() if f]
+    else:
+        files = []
+        for p in root.rglob("*"):
+            if p.is_file() and not (set(p.relative_to(root).parts) & SKIP_DIRS):
+                files.append(p.relative_to(root).as_posix())
+    return sorted(files)
+
+
+def _module_dirs(files: list[str]) -> set[str]:
+    """Directories that are modules because they hold a project marker."""
+    dirs = set()
+    for f in files:
+        d, _, base = f.rpartition("/")
+        if base.endswith(".csproj") or base in MODULE_MARKERS:
+            dirs.add(d)
+    # A nested __init__.py belongs to its top-most package, not to a module of its own.
+    return {d for d in dirs if not any(
+        d != o and d.startswith(o + "/") and o != "" for o in dirs)}
+
+
+def _module_for(path: str, module_dirs: set[str]) -> str:
+    d = path.rpartition("/")[0]
+    cur = d
+    while True:
+        if cur in module_dirs and cur != "":
+            return cur
+        if "/" not in cur:
+            break
+        cur = cur.rpartition("/")[0]
+    if cur in module_dirs and cur != "":
+        return cur
+    return d  # no marker: the file's own directory ("" is the repo root)
+
+
+class Indexer:
+    def __init__(self, root: str | Path, repo_id: Optional[str] = None):
+        self.root = Path(root).resolve()
+        self.repo = repo_id or self.root.name
+        self.commit = _git(self.root, "rev-parse", "HEAD")
+        self.nodes: dict[str, Node] = {}
+        self.edges: list[Edge] = []
+        self.calls: list[tuple] = []
+        self.results: dict[str, FileResult] = {}  # file id -> adapter output
+        self.file_lang: dict[str, str] = {}
+        self.stats: dict[str, Counter] = defaultdict(Counter)
+        self.project_refs: dict[str, set] = defaultdict(set)
+        self._vis_cache: dict[str, set] = {}
+
+    # -- public --------------------------------------------------------------
+    def run(self, con) -> dict:
+        files = list_files(self.root)
+        module_dirs = _module_dirs(files)
+        self._add(Node(id=self.repo, kind="repo", name=self.repo, path="",
+                       attrs={"url": _git(self.root, "remote", "get-url", "origin"),
+                              "branch": _git(self.root, "rev-parse", "--abbrev-ref", "HEAD")}))
+        for f in files:
+            ext = "." + f.rsplit(".", 1)[-1] if "." in f else ""
+            adapter = BY_EXTENSION.get(ext)
+            if adapter is None:
+                continue
+            mod_dir = _module_for(f, module_dirs)
+            mod_id = self._module(mod_dir, files)
+            data = (self.root / f).read_bytes()
+            file_id = f"{self.repo}:file:{f}"
+            self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
+                           language=adapter.LANGUAGE, path=f, span_start=1,
+                           span_end=data.count(b"\n") + 1,
+                           content_hash=hashlib.sha1(data).hexdigest(),
+                           attrs={"loc": data.count(b"\n") + 1}))
+            try:
+                res = adapter.parse(self.repo, f, file_id, data, mod_dir or '.')
+            except Exception as exc:  # one bad file must not sink the run
+                self.stats[adapter.NAME]["files_failed"] += 1
+                print(f"leyline: failed to parse {f}: {exc}", file=sys.stderr)
+                continue
+            self.results[file_id] = res
+            self.file_lang[file_id] = adapter.LANGUAGE
+            self.stats[adapter.NAME]["files"] += 1
+            for n in res.nodes:
+                self._add(n)
+            self.edges.extend(res.edges)
+        self._projects(files)
+        self._build_indexes()
+        self._resolve_imports()
+        self._resolve_types()
+        self._resolve_calls()
+        self._write(con)
+        return {k: dict(v) for k, v in self.stats.items()}
+
+    # -- structure -----------------------------------------------------------
+    def _add(self, n: Node) -> None:
+        if n.id in self.nodes:
+            # Partial classes: keep the first declaration, note the extra file.
+            first = self.nodes[n.id]
+            if n.kind == "type" and n.path != first.path:
+                first.attrs.setdefault("also_in", []).append(n.path)
+            return
+        self.nodes[n.id] = n
+
+    def _module(self, mod_dir: str, files: list[str]) -> str:
+        mid = f"{self.repo}:module:{mod_dir or '.'}"
+        if mid not in self.nodes:
+            marker = next((f.rsplit("/", 1)[-1] for f in files
+                           if f.rpartition("/")[0] == mod_dir and
+                           (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS)), None)
+            self._add(Node(id=mid, kind="module", name=mod_dir.rsplit("/", 1)[-1] or self.repo,
+                           parent_id=self.repo, path=mod_dir, attrs={"marker": marker}))
+        return mid
+
+    def _projects(self, files: list[str]) -> None:
+        """Project files give exact module-to-module and module-to-package edges."""
+        for f in files:
+            if not f.endswith(".csproj"):
+                continue
+            d = f.rpartition("/")[0]
+            mid = f"{self.repo}:module:{d or '.'}"
+            if mid not in self.nodes:
+                continue
+            text = (self.root / f).read_text(errors="replace")
+            for ref in re.findall(r'<ProjectReference\s+Include="([^"]+)"', text):
+                target = (Path(d) / ref.replace("\\", "/")).parent
+                tdir = Path(*_normalize(target.parts)).as_posix() if target.parts else ""
+                tid = f"{self.repo}:module:{tdir or '.'}"
+                if tid in self.nodes:
+                    self.edges.append(Edge("imports", mid, tid, "exact", {"via": "ProjectReference"}))
+                    self.project_refs[mid].add(tid)
+            for name, ver in re.findall(r'<PackageReference\s+Include="([^"]+)"(?:\s+Version="([^"]+)")?', text):
+                xid = self._external("nuget", name, {"category": "package", "version": ver or None})
+                self.edges.append(Edge("depends_on", mid, xid, "exact", {"version_range": ver or None}))
+            sdk = re.search(r'<Project\s+Sdk="([^"/]+)(?:/([^"]+))?"', text)
+            if sdk and sdk.group(1) != "Microsoft.NET.Sdk":
+                xid = self._external("nuget", sdk.group(1), {"category": "sdk", "version": sdk.group(2)})
+                self.edges.append(Edge("depends_on", mid, xid, "exact", {"version_range": sdk.group(2)}))
+            tf = re.search(r"<TargetFramework>([^<]+)<", text)
+            if tf:
+                self.nodes[mid].attrs["target_framework"] = tf.group(1)
+
+    def _external(self, eco: str, name: str, attrs: Optional[dict] = None) -> str:
+        xid = f"{self.repo}:ext:{eco}:{name}"
+        if xid not in self.nodes:
+            self._add(Node(id=xid, kind="external", name=name, parent_id=self.repo,
+                           attrs={"ecosystem": eco, **(attrs or {})}))
+        return xid
+
+    # -- indexes -------------------------------------------------------------
+    def _build_indexes(self) -> None:
+        self.types_by_name: dict[tuple, list[str]] = defaultdict(list)   # (lang, name) -> type ids
+        self.members: dict[str, dict[str, list[Node]]] = defaultdict(lambda: defaultdict(list))
+        self.by_name: dict[tuple, list[Node]] = defaultdict(list)        # (lang, name) -> callables
+        self.field_type: dict[str, dict[str, str]] = defaultdict(dict)   # type id -> field -> type name
+        self.field_types_global: dict[tuple, set] = defaultdict(set)     # (lang, field) -> type names
+        self.bases: dict[str, list[str]] = defaultdict(list)
+        self.field_names: dict[str, set] = defaultdict(set)
+        self.ns_modules: dict[str, set] = defaultdict(set)               # C# namespace -> module ids
+        self.py_modules: dict[str, str] = {}                             # python module path -> file id
+        self.file_of: dict[str, str] = {}
+        for n in self.nodes.values():
+            if n.kind == "type":
+                self.types_by_name[(n.language, n.name)].append(n.id)
+            elif n.kind == "callable":
+                self.members[n.parent_id][n.name].append(n)
+                self.by_name[(n.language, n.name)].append(n)
+            elif n.kind == "field":
+                self.field_names[n.parent_id].add(n.name)
+                tn = n.attrs.get("type_name")
+                if tn:
+                    self.field_type[n.parent_id][n.name] = tn
+                    self.field_types_global[(n.language, n.name)].add(tn)
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            mod_id = self.nodes[fid].parent_id
+            for d in res.declares:
+                if lang == "csharp":
+                    self.ns_modules[d].add(mod_id)
+                else:
+                    self.py_modules[d] = fid
+            for n in res.nodes:
+                self.file_of[n.id] = fid
+
+    # -- imports -------------------------------------------------------------
+    def _resolve_imports(self) -> None:
+        self.cs_usings: dict[str, set] = defaultdict(set)      # file -> namespaces
+        self.cs_static: dict[str, list] = defaultdict(list)    # file -> type names from `using static`
+        self.cs_alias: dict[str, dict] = defaultdict(dict)     # file -> alias -> type name
+        self.py_names: dict[str, dict] = defaultdict(dict)     # file -> local name -> (file id, symbol|None)
+        seen = set()
+        stdlib = getattr(sys, "stdlib_module_names", frozenset())
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            for imp in res.imports:
+                if lang == "csharp":
+                    if imp.alias:
+                        self.cs_alias[fid][imp.alias] = imp.target.rsplit(".", 1)[-1]
+                    if imp.is_static:
+                        self.cs_static[fid].append(imp.target.rsplit(".", 1)[-1])
+                    ns = imp.target
+                    mods = self.ns_modules.get(ns)
+                    if not mods and (imp.is_static or imp.alias):
+                        ns = imp.target.rsplit(".", 1)[0]
+                        mods = self.ns_modules.get(ns)
+                    self.cs_usings[fid].add(ns)
+                    if mods:
+                        for m in sorted(mods):
+                            key = (fid, m, ns)
+                            if key not in seen and m != self.nodes[fid].parent_id:
+                                seen.add(key)
+                                self.edges.append(Edge("imports", fid, m, "exact", {"namespace": ns}))
+                    else:
+                        xid = self._external("dotnet", imp.target if not (imp.is_static or imp.alias) else ns,
+                                             {"category": "namespace"})
+                        if (fid, xid) not in seen:
+                            seen.add((fid, xid))
+                            self.edges.append(Edge("imports", fid, xid, "exact"))
+                else:
+                    target = self._py_module(fid, imp.target)
+                    if target:
+                        if imp.symbols:
+                            for s in imp.symbols:
+                                name, _, alias = s.partition(" as ")
+                                sub = self._py_module(fid, f"{imp.target}.{name}")
+                                self.py_names[fid][alias or name] = (sub, None) if sub else (target, name)
+                        else:
+                            self.py_names[fid][imp.alias or imp.target] = (target, None)
+                        if (fid, target) not in seen and target != fid:
+                            seen.add((fid, target))
+                            self.edges.append(Edge("imports", fid, target, "exact", {"symbols": imp.symbols}))
+                    else:
+                        top = imp.target.split(".")[0] or imp.target
+                        xid = self._external("python", top,
+                                             {"category": "stdlib" if top in stdlib else "package"})
+                        if (fid, xid) not in seen:
+                            seen.add((fid, xid))
+                            self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
+
+    def _py_module(self, fid: str, target: str) -> Optional[str]:
+        if target in self.py_modules:
+            return self.py_modules[target]
+        own = module_path(self.nodes[fid].path)
+        pkg = own.rsplit(".", 1)[0] if "." in own else ""
+        sibling = f"{pkg}.{target}" if pkg else target
+        if sibling in self.py_modules:  # script-style import of a file in the same directory
+            return self.py_modules[sibling]
+        return None
+
+    # -- visibility ----------------------------------------------------------
+    def _visible(self, fid: str) -> Optional[set]:
+        """Modules whose symbols a file can reference, or None when that is not knowable."""
+        mod = self.nodes[fid].parent_id
+        if self.file_lang[fid] == "python":
+            out = {fid}
+            out.update(t for t, _ in self.py_names[fid].values())
+            return out
+        if not (self.nodes[mod].attrs.get("marker") or "").endswith(".csproj"):
+            return None  # a loose .cs file: no project file says what it can see
+        if mod not in self._vis_cache:
+            seen, queue = {mod}, [mod]
+            while queue:
+                cur = queue.pop()
+                for nxt in self.project_refs.get(cur, ()):
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        queue.append(nxt)
+            self._vis_cache[mod] = seen
+        return self._vis_cache[mod]
+
+    def _can_see(self, fid: str, node_id: str) -> bool:
+        vis = self._visible(fid)
+        if vis is None:
+            return True
+        target_file = self.file_of.get(node_id)
+        if self.file_lang[fid] == "python":
+            return target_file in vis
+        return target_file is not None and self.nodes[target_file].parent_id in vis
+
+    # -- types ---------------------------------------------------------------
+    def _type(self, lang: str, name: str, from_id: Optional[str]) -> Optional[str]:
+        fid = self.file_of.get(from_id or "")
+        if lang == "csharp" and fid:
+            name = self.cs_alias[fid].get(name, name)
+        if lang == "python" and fid and name in self.py_names[fid]:
+            target, symbol = self.py_names[fid][name]
+            cand = f"{self.repo}:python:{module_path(self.nodes[target].path)}.{symbol or name}"
+            if cand in self.nodes and self.nodes[cand].kind == "type":
+                return cand
+        cands = self.types_by_name.get((lang, name), [])
+        if lang == "csharp" and fid:
+            cands = [c for c in cands if self._can_see(fid, c)]
+        if not cands:
+            return None
+        if len(cands) == 1:
+            return cands[0]
+        if fid:
+            same_file = [c for c in cands if self.file_of.get(c) == fid]
+            if same_file:
+                return same_file[0]
+            if lang == "csharp":
+                here = set(self.results[fid].declares) | self.cs_usings[fid]
+                visible = [c for c in cands if self.nodes[c].attrs.get("namespace") in here]
+                if len(visible) >= 1:
+                    return visible[0]
+        return None
+
+    def _resolve_types(self) -> None:
+        seen = set()
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            adapter = f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"
+            for ref in res.type_refs:
+                for i, name in enumerate(ref.names):
+                    tid = self._type(lang, name, ref.src_id)
+                    if tid is None:
+                        self.stats[adapter]["type_refs_external"] += 1
+                        continue
+                    self.stats[adapter]["type_refs_resolved"] += 1
+                    if ref.role == "base":
+                        if i > 0:
+                            kind, attrs = "uses_type", {"role": "generic_arg"}
+                        else:
+                            target_iface = self.nodes[tid].attrs.get("native_kind") == "interface"
+                            src_iface = self.nodes[ref.src_id].attrs.get("native_kind") == "interface"
+                            kind, attrs = ("implements" if target_iface and not src_iface else "extends"), {}
+                            self.bases[ref.src_id].append(tid)
+                    elif ref.role == "instantiate":
+                        kind, attrs = ("instantiates" if i == 0 else "uses_type"), ({} if i == 0 else {"role": "generic_arg"})
+                    else:
+                        kind, attrs = "uses_type", {"role": ref.role if i == 0 else "generic_arg"}
+                    key = (kind, ref.src_id, tid, attrs.get("role"))
+                    if key in seen or ref.src_id == tid:
+                        continue
+                    seen.add(key)
+                    self.edges.append(Edge(kind, ref.src_id, tid, "heuristic", attrs))
+
+    # -- calls ---------------------------------------------------------------
+    def _chain(self, type_id: Optional[str]) -> list[str]:
+        """A type, its bases, and its enclosing types, nearest first."""
+        out, queue = [], [type_id] if type_id else []
+        while queue:
+            t = queue.pop(0)
+            if t in out or t not in self.nodes:
+                continue
+            out.append(t)
+            queue.extend(self.bases.get(t, []))
+            parent = self.nodes[t].parent_id
+            if parent in self.nodes and self.nodes[parent].kind == "type":
+                queue.append(parent)
+        return out
+
+    def _pick(self, cands: list[Node], argc: int) -> list[Node]:
+        fit = [c for c in cands if c.attrs.get("argc_min", 0) <= argc <= c.attrs.get("argc_max", 99)]
+        return fit or cands
+
+    def _methods(self, type_id: Optional[str], name: str, argc: int) -> list[Node]:
+        for t in self._chain(type_id):
+            cands = self.members.get(t, {}).get(name)
+            if cands:
+                return self._pick(cands, argc)
+        return []
+
+    def _receiver_type(self, lang: str, call: CallSite) -> tuple[Optional[str], bool]:
+        """Returns (type id, known). known=True with None means an external type."""
+        r = call.receiver
+        if r in (None, "this"):
+            return call.enclosing_type, call.enclosing_type is not None
+        if r == "base":
+            bases = self.bases.get(call.enclosing_type or "", [])
+            return (bases[0] if bases else None), True
+        if call.receiver_type:
+            return self._type(lang, call.receiver_type, call.src_id), True
+        if r in ("?", "[]"):
+            return None, False
+        if r.startswith("."):
+            names = self.field_types_global.get((lang, r[1:]), set())
+            ids = {self._type(lang, n, call.src_id) for n in names}
+            ids.discard(None)
+            if len(ids) == 1:
+                return ids.pop(), True
+            if names and not ids:
+                return None, True  # every field of that name has an external type
+            return None, False
+        # A bare identifier: a field of the enclosing type chain, or a type name (static call).
+        for t in self._chain(call.enclosing_type):
+            tn = self.field_type.get(t, {}).get(r)
+            if tn:
+                return self._type(lang, tn, call.src_id), True
+        tid = self._type(lang, r, call.src_id)
+        if tid:
+            return tid, True
+        if lang == "csharp" and r[:1].isupper() and not any(
+                r in self.field_names.get(t, ()) for t in self._chain(call.enclosing_type)):
+            return None, True  # PascalCase, not a member, not ours: a type from outside (File.Open)
+        return None, False
+
+    def _resolve_calls(self) -> None:
+        # Names seen on receivers of a known outside type (List.Add, dict.get). A call to such a
+        # name on a receiver of unknown type is never guessed.
+        self.outside_names: set = set()
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            for call in res.calls:
+                if call.receiver not in (None, "this", "base") and call.name != ".ctor":
+                    if lang == "python" and call.receiver in self.py_names[fid]:
+                        continue
+                    tid, known = self._receiver_type(lang, call)
+                    if known and tid is None:
+                        self.outside_names.add((lang, call.name))
+        for fid, res in self.results.items():
+            lang = self.file_lang[fid]
+            adapter = f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"
+            st = self.stats[adapter]
+            for call in res.calls:
+                st["calls_total"] += 1
+                targets = self._resolve_call(lang, fid, call)
+                if targets is None:
+                    st["calls_external"] += 1
+                elif not targets:
+                    st["calls_unresolved"] += 1
+                else:
+                    st["calls_resolved"] += 1
+                    for t in targets:
+                        dispatch = "virtual" if t.attrs.get("is_virtual") and lang == "csharp" else "static"
+                        self.calls.append((call.src_id, t.id, dispatch, "heuristic", call.line))
+
+    def _resolve_call(self, lang: str, fid: str, call: CallSite) -> Optional[list[Node]]:
+        """None = defined outside the workspace; [] = defined here but not pinned down."""
+        name, argc = call.name, call.argc
+        self._last_src = call.src_id
+        defined_here = any(self._can_see(fid, c.id) for c in self.by_name.get((lang, name), ())) or (
+            lang == "python" and bool(self.types_by_name.get((lang, name))))
+        if name == ".ctor":
+            tid = self._type(lang, call.receiver_type or "", call.src_id)
+            if tid is None:
+                return None
+            ctors = self.members.get(tid, {}).get(".ctor")
+            return self._pick(ctors, argc) if ctors else None
+        if call.receiver is None:
+            # Local functions of the caller, innermost first.
+            cur = call.src_id
+            while cur in self.nodes and self.nodes[cur].kind == "callable":
+                local = self.members.get(cur, {}).get(name)
+                if local:
+                    return self._pick(local, argc)
+                cur = self.nodes[cur].parent_id
+            if lang == "python":
+                return self._py_bare(fid, call, defined_here)
+            found = self._methods(call.enclosing_type, name, argc)
+            if found:
+                return found
+            for tn in self.cs_static[fid]:
+                found = self._methods(self._type(lang, tn, call.src_id), name, argc)
+                if found:
+                    return found
+            return [] if defined_here else None
+        if lang == "python" and call.receiver not in ("this",) and call.receiver in self.py_names[fid]:
+            target, symbol = self.py_names[fid][call.receiver]
+            mod = module_path(self.nodes[target].path)
+            if symbol is None:
+                return self._py_symbol(f"{self.repo}:python:{mod}.{name}", argc)
+            tid = f"{self.repo}:python:{mod}.{symbol}"
+            found = self._methods(tid, name, argc)
+            return found or ([] if defined_here else None)
+        tid, known = self._receiver_type(lang, call)
+        if tid:
+            found = self._methods(tid, name, argc)
+            if found:
+                return found
+            return None  # the type is ours but the method is inherited from outside
+        if known:
+            return None  # receiver has a type that is not in the workspace
+        if not defined_here:
+            return None
+        if (lang, name) in self.outside_names:
+            self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]["calls_guess_declined"] += 1
+            return []
+        self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]["calls_by_unique_name"] += 1
+        # Receiver type unknown: accept only a name that is defined exactly once.
+        cands = self._pick([c for c in self.by_name[(lang, name)] if self._can_see(fid, c.id)], argc)
+        owners = {c.parent_id for c in cands}
+        if len(owners) > 1:
+            # Several declarations: if all but one are overrides or implementations of the same
+            # root declaration, the call is to that root (virtual dispatch).
+            roots = {o for o in owners if not any(b in owners for b in self._chain(o)[1:])}
+            if len(roots) == 1 and all(next(iter(roots)) in self._chain(o) for o in owners):
+                root = roots.pop()
+                return [c for c in cands if c.parent_id == root]
+            return []
+        return cands
+
+    def _py_symbol(self, node_id: str, argc: int) -> Optional[list[Node]]:
+        n = self.nodes.get(node_id)
+        if n is None:
+            return None
+        if n.kind == "callable":
+            return [n]
+        if n.kind == "type":
+            init = self._methods(n.id, "__init__", argc)
+            self.edges.append(Edge("instantiates", self._last_src, n.id, "heuristic"))
+            return init or None
+        return None
+
+    def _py_bare(self, fid: str, call: CallSite, defined_here: bool) -> Optional[list[Node]]:
+        self._last_src = call.src_id
+        mod = module_path(self.nodes[fid].path)
+        hit = self._py_symbol(f"{self.repo}:python:{mod}.{call.name}", call.argc)
+        if hit is not None:
+            return hit
+        if call.name in self.py_names[fid]:
+            target, symbol = self.py_names[fid][call.name]
+            tmod = module_path(self.nodes[target].path)
+            return self._py_symbol(f"{self.repo}:python:{tmod}.{symbol or call.name}", call.argc)
+        if f"{self.repo}:python:{mod}.{call.name}" in self.nodes:
+            return None  # a class with no __init__
+        return None  # builtins and star imports
+
+    # -- write ---------------------------------------------------------------
+    def _write(self, con) -> None:
+        with con:
+            store.clear_facts(con, self.repo)
+            store.write_nodes(con, self.nodes.values(), self.repo, SOURCE, self.commit)
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{self.repo}", str(self.root)))
+            # Drop edges whose endpoints did not survive (defensive) and exact duplicates.
+            seen, edges = set(), []
+            for e in self.edges:
+                key = (e.kind, e.src_id, e.dst_id, tuple(sorted((e.attrs or {}).items(), key=str)).__repr__())
+                if e.src_id in self.nodes and e.dst_id in self.nodes and key not in seen:
+                    seen.add(key)
+                    edges.append(e)
+            for n in self.nodes.values():
+                if n.parent_id:
+                    edges.append(Edge("contains", n.parent_id, n.id, "exact"))
+            store.write_edges(con, edges, SOURCE, self.commit)
+            calls = sorted({c for c in self.calls if c[0] in self.nodes})
+            store.write_calls(con, calls, self.commit)
+            from .adapters import ADAPTERS
+            for a in ADAPTERS:
+                st = dict(self.stats.get(a.NAME, {}))
+                status = "ok" if st.get("files") else "no_files"
+                store.write_coverage(con, self.repo, a.NAME, a.VERSION, status, self.commit, st)
+            for channel in ("event", "di", "http", "rpc", "queue", "db", "file"):
+                store.write_coverage(con, self.repo, f"communicates:{channel}", "-", "not_analyzed",
+                                     self.commit, {})
+            store.write_coverage(con, self.repo, "scip", "-", "not_analyzed", self.commit, {})
+            store.write_coverage(con, self.repo, "coverage", "-", "not_analyzed", self.commit, {})
+            store.rebuild_derived(con)
+
+
+def _normalize(parts: tuple) -> list[str]:
+    out: list[str] = []
+    for p in parts:
+        if p == "..":
+            if out:
+                out.pop()
+        elif p not in (".", ""):
+            out.append(p)
+    return out
+
+
+def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None) -> dict:
+    con = store.connect(db_path)
+    try:
+        return Indexer(root, repo_id).run(con)
+    finally:
+        con.close()
