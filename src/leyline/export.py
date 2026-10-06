@@ -11,6 +11,11 @@ KEEP_ATTRS = ("framework", "runner", "native_kind", "visibility", "signature", "
               "is_abstract", "marker", "ecosystem", "category", "also_in", "namespace", "version",
               "target_framework", "url")
 
+# The role that names a pattern instance: a strategy is named after its abstraction, not its context.
+PRIMARY_ROLE = {"strategy": "strategy", "decorator": "decorator", "composite": "composite", "template method": "template",
+                "observer": "subject", "factory": "factory", "builder": "builder", "singleton": "singleton",
+                "process boundary": "launcher"}
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -118,6 +123,30 @@ def graph(con, with_sources: bool = True) -> dict:
             views.append({"id": v["id"], "title": v["title"], "kind": v["kind"], "created": v["created"], **spec})
     except Exception:  # a store written before views existed
         views = []
+    pattern_list = []
+    try:
+        from . import patterns
+        for x in patterns.listing(con, include_tests=True, limit=2000)["patterns"]:
+            lead = PRIMARY_ROLE.get(x["pattern"])
+            marks = [{"i": index[n["id"]], "role": role}
+                     for role, ns in sorted(x["roles"].items(), key=lambda kv: (kv[0] != lead, kv[0]))
+                     for n in ns if n["id"] in index]
+            if marks:
+                pattern_list.append({"id": x["id"], "pattern": x["pattern"], "about": x["about"], "rationale": x["rationale"],
+                                     "c": x["confidence"], "source": x["source"], "stale": x["stale"], "tests": x["in_tests"],
+                                     "marks": marks})
+    except Exception:  # a store written before patterns existed
+        pattern_list = []
+    tour_list = []
+    try:
+        from . import tours
+        for t in tours.listing(con)["tours"]:
+            full = tours.get(con, t["id"])
+            tour_list.append({"id": t["id"], "title": t["title"], "audience": t["audience"], "source": t["source"],
+                              "stops": [{"title": st["title"], "kind": st["kind"], "ref": st["ref"],
+                                         "i": index.get(st["ref"]), "text": st["narrative"]} for st in full["stops"] if st["exists"]]})
+    except Exception:  # a store written before tours existed
+        tour_list = []
     repos = [{"id": r["id"], "commit": r["commit_sha"], **(json.loads(r["attrs"]) if r["attrs"] else {})}
              for r in rows if r["kind"] == "repo"]
     sources = {}
@@ -128,7 +157,7 @@ def graph(con, with_sources: bool = True) -> dict:
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 if p.is_file():
                     sources[r["path"]] = p.read_text(errors="replace")
-    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views,
+    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list,
             "coverage": coverage, "sources": sources}
 
 

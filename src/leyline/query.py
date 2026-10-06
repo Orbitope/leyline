@@ -232,6 +232,17 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
              for a in con.execute("SELECT * FROM annotations WHERE node_id = ?", (node_id,))]
     if notes:
         out["annotations"] = notes
+    if row["kind"] in ("type", "callable", "field"):
+        from . import patterns
+        try:
+            labels = patterns.listing(con, node_id=node_id, limit=10)["patterns"]
+        except Exception:  # a store written before patterns existed
+            labels = []
+        if labels:
+            out["patterns"] = [{"pattern": x["pattern"], "confidence": x["confidence"], "rationale": x["rationale"],
+                                "roles_here": sorted(role for role, ns in x["roles"].items()
+                                                     if any(n["id"] == node_id or n["id"].startswith(node_id + ".") for n in ns))}
+                               for x in labels]
     for side in ("out", "in"):
         if not out[side]:
             del out[side]

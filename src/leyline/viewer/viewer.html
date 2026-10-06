@@ -183,6 +183,15 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
 .flow-head select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 6px 8px; max-width: 100%; min-width: 0; flex: 1 1 280px; }
 .flow-head span { font-size: 12px; color: var(--muted); }
+.tour { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 12px 14px 12px; margin-bottom: 18px; }
+.tour h2 { margin-top: 4px; }
+.tour .note { color: var(--ink); }
+.tour-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; }
+.tour-top select { font: 12.5px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; min-width: 0; max-width: 100%; }
+.tour-nav { display: flex; gap: 8px; margin-top: 10px; }
+.tour button { font: 12.5px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 11px; cursor: pointer; }
+.tour button.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); margin-left: auto; }
+.tour button:disabled { opacity: .45; cursor: default; }
 .flow-head input { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; min-width: 190px; }
 .flow-head select { max-width: min(100%, 560px); }
 .steps { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
@@ -219,6 +228,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
       <button id="tab-matrix" aria-pressed="false">Matrix</button>
       <button id="tab-flows" aria-pressed="false">Flows</button>
       <button id="tab-views" aria-pressed="false">Views</button>
+      <button id="tab-tour" aria-pressed="false">Tour</button>
     </div>
     <div class="search">
       <input id="q" type="search" placeholder="Find a type, function or file" autocomplete="off" aria-label="Search">
@@ -310,6 +320,17 @@ const implsOf = new Map(), basesOf = new Map();
 for (const [k, s, d] of D.edges) if (k === "overrides") { (implsOf.get(d) || implsOf.set(d, []).get(d)).push(s); (basesOf.get(s) || basesOf.set(s, []).get(s)).push(d); }
 const linkLabel = (L) => (L[6] ? LABEL[L[6].channel] || L[6].channel : LABEL[L[0]]);
 const VIEWS = D.views || [];
+// Each design-pattern label is shown as a view: its nodes, grouped by the role they play.
+const PATTERN_AT = new Map();
+for (const p of D.patterns || []) {
+  const lead = p.marks[0], cap = p.pattern[0].toUpperCase() + p.pattern.slice(1);
+  const nm = D.nodes[lead.i];
+  const owner = (nm.k === "callable" || nm.k === "field") && nm.p != null && D.nodes[nm.p].k === "type" ? D.nodes[nm.p].n + "." : "";
+  PATTERN_AT.set(VIEWS.length, p);
+  VIEWS.push({ id: p.id, kind: "pattern", title: `${cap}: ${owner}${nm.n}`, narrative: p.rationale, marks: p.marks.map((m) => ({ ...m, note: "" })), legend: {}, pattern: p });
+}
+const patternsOf = (i) => { const out = []; for (const [k, p] of PATTERN_AT) if (p.marks.some((m) => m.i === i || (N[m.i] && N[m.i].p === i))) out.push(k); return out; };
+const patternRows = (ks) => ks.length ? `<h3>Design patterns <span>${ks.length}</span></h3><ul class="list">${ks.slice(0, 12).map((k) => `<li><button data-view="${k}"><span class="nm">${esc(VIEWS[k].title)}<small>${esc(VIEWS[k].narrative)}</small></span><span class="ct">${Math.round(PATTERN_AT.get(k).c * 100)}%</span></button></li>`).join("")}</ul>${ks.length > 12 ? `<div class="more">and ${ks.length - 12} more</div>` : ""}` : "";
 const ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect"];
 const REVIEW_CLS = { "edited as predicted": "c0", "new, as declared": "c2", "edited, not predicted": "c3", "predicted, not edited": "c1" };
 const ROLE_LABEL = { changed: "changed", new: "new", contract: "interface that must change", must_edit: "must be edited", direct: "calls it directly", test: "test to run", indirect: "reached further out" };
@@ -674,7 +695,7 @@ function tools() {
   const chip = (label, on, fn, cls) => { const b = document.createElement("button"); b.className = "chip" + (cls ? " " + cls : ""); b.textContent = label; if (on != null) b.setAttribute("aria-pressed", on); b.onclick = fn; t.appendChild(b); };
   if (S.mode === "flows") return;
   if (S.mode === "views") {
-    if (VIEWS.length) { const sel = document.createElement("select"); sel.id = "view-pick"; sel.setAttribute("aria-label", "Saved view"); VIEWS.forEach((v, i) => { const o = document.createElement("option"); o.value = i; o.textContent = (v.kind === "change" ? "Change: " : v.kind === "review" ? "" : "View: ") + v.title; o.selected = i === S.viewIdx; sel.appendChild(o); }); sel.onchange = () => { S.viewIdx = +sel.value; S.sel = null; viewSetup(); render(true); viewKey(); }; t.appendChild(sel); }
+    if (VIEWS.length) { const sel = document.createElement("select"); sel.id = "view-pick"; sel.setAttribute("aria-label", "Saved view"); const groups = [["Changes and views", (v) => v.kind !== "pattern"], ["Design patterns", (v) => v.kind === "pattern" && !v.pattern.tests], ["Design patterns in test code", (v) => v.kind === "pattern" && v.pattern.tests]]; for (const [label, want] of groups) { const ks = VIEWS.map((v, i) => i).filter((i) => want(VIEWS[i])); if (!ks.length) continue; const g = document.createElement("optgroup"); g.label = `${label} (${ks.length})`; ks.filter((i, n) => n < 300 || i === S.viewIdx).forEach((i) => { const v = VIEWS[i], o = document.createElement("option"); o.value = i; o.textContent = (v.kind === "change" ? "Change: " : v.kind === "custom" ? "View: " : "") + v.title; o.selected = i === S.viewIdx; g.appendChild(o); }); sel.appendChild(g); } sel.onchange = () => { S.viewIdx = +sel.value; S.sel = null; viewSetup(); render(true); viewKey(); }; t.appendChild(sel); }
     chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom");
     return;
   }
@@ -742,8 +763,17 @@ function side() {
   else if (sel.node != null) html = nodeHtml(sel.node);
   else if (S.level === "repo") html = repoHtml();
   else html = nodeHtml(S.focus, true);
-  s.innerHTML = html; s.scrollTop = 0;
+  s.innerHTML = tourHtml() + html; s.scrollTop = 0;
+  if (S.tour) {
+    const move = (d) => { S.tour.stop = Math.max(0, Math.min(TOURS[S.tour.idx].stops.length - 1, S.tour.stop + d)); tourShow(); };
+    if ($("tour-prev")) $("tour-prev").onclick = () => move(-1);
+    if ($("tour-next")) $("tour-next").onclick = () => move(1);
+    if ($("tour-back")) $("tour-back").onclick = () => tourShow();
+    $("tour-end").onclick = () => { S.tour = null; $("tab-tour").setAttribute("aria-pressed", "false"); side(); };
+    if ($("tour-pick")) $("tour-pick").onchange = (e) => { S.tour = { idx: +e.target.value, stop: 0 }; tourShow(); };
+  }
   for (const b of s.querySelectorAll("[data-go]")) b.onclick = () => goTo(+b.dataset.go);
+  for (const b of s.querySelectorAll("[data-view]")) b.onclick = () => { S.viewIdx = +b.dataset.view; S.sel = null; if (S.mode === "views") { viewSetup(); render(true); viewKey(); } else setMode("views"); };
   for (const b of s.querySelectorAll("[data-open]")) b.onclick = () => open(+b.dataset.open);
   for (const b of s.querySelectorAll("[data-flow]")) b.onclick = () => openFlow(+b.dataset.flow, b.dataset.at ? +b.dataset.at : null);
 }
@@ -760,6 +790,7 @@ function repoHtml() {
     <div class="where">${esc(r.url || "")}</div>
     <div class="facts">${facts.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("")}</div>
     <p class="note">Each box is a module. An arrow from A to B means A depends on B, and its number counts the links behind it. Select a box or an arrow for detail.</p>
+    ${(() => { const by = new Map(); for (const [k, p] of PATTERN_AT) if (!p.tests) (by.get(p.pattern) || by.set(p.pattern, []).get(p.pattern)).push(k); return by.size ? `<h3>Design patterns <span>${[...by.values()].reduce((a, b) => a + b.length, 0)}</span></h3><ul class="list">${[...by.entries()].sort((a, b) => b[1].length - a[1].length).map(([name, ks]) => `<li><button data-view="${ks[0]}"><span class="nm">${esc(name)}<small>${esc(PATTERN_AT.get(ks[0]).about)}</small></span><span class="ct">${ks.length}</span></button></li>`).join("")}</ul>` : ""; })()}
     ${listHtml("Systems", N.map((m, k) => k).filter((k) => N[k].k === "system").map((k) => ({ go: k, name: N[k].n, sub: "in " + N[N[k].p].n + (NOTES[k] && NOTES[k].responsibility ? " · " + NOTES[k].responsibility.v : ""), ct: (unitsOf.get(k) || []).length + " types" })), N.filter((m) => m.k === "system").length)}
     ${listHtml("Where execution starts", entries.slice(0, 12), entries.length)}
     <h3>What was analyzed</h3><ul class="list">${stat}${nas}</ul>
@@ -778,6 +809,7 @@ function nodeHtml(i, isFocus) {
   if (n.k === "field" && x.declared_type) h += `<div class="sig">${esc(x.declared_type)} ${esc(n.n)}</div>`;
   const w = where(i); if (w) h += `<div class="where">${esc(w)}${x.also_in ? " and " + x.also_in.map(esc).join(", ") : ""}</div>`;
   h += notesHtml(i);
+  if (n.k === "type" || n.k === "callable") h += patternRows(patternsOf(i));
   if (n.k === "system") {
     const us = (unitsOf.get(i) || []).slice().sort((a, b) => count(b, "callable") - count(a, "callable")), x2 = n.x || {};
     const named = NOTES[i] && NOTES[i].name;
@@ -955,6 +987,14 @@ function viewHtml() {
   if (!v) return `<div class="eyebrow">Views</div><h2>No saved views</h2><p class="note">A view is a set of nodes an agent marked for you: the reach of a proposed change, or any other slice of the code. Ask an agent connected to Leyline to assess a change, then re-open or refresh this page.</p>`;
   const lvl = (r) => `<span class="tag ${r.level === "high" ? "risk-high" : r.level === "medium" ? "risk-medium" : ""}">${r.level} risk</span>`;
   if (v.kind === "review" && v.review) return reviewHtml(v);
+  if (v.kind === "pattern") {
+    const p = v.pattern;
+    let h = `<div class="eyebrow">Design pattern <span class="tag heur">${esc(p.source === "structural matcher" ? "found by its shape" : "labelled by " + p.source)}</span>${p.stale ? `<span class="tag risk-medium">code changed since</span>` : ""}</div><h2>${esc(v.title)}</h2><p class="note">${esc(p.about)}</p><p class="note">${esc(p.rationale)}</p>`;
+    h += `<div class="facts"><div><b>${Math.round(p.c * 100)}%</b><span>confidence in the shape</span></div><div><b>${v.marks.length}</b><span>nodes involved</span></div></div>`;
+    for (const r of VW.roles) { const ms = v.marks.filter((m) => m.role === r); h += listHtml(esc(r), ms.slice(0, 40).map((m) => ({ go: m.i, name: N[m.i].k === "callable" || N[m.i].k === "field" ? qual(m.i) : N[m.i].n, sub: N[moduleOf[m.i]] ? "in " + N[moduleOf[m.i]].n : "", ct: "" })), ms.length); }
+    h += `<p class="note">The label says the code has this shape. It does not say the author meant the pattern, and a pattern built another way is not found.</p>`;
+    return h;
+  }
   let h = `<div class="eyebrow">${v.kind === "change" ? "Proposed change" : "Saved view"} <span class="tag heur">${v.kind === "change" ? "static assessment" : "authored by an agent"}</span></div><h2>${esc(v.title)}</h2><p class="note">${esc(v.narrative || "")}</p>`;
   if (v.summary) { const s = v.summary; h += `<div class="facts"><div><b>${s.changed + s.added}</b><span>changed</span></div><div><b>${s.must_edit}</b><span>must edit</span></div><div><b>${s.reached}</b><span>reached</span></div><div><b>${s.tests_to_run}</b><span>tests to run</span></div></div>`; }
   if (v.risks && v.risks.length) h += `<h3>Risks</h3>` + v.risks.map((r) => `<p class="note">${lvl(r)} ${esc(r.what)}</p>`).join("");
@@ -980,6 +1020,27 @@ function viewHtml() {
   }
   if (VW.trimmed) h += `<p class="note">The map leaves out the outer ring of indirectly reached code to stay readable. It is still listed here.</p>`;
   return h;
+}
+/* ---------- tours ---------- */
+const TOURS = D.tours || [];
+function tourHtml() {
+  if (!S.tour) return "";
+  const t = TOURS[S.tour.idx], st = t.stops[S.tour.stop], n = t.stops.length;
+  const pick = TOURS.length > 1 ? `<select id="tour-pick" aria-label="Tour">${TOURS.map((x, k) => `<option value="${k}"${k === S.tour.idx ? " selected" : ""}>${esc(x.title)}</option>`).join("")}</select>` : `<b>${esc(t.title)}</b>`;
+  return `<section class="tour" aria-label="Tour"><div class="tour-top">${pick}<button id="tour-end" aria-label="End the tour">End</button></div>
+    <div class="eyebrow">Stop ${S.tour.stop + 1} of ${n}${t.source.startsWith("leyline-tour") ? ` <span class="tag">from the graph</span>` : ` <span class="tag heur">written by ${esc(t.source === "mcp" ? "an agent" : t.source)}</span>`}</div>
+    <h2>${esc(st.title || "Stop " + (S.tour.stop + 1))}</h2><p class="note">${esc(st.text)}</p>
+    <div class="tour-nav"><button id="tour-prev"${S.tour.stop === 0 ? " disabled" : ""}>Back</button><button id="tour-back">Show this stop</button><button id="tour-next" class="primary"${S.tour.stop === n - 1 ? " disabled" : ""}>Next</button></div></section>`;
+}
+// Put the map on whatever the current stop points at.
+function tourShow() {
+  const st = TOURS[S.tour.idx].stops[S.tour.stop];
+  $("tab-tour").setAttribute("aria-pressed", "true");
+  if (st.kind === "flow") { const fi = FLOWS.findIndex((f) => f.id === st.ref); if (fi >= 0) return openFlow(fi, null); }
+  if (st.kind === "pattern" || st.kind === "view") { const vi = VIEWS.findIndex((v) => v.id === st.ref); if (vi >= 0) { S.viewIdx = vi; S.sel = null; if (S.mode === "views") { viewSetup(); render(true); viewKey(); } else setMode("views"); return; } }
+  if (S.mode !== "map") setMode("map");
+  if (st.kind === "repo" || st.i == null) return setLevel("repo", null);
+  goTo(st.i);
 }
 function reviewHtml(v) {
   const r = v.review, p = r.prediction, g = r.graph, t = r.tests;
@@ -1033,6 +1094,8 @@ function setMode(mode) {
 $("tab-map").onclick = () => setMode("map"); $("tab-matrix").onclick = () => setMode("matrix");
 $("tab-flows").onclick = () => { if (S.sel && S.sel.edge) S.sel = null; setMode("flows"); };
 $("tab-views").onclick = () => setMode("views");
+$("tab-tour").onclick = () => { if (!TOURS.length) return; if (!S.tour) S.tour = { idx: 0, stop: 0 }; tourShow(); };
+if (!TOURS.length) $("tab-tour").hidden = true;
 
 /* ---------- search ---------- */
 const searchable = N.filter((n) => ["system", "module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");

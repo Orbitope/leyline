@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from typing import Optional
 
 try:  # mcp 2.x
@@ -11,7 +12,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import change, diff, query, rules, store
+from . import change, diff, patterns as pattern_labels, query, rules, store, tours as tour_store
 
 mcp = FastMCP(
     "leyline",
@@ -24,14 +25,16 @@ mcp = FastMCP(
     ),
 )
 
-_con: Optional[sqlite3.Connection] = None
+_local = threading.local()
 
 
 def _db() -> sqlite3.Connection:
-    global _con
-    if _con is None:
-        _con = store.connect(os.environ.get("LEYLINE_DB", ".leyline/leyline.db"))
-    return _con
+    # The server may run each tool call on a different worker thread, and a SQLite connection
+    # belongs to the thread that opened it. Keep one per thread.
+    con = getattr(_local, "con", None)
+    if con is None:
+        con = _local.con = store.connect(os.environ.get("LEYLINE_DB", ".leyline/leyline.db"))
+    return con
 
 
 @mcp.tool()
@@ -174,6 +177,45 @@ def add_rule(kind: str, selector_from: str, selector_to: str = "", edge_kinds: O
 def check_rules() -> dict:
     """Evaluate every architecture rule against the current graph, with examples of each violation."""
     return rules.check(_db())
+
+
+@mcp.tool()
+def patterns(pattern: Optional[str] = None, node_id: Optional[str] = None, include_tests: bool = False) -> dict:
+    """Design patterns found by their shape in the graph: strategy, decorator, composite, template
+    method, observer, factory, builder, singleton, process boundary. Each has the nodes playing each role,
+    a rationale and a confidence. Filter by `pattern` name or by `node_id` (a type, module or function).
+    A label says the code has the shape, not that the author intended the pattern."""
+    return pattern_labels.listing(_db(), pattern, node_id, include_tests)
+
+
+@mcp.tool()
+def label_pattern(pattern: str, roles: dict, rationale: str, confidence: float = 0.6) -> dict:
+    """Record a pattern the structural matchers missed, after reading the code. `roles` maps each role
+    to the node ids that play it, for example {"adapter": [...], "adaptee": [...]}. `rationale` must
+    say what in the code makes it this pattern. The label goes stale when that code changes."""
+    return pattern_labels.label(_db(), pattern, roles, rationale, confidence, "mcp")
+
+
+@mcp.tool()
+def tours() -> dict:
+    """List tours: ordered walks through the codebase. The orientation tour is generated from the graph
+    on every index; others were written by an agent or the user."""
+    return tour_store.listing(_db())
+
+
+@mcp.tool()
+def tour(tour_id: str) -> dict:
+    """One tour, stop by stop: what each stop points at and what to notice there."""
+    return tour_store.get(_db(), tour_id)
+
+
+@mcp.tool()
+def save_tour(title: str, stops: list[dict], audience: str = "") -> dict:
+    """Save a tour you wrote for the user: for example one feature end to end, or what someone needs
+    before changing one module. Each stop is {"title": ..., "kind": "node" | "flow" | "pattern" | "view" | "repo",
+    "ref": the id, "narrative": what to notice here and why it matters}. Order the stops the way you would
+    explain the code aloud. Only point at things you looked at; say in the narrative what you inferred."""
+    return tour_store.save(_db(), title, stops, audience, "mcp")
 
 
 def main() -> None:

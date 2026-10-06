@@ -7,8 +7,9 @@ Every record belongs to one of three layers:
 - **inferred**: written by an LLM, with evidence and a confidence
 - **intent**: written by you, such as boundaries and rules
 
-This version builds the fact layer, proposes systems by clustering, and accepts inferred and intent
-annotations through `annotate`. Rules and change proposals have tables but no code yet.
+This version builds the fact layer for C# and Python, proposes systems by clustering, labels design
+patterns by their shape, generates an orientation tour, assesses a described change before it is made,
+reviews it after, and checks architecture rules.
 
 ## Use
 
@@ -18,6 +19,8 @@ leyline index path/to/repo          # writes path/to/repo/.leyline/leyline.db
 leyline --db path/to/repo/.leyline/leyline.db overview
 leyline --db ... search "Simulation Step"
 leyline --db ... expand "<node id>"
+leyline --db ... tour               # a guided walk through the repository
+leyline --db ... patterns           # design patterns found by their shape
 leyline --db ... serve              # MCP server over stdio
 leyline --db ... view               # the map, served on http://127.0.0.1:8765
 leyline --db ... export -o map.html # the map as one self-contained page
@@ -89,6 +92,37 @@ some test's path). Selectors are `module:Name`, `system:Name`, `external:Name`, 
 error-level rule fails, so it can run in CI. A `forbid` rule on an external package sees imports
 (`using`, `import`), not fully qualified names used inline.
 
+### Design patterns
+
+Every index run looks for nine shapes in the graph and labels what it finds, with the nodes that
+play each role, a sentence saying why, and a confidence:
+
+| Pattern | The shape that is matched |
+|---|---|
+| strategy | an abstraction with two or more implementations, held in a field by another type that calls it |
+| decorator | a type that implements an abstraction and holds one more of it |
+| composite | a type that implements an abstraction and holds a collection of it |
+| template method | a concrete method on a base type that calls methods its subclasses override |
+| observer | an event with a raiser and subscribers in other code |
+| factory | a function that creates two or more types sharing a supertype (higher confidence when it returns that supertype) |
+| builder | a type with chaining methods that return itself and a `Build` or `Create` that returns something else |
+| singleton | a static field of the type's own type and no public constructor |
+| process boundary | one program launching another and talking over its pipes |
+
+A label says the code has the shape. It does not say the author meant the pattern, and a pattern
+built another way is not found. Labels in tests, samples and benchmarks are kept apart. An agent that
+has read the code can add a label the matchers missed with `label_pattern`; it goes stale when the
+code behind it changes.
+
+### Tours
+
+A tour is an ordered list of stops, each pointing at something on the map (a module, a function, a
+flow, a pattern, a saved view) with a few sentences on what to notice. `leyline index` writes an
+orientation tour from the graph alone: what the repository is, where it starts, the modules from the
+most depended-on outward, the main abstractions and boundaries, one test path worth tracing, how it
+is tested, and what the map cannot see. Every sentence in it is a count or a name the store can
+back. An agent can write further tours with `save_tour`; `skills/leyline-tour/SKILL.md` says how.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
@@ -131,6 +165,10 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
+| `patterns(pattern?, node_id?)` | Design patterns found by shape, with roles, rationale and confidence |
+| `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |
+| `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |
+| `save_tour(title, stops, audience?)` | Save a tour written for the user |
 | `views()`, `view(view_id)` | List saved views, or read one in full |
 
 ## What is indexed
@@ -150,9 +188,15 @@ Languages: C# and Python, through tree-sitter.
 
 ### How calls are resolved
 
-Without a compiler, a call is linked only when its receiver's type can be worked out from
-declarations in the same file: fields, parameters, typed locals, `new` expressions, collection
-element types and static type names. Three outcomes are counted per run:
+Without a compiler, a call is linked only when its receiver's type can be worked out from what is
+written: fields, parameters, typed locals, `new` expressions, collection element types, static type
+names, and the declared return type of the call a value came from (`a.Make().Run()`, `var x =
+a.Make(); x.Run()`). In C#, extension methods are matched on the type of their `this` parameter,
+and overloads of equal length are narrowed by the arguments: a lambda's parameter count, the type
+of a literal, a `new` expression or a typed local, and explicit type arguments. In Python, packages
+under a source root are imported by their own name, names re-exported through `__init__.py` are
+followed, and a test parameter filled by a pytest fixture takes the fixture's return type. Three
+outcomes are counted per run:
 
 - **resolved**: linked to a callable in the workspace
 - **external**: the receiver's type is outside the workspace, or nothing in the workspace has that name
@@ -203,6 +247,23 @@ observed paths where it is available.
 SCIP indexers will replace these heuristics with exact references. That extractor and test coverage
 are recorded as `not_analyzed` in `extractor_coverage`, so missing analysis is never mistaken for an
 empty result.
+
+### How well this holds up
+
+Measured on three repositories, counting call sites whose target is inside the repository:
+
+| Repository | Files | Index time | Call sites linked | Of those, by guess | Left open |
+|---|---|---|---|---|---|
+| Signal (C# and Python) | 59 | 1 s | 99% | 4% | 18 |
+| Flask (Python) | 83 | 1 s | 91% | 9% | 101 |
+| Polly (C#) | 801 | 7 s | 94% | 2% | 915 |
+
+"Linked" is not "correct": no compiler checked these. In a random sample of 42 links across the
+three, read against the source by hand, all 42 pointed at the right method; 4 of the 22 from Polly
+pointed at the wrong overload of it. Polly's fluent API has up to twenty overloads per name, which
+is the hard case for this approach. A call the indexer classes
+as leaving the repository is not in these counts, and some of those are misses: a call on a value
+whose type comes from outside (Flask's test client) cannot be followed back in.
 
 ## Identity
 

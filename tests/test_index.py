@@ -412,3 +412,60 @@ def test_receivers_typed_by_what_a_call_returns(con2):
     assert calls(con2, p + "tests.test_engine.test_chain") == {
         p + "tests.conftest.engine", p + "src.pkg.core.Engine.child", p + "src.pkg.core.Engine.start",
         p + "src.pkg.core.Engine.stop"}
+
+
+def test_patterns_are_found_by_shape(con2, con):
+    from leyline import patterns
+
+    r = patterns.listing(con2, limit=200)
+    by = {}
+    for p in r["patterns"]:
+        by.setdefault(p["pattern"], []).append({role: sorted(n["name"] for n in ns) for role, ns in p["roles"].items()})
+    assert by["decorator"] == [{"component": ["IPricer"], "decorator": ["TaxedPricer"], "wrapped": ["_inner"]}]
+    assert by["composite"] == [{"component": ["IPricer"], "composite": ["SumPricer"], "children": ["_parts"]}]
+    strategy = by["strategy"][0]
+    assert strategy["context"] == ["Checkout"]                       # not the decorator or the composite
+    assert set(strategy["implementation"]) == {"FlatPricer", "BulkPricer", "TaxedPricer", "SumPricer"}
+    assert {"factory": ["For"], "product": ["BulkPricer", "FlatPricer"], "product type": ["IPricer"]} in by["factory"]
+    assert {"template": ["Run"], "step": ["Step"], "base": ["Job"], "subclass": ["PrintJob"]} in by["template method"]
+    assert by["singleton"] == [{"singleton": ["Clock"], "instance": ["Instance"]}]
+    assert by["builder"][0]["builder"] == ["OrderBuilder"] and by["builder"][0]["build"] == ["Build"]
+    assert all(p["rationale"] and 0 < p["confidence"] <= 1 for p in r["patterns"])
+
+    first = patterns.listing(con)                                     # the first fixture: an event and a launched program
+    assert {"observer", "process boundary"} <= set(first["by_pattern"])
+    shown = query.expand(con2, "f2:csharp:cs/Mod::Mod.Shapes.TaxedPricer")["patterns"]
+    assert {"decorator", "strategy"} == {p["pattern"] for p in shown}
+
+    made = patterns.label(con2, "Adapter", {"adapter": ["f2:csharp:cs/Mod::Mod.Shapes.Checkout"], "x": ["nope"]},
+                          "Checkout turns a quantity into a call on IPricer.", 0.4, "test")
+    assert made["missing"] == ["nope"] and "error" in patterns.label(con2, "x", {"a": ["nope"]}, "why")
+    assert "adapter" in patterns.listing(con2)["by_pattern"]
+    patterns.run(con2)                                                # a fresh pass keeps labels written by others
+    assert "adapter" in patterns.listing(con2)["by_pattern"]
+
+
+def test_orientation_tour_and_authored_tours(con, con2):
+    from leyline import export, tours
+
+    listed = tours.listing(con)["tours"]
+    assert listed[0]["id"] == "tour:orientation:fx" and listed[0]["stops"] >= 4
+    t = tours.get(con, "tour:orientation:fx")
+    assert t["stops"][0]["kind"] == "repo" and all(s["exists"] and s["narrative"] for s in t["stops"])
+    kinds = {s["kind"] for s in t["stops"]}
+    assert {"repo", "node", "pattern"} <= kinds
+    assert "cannot see" in t["stops"][-1]["title"]
+
+    assert "error" in tours.save(con2, "Empty", [{"ref": "nope", "narrative": "x"}])
+    assert "error" in tours.save(con2, "No words", [{"ref": "f2:csharp:cs/Mod::Mod.Shapes.Checkout", "narrative": " "}])
+    saved = tours.save(con2, "How a price is made", [
+        {"title": "Start", "ref": "f2:csharp:cs/Mod::Mod.Shapes.Checkout", "narrative": "Checkout asks its pricer."},
+        {"title": "Gone", "ref": "missing", "narrative": "skipped"},
+        {"title": "The choice", "kind": "pattern",
+         "ref": next(p["id"] for p in __import__("leyline").patterns.listing(con2)["patterns"] if p["pattern"] == "factory"),
+         "narrative": "Pricers.For picks the implementation."}], audience="a new contributor")
+    assert saved["stops"] == 2 and saved["missing"] == ["missing"]
+    assert [s["title"] for s in tours.get(con2, saved["id"])["stops"]] == ["Start", "The choice"]
+    data = export.graph(con2, with_sources=False)
+    assert any(t["id"] == saved["id"] and len(t["stops"]) == 2 for t in data["tours"])
+    assert data["patterns"] and all(isinstance(m["i"], int) for p in data["patterns"] for m in p["marks"])

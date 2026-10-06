@@ -88,6 +88,7 @@ class Indexer:
         self.channel_stats: dict[str, Counter] = defaultdict(Counter)
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
+        self._loose_reach: dict[str, set] = {}
 
     # -- public --------------------------------------------------------------
     def run(self, con) -> dict:
@@ -508,6 +509,8 @@ class Indexer:
                     if isinstance(h, int) and not isinstance(h, bool) and i < len(want):
                         if want[i] == -2 or (want[i] >= 0 and want[i] != h):
                             return False  # a lambda passed where no delegate of that shape is taken
+                    elif isinstance(h, str) and i < len(want) and want[i] >= 0 and h in ("int", "double", "bool", "char", "string"):
+                        return False  # a literal passed where a delegate is taken
                 return True
 
             def score(c: Node) -> int:
@@ -870,6 +873,18 @@ class Indexer:
                         "direction": "both" if sp.pipes else "start", "pipes": sp.pipes, "launched_at": sp.line}))
 
     # -- flows ---------------------------------------------------------------
+    def _dispatch_reaches(self, home: str, impl: str) -> bool:
+        """Can a program whose entry is in `home` be running this implementation of an interface?"""
+        if self._visible(home) is not None:
+            return self._can_see(home, impl)
+        # A loose file with no project: it can only be composed of the modules its own module imports.
+        mod = self.nodes[home].parent_id
+        if mod not in self._loose_reach:
+            files = {f for f in self.results if self.nodes[f].parent_id == mod}
+            self._loose_reach[mod] = {mod} | {e.dst_id for e in self.edges if e.kind == "imports" and e.src_id in files}
+        target = self.file_of.get(impl)
+        return target is not None and self.nodes[target].parent_id in self._loose_reach[mod]
+
     def _build_flows(self, max_depth: int = 8, max_steps: int = 300) -> None:
         """Walk the call graph from every entry point and test, in source order."""
         out: dict[str, list] = defaultdict(list)
@@ -906,7 +921,7 @@ class Indexer:
             seen, steps, truncated = {start}, [(0, 0, start, "start", None, None)], False
             stack = [(start, 0, 0)]
             # Depth-first, pre-order, each callable listed once per flow.
-            def walk(node, depth, parent_seq):
+            def walk(node, depth, parent_seq, home):
                 nonlocal truncated
                 if depth >= max_depth:
                     if out.get(node):
@@ -917,8 +932,8 @@ class Indexer:
                         continue
                     if via == "event" and subscriber not in seen:
                         continue  # nobody in this flow subscribed, so the handler does not run here
-                    if via == "dispatch" and entry_file and self.file_lang.get(entry_file) == "csharp" \
-                            and not self._can_see(entry_file, dst):
+                    if via == "dispatch" and home and self.file_lang.get(home) == "csharp" \
+                            and not self._dispatch_reaches(home, dst):
                         continue  # an implementation in a project this program does not reference
                     if kind == "test" and via == "runs":
                         continue
@@ -928,8 +943,9 @@ class Indexer:
                     seen.add(dst)
                     seq = len(steps)
                     steps.append((seq, depth + 1, dst, via, int(line) if line < 10 ** 9 - 1 else None, parent_seq))
-                    walk(dst, depth + 1, seq)
-            walk(start, 0, 0)
+                    # A launched program is its own composition: what it can reach is judged from there.
+                    walk(dst, depth + 1, seq, self.file_of.get(dst, home) if via == "process" else home)
+            walk(start, 0, 0, entry_file)
             n = self.nodes[start]
             name = n.name if n.kind == "test" else start.split(":", 2)[-1].split("::")[-1]
             mods = {self.nodes[self.file_of[s[2]]].parent_id for s in steps if s[2] in self.file_of}
@@ -1012,7 +1028,7 @@ def _normalize(parts: tuple) -> list[str]:
 
 
 def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None) -> dict:
-    from . import cluster
+    from . import cluster, patterns, tours
 
     con = store.connect(db_path)
     try:
@@ -1021,6 +1037,8 @@ def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None) 
         stats["systems"] = cluster.propose(con, ix.repo)
         with con:
             store.rebuild_derived(con)
+        stats["patterns"] = patterns.run(con, ix.repo)
+        stats["tour"] = tours.generate(con, ix.repo)
         stats["stale_annotations"] = store.refresh_stale(con)
         return stats
     finally:

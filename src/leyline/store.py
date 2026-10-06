@@ -26,6 +26,11 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     for col in ("status", "source", "created"):
         if col not in have:
             con.execute(f"ALTER TABLE rules ADD COLUMN {col} TEXT")
+    for table, cols in (("tours", ("repo_id", "created")), ("tour_stops", ("title",)), ("pattern_instances", ("attrs",))):
+        have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for col in cols:
+            if col not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
     return con
 

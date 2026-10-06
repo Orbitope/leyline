@@ -76,6 +76,11 @@ def main(argv=None) -> int:
     p.add_argument("--before", help="label of the test run recorded before the change")
     p.add_argument("--after", help="label of the test run recorded after it")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("patterns", help="design patterns found by their shape")
+    p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
+    p.add_argument("--tests", action="store_true", help="include patterns inside test code")
+    p = sub.add_parser("tour", help="print a tour of the repository")
+    p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
     p = sub.add_parser("view", help="serve the map on localhost")
     p.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
@@ -127,6 +132,24 @@ def main(argv=None) -> int:
         from . import diff
         text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text()
         _print(diff.record_tests(con, args.run, diff.parse_test_output(text)))
+    elif args.cmd == "patterns":
+        from . import patterns
+        r = patterns.listing(con, args.pattern, None, args.tests, limit=500)
+        print(", ".join(f"{k} {v}" for k, v in sorted(r["by_pattern"].items())) or "no patterns found")
+        for x in r["patterns"]:
+            print(f"\n[{x['pattern']}  {x['confidence']:.2f}{'  stale' if x['stale'] else ''}] {x['rationale']}")
+    elif args.cmd == "tour":
+        from . import tours
+        listed = tours.listing(con)["tours"]
+        t = tours.get(con, args.tour_id or (listed[0]["id"] if listed else ""))
+        if "error" in t:
+            _print(t)
+            return 1
+        print(f"{t['title']}\n")
+        for st in t["stops"]:
+            print(f"{st['seq']}. {st['title']}  [{st['kind']}: {st['ref']}]\n   {st['narrative']}\n")
+        if len(listed) > 1:
+            print("other tours: " + ", ".join(x["id"] for x in listed if x["id"] != t["id"]))
     elif args.cmd == "rules":
         from . import rules
         if args.confirm:
