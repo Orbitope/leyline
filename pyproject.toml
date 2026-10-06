@@ -17,6 +17,9 @@ dependencies = [
   "networkx>=3.0",
 ]
 
+[project.optional-dependencies]
+scip = ["protobuf>=7.35"]
+
 [project.scripts]
 leyline = "leyline.cli:main"
 

@@ -500,3 +500,59 @@ def test_field_reads_and_writes(con2):
 
     r = change.assess(con2, "Drop Counter.Value", [{"id": s + "Counter.Value", "action": "remove"}])
     assert {m["id"].split(".")[-1] for m in r["must_edit"]} >= {"Bump()", "Full()", "Make()", "Reset(Counter)"}
+
+
+def test_compiler_overrules_syntax_for_csharp(tmp_path):
+    import shutil
+
+    if not shutil.which("dotnet"):
+        pytest.skip("needs the .NET SDK")
+    db = tmp_path / "x.db"
+    plain = tmp_path / "plain.db"
+    index(FIXTURE2, plain, "f2")
+    stats = index(FIXTURE2, db, "f2", exact="roslyn")
+    assert stats["exact:roslyn"]["status"] == "ok" and stats["exact:roslyn"]["calls_removed"] >= 1
+    c, p = store.connect(db), store.connect(plain)
+    go = "f2:csharp:cs/Mod::Mod.Hard.Go()"
+    pick = lambda con: {r[0].split("Hard.")[1]: r[1] for r in con.execute(
+        "SELECT dst_id, precision FROM calls WHERE src_id = ? AND dst_id LIKE '%Pick%'", (go,))}
+    assert pick(p) == {"Pick(int)": "heuristic", "Pick(double)": "heuristic"}      # syntax cannot tell: h has no written type
+    assert pick(c) == {"Pick(double)": "exact"}                                    # the compiler can
+    assert c.execute("SELECT precision FROM edges WHERE kind = 'writes' AND src_id LIKE '%Counter.Bump()' LIMIT 1").fetchone()[0] == "exact"
+    row = c.execute("SELECT status, stats FROM extractor_coverage WHERE extractor = 'exact:roslyn'").fetchone()
+    assert row["status"] == "ok"
+    # Flows are rebuilt from the corrected calls.
+    assert c.execute("SELECT COUNT(*) FROM calls WHERE precision = 'exact'").fetchone()[0] > 20
+
+
+def test_scip_index_confirms_and_adds_python_links(tmp_path):
+    pb = pytest.importorskip("leyline.scip_pb2")
+
+    core = (FIXTURE2 / "py/src/pkg/core.py").read_text().splitlines()
+    line = lambda text: next(i for i, s in enumerate(core) if text in s)
+    sym = "scip-python python f2 0 `src.pkg.core`/Engine#child()."
+    idx = pb.Index()
+    doc = idx.documents.add()
+    doc.relative_path = "py/src/pkg/core.py"
+    d = doc.occurrences.add()
+    d.symbol, d.symbol_roles = sym, 1
+    d.range.extend([line("def child"), 8, 13])
+    mention = doc.occurrences.add()                                   # handler = thing.child : named, not called
+    mention.symbol, mention.symbol_roles = sym, 8
+    at = line("handler = thing.child")
+    mention.range.extend([at, core[at].index("child"), core[at].index("child") + 5])
+    call = doc.occurrences.add()                                      # return thing.child()
+    call.symbol, call.symbol_roles = sym, 8
+    at = line("return thing.child()")
+    call.range.extend([at, core[at].index("child"), core[at].index("child") + 5])
+    scip_file = tmp_path / "index.scip"
+    scip_file.write_bytes(idx.SerializeToString())
+
+    plain, db = tmp_path / "plain.db", tmp_path / "s.db"
+    index(FIXTURE2, plain, "f2")
+    stats = index(FIXTURE2, db, "f2", scip=[str(scip_file)])
+    poke, child = "f2:python:py.src.pkg.core.poke", "f2:python:py.src.pkg.core.Engine.child"
+    q = "SELECT precision, COUNT(*) FROM calls WHERE src_id = ? AND dst_id = ? GROUP BY precision"
+    assert dict(store.connect(plain).execute(q, (poke, child)).fetchall()) == {"guess": 1}
+    assert dict(store.connect(db).execute(q, (poke, child)).fetchall()) == {"exact": 1}     # confirmed once; the mention is not a call
+    assert stats["exact:scip"]["status"] == "ok" and stats["exact:scip"]["calls_confirmed"] == 1

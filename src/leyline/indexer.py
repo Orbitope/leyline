@@ -89,6 +89,32 @@ class Indexer:
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
         self._loose_reach: dict[str, set] = {}
+        self.exact_mode = "off"          # off | auto | roslyn | scip
+        self.scip_paths: list[str] = []
+        self.exact_stats: dict[str, dict] = {}
+
+    def _apply_exact(self) -> None:
+        """Let a compiler overrule the syntax resolvers where one is available."""
+        if self.exact_mode == "off":
+            return
+        from . import exact
+        if self.exact_mode in ("auto", "roslyn") and any(v == "csharp" for v in self.file_lang.values()):
+            try:
+                records, info = exact.roslyn(self)
+            except RuntimeError as exc:
+                records, info = [], {"status": "failed", "reason": str(exc)[-600:]}
+            if records:
+                info.update(exact.apply(self, records, "roslyn"))
+            self.exact_stats["exact:roslyn"] = info
+        paths = list(self.scip_paths)
+        if self.exact_mode in ("auto", "scip") and not paths:
+            paths = [str(p) for p in (self.root / "index.scip", self.root / ".leyline" / "index.scip") if p.is_file()]
+        for path in paths:
+            try:
+                info = {"status": "ok", "file": path, **exact.apply(self, exact.scip(path, self.root), "scip")}
+            except Exception as exc:
+                info = {"status": "failed", "reason": str(exc)[-600:]}
+            self.exact_stats["exact:scip"] = info
 
     # -- public --------------------------------------------------------------
     def run(self, con) -> dict:
@@ -136,6 +162,7 @@ class Indexer:
         self._resolve_calls()
         self._resolve_events()
         self._resolve_fields()
+        self._apply_exact()
         self._resolve_spawns()
         self._build_flows()
         self._write(con)
@@ -1062,7 +1089,11 @@ class Indexer:
             store.write_flows(con, self.repo, self.flows, self.flow_steps)
             store.write_coverage(con, self.repo, "flows:static", "0.1", "ok", self.commit,
                                  {"flows": len(self.flows), "steps": len(self.flow_steps)})
-            store.write_coverage(con, self.repo, "scip", "-", "not_analyzed", self.commit, {})
+            for name in ("exact:roslyn", "exact:scip"):
+                info = dict(self.exact_stats.get(name, {}))
+                status = info.pop("status", "not_analyzed")
+                store.write_coverage(con, self.repo, name, "1" if status == "ok" else "-",
+                                     status if status in ("ok", "failed") else "not_analyzed", self.commit, info)
             store.write_coverage(con, self.repo, "coverage", "-", "not_analyzed", self.commit, {})
             store.rebuild_derived(con)
 
@@ -1078,13 +1109,18 @@ def _normalize(parts: tuple) -> list[str]:
     return out
 
 
-def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None) -> dict:
+def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, exact: str = "off",
+          scip: Optional[list[str]] = None) -> dict:
+    """Index a repository. `exact` is off, auto, roslyn or scip: whether a compiler's view of the
+    references replaces the syntax-based one (see leyline.exact). `scip` lists index.scip files."""
     from . import cluster, patterns, tours
 
     con = store.connect(db_path)
     try:
         ix = Indexer(root, repo_id)
+        ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
         stats = ix.run(con)
+        stats.update(ix.exact_stats)
         stats["systems"] = cluster.propose(con, ix.repo)
         with con:
             store.rebuild_derived(con)

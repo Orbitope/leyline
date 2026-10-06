@@ -46,6 +46,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("index", help="index a repository into the store")
     p.add_argument("path", nargs="?", default=".")
     p.add_argument("--repo", help="repo id (defaults to the directory name)")
+    p.add_argument("--exact", choices=["auto", "off", "roslyn", "scip"], default="auto",
+                   help="let a compiler overrule the syntax-based links: the .NET SDK's for C#, a SCIP index for"
+                        " other languages. auto (the default) uses whatever is available")
+    p.add_argument("--scip", action="append", default=[], metavar="FILE", help="a SCIP index to read (repeatable)")
     p = sub.add_parser("overview", help="the module map")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("expand", help="one node in detail")
@@ -89,7 +93,7 @@ def main(argv=None) -> int:
 
     if args.cmd == "index":
         db = args.db if args.db != DEFAULT_DB else str(Path(args.path) / DEFAULT_DB)
-        stats = index(args.path, db, args.repo)
+        stats = index(args.path, db, args.repo, args.exact, args.scip)
         print(f"indexed into {db}")
         _print(stats)
         return 0

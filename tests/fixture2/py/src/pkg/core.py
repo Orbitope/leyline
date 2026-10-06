@@ -19,3 +19,8 @@ class Engine(Base):
 
 def make_engine():
     return Engine("made")
+
+
+def poke(thing):
+    handler = thing.child
+    return thing.child()
