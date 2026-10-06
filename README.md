@@ -16,6 +16,7 @@ reviews it after, and checks architecture rules.
 ```bash
 pip install -e .
 leyline index path/to/repo          # writes path/to/repo/.leyline/leyline.db
+leyline --db ... coverage .coverage # import measured test coverage
 leyline --db path/to/repo/.leyline/leyline.db overview
 leyline --db ... search "Simulation Step"
 leyline --db ... expand "<node id>"
@@ -92,6 +93,41 @@ some test's path). Selectors are `module:Name`, `system:Name`, `external:Name`, 
 `leyline rules --confirm ID`. `leyline rules` checks all of them and exits 1 when a confirmed
 error-level rule fails, so it can run in CI. A `forbid` rule on an external package sees imports
 (`using`, `import`), not fully qualified names used inline.
+
+### Exact references
+
+The syntax resolvers below work without a compiler and are sometimes wrong. Where a compiler's view
+is available, `leyline index` lets it overrule them (`--exact auto`, the default; `--exact off` to
+skip):
+
+- **C#**: if `dotnet` is on the PATH, a small program built against the Roslyn that ships inside
+  the .NET SDK binds every module and reports each call and field access it resolved. It needs no
+  package restore. A module whose packages are missing still binds whatever refers to source in the
+  repository; the rest stays as the syntax pass left it. The first run builds the program into
+  `~/.cache/leyline` (about ten seconds).
+- **Other languages**: a SCIP index, from `--scip FILE` or `index.scip` in the repository root.
+  Tested with scip-python. Run the indexer in an environment where the package resolves to the
+  source tree (an editable install), or references through the installed copy are lost.
+
+A link the compiler confirms is stored as `exact`. A link it contradicts is removed, but only where
+it bound every call of that name in the function (C#) or bound that name to something else on the
+same line (SCIP, which does not say what it failed to bind). Links it found and the syntax pass
+missed are added. `overview` reports the counts under `exact:roslyn` and `exact:scip`.
+
+### Measured coverage
+
+Flows are static: what a test can reach. `leyline coverage FILE` imports what did run:
+
+- coverage.py's data file. With `pytest --cov=<package> --cov-context=test`, each function is tied
+  to the tests that ran it.
+- Cobertura XML (coverlet, `coverage xml`). A function ran or did not; no per-test detail.
+
+With coverage imported, a test's flow dims the steps that did not run and lists what ran without
+being on its path (reached through a link the map does not have, such as a framework calling back
+into the code). A change assessment adds the tests that were measured running the changed code, and
+`must_be_tested` counts measured functions as tested. Only a function's body counts: the `def` line
+runs when the file loads. An import outlives a re-index; `leyline coverage` flags one taken at
+another commit.
 
 ### Field reads and writes
 
@@ -186,6 +222,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
+| `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
 | `patterns(pattern?, node_id?)` | Design patterns found by shape, with roles, rationale and confidence |
 | `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |
 | `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |
@@ -238,7 +275,17 @@ moves, and carries a `channel` and an `address`.
   the command names a project, a build output or a script in the workspace. If only the surrounding
   file names it, the edge is a `guess`.
 
-Dependency injection, HTTP, queues, databases and shared files are recorded as `not_analyzed`.
+- **http**: from a request to the route that serves it. Routes are read from decorators
+  (`@app.route("/x")`, `@app.get`), ASP.NET attributes (`[HttpGet("x")]`) and `MapGet`-style calls;
+  requests from `.get("/x")`-style calls and `HttpClient` methods with a literal path. A request is
+  linked to a route declared inside the same test first, then to the only route in the repository
+  that matches; if several match, it is counted as ambiguous and left unlinked.
+- **file**: from a function that writes a file to one that reads it, when the path fragments written
+  in the two agree: the same file name, or the same directory and the same extension
+  (`policies/*.bin`). These are always a `guess`, since paths are usually built at run time. Flows
+  do not follow them: writing a file does not run its reader.
+
+Dependency injection, queues, RPC and databases are recorded as `not_analyzed`.
 
 ### Systems
 
@@ -279,7 +326,12 @@ Measured on three repositories, counting call sites whose target is inside the r
 | Flask (Python) | 83 | 1 s | 91% | 9% | 101 |
 | Polly (C#) | 801 | 7 s | 94% | 2% | 915 |
 
-"Linked" is not "correct": no compiler checked these. In a random sample of 42 links across the
+With the compiler pass on, the syntax links can be scored. On Signal the compiler confirmed 2,081
+of them, removed 16 and added 38 it had missed. On Polly, where packages could not be restored and
+only part of the code binds, it confirmed 4,844 and removed 1,286, nearly all extra overloads of
+the right method.
+
+Without that pass, "linked" is not "correct". In a random sample of 42 links across the
 three, read against the source by hand, all 42 pointed at the right method; 4 of the 22 from Polly
 pointed at the wrong overload of it. Polly's fluent API has up to twenty overloads per name, which
 is the hard case for this approach. A call the indexer classes
