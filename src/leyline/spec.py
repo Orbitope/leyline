@@ -471,7 +471,14 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     test_ids = set(tests.values())
     # A new or edited test is how a scenario gets proven, not an edit outside the spec.
     tests_touched = [n for n in review["not_predicted"] if n["id"] in test_ids or n["id"].split("/test:")[0] in test_ids and "/test:" in n["id"]]
-    drift = [n for n in review["not_predicted"] if n not in tests_touched]
+    # "Add X to `Foo`" covers whatever is new or edited inside Foo.
+    into = {i for row in con.execute("SELECT attrs FROM spec_items WHERE change_id = ? AND kind = 'task'", (cid,))
+            for i in json.loads(row[0] or "{}").get("into", [])}
+    inside = {r[0] for i in into for r in con.execute("SELECT node_id FROM ancestry WHERE file_id = ? OR module_id = ?", (i, i))}
+
+    def in_container(i):
+        return i in inside or any(i.startswith(c + ".") or i.startswith(c + "/") for c in into)
+    drift = [n for n in review["not_predicted"] if n not in tests_touched and not in_container(n["id"])]
     verdict = []
     if any(t["state"] in ("not done", "partly") for t in tasks):
         verdict.append("some tasks are not done")
@@ -558,6 +565,23 @@ def review_facts(con, change_dir: str | Path) -> dict:
     perf_tests = [{"id": r["id"], "name": r["name"]} for r in con.execute(
         "SELECT id, name FROM nodes WHERE (kind = 'test' OR json_extract(attrs, '$.is_test') = 1)") if re.search(
         r"per\s?sec|/sec|perf|bench|throughput|latency|\bfast|\bslow|\d+k\b|\bms\b", r["name"], re.I)]
+    # State the changed functions use, and who else uses it without being in the spec: the place a parallel
+    # change is most often forgotten (a second queue added, and one of three readers of the first left alone).
+    task_fns = set(dict.fromkeys(fns))
+    siblings = []
+    for i in sorted(task_fns):
+        for f in con.execute("SELECT DISTINCT dst_id FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?", (i,)):
+            others = [r[0] for r in con.execute(
+                "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f[0],))
+                if r[0] not in task_fns and r[0] in names.by_id and names.module.get(r[0]) not in names.test_modules]
+            if 0 < len(others) <= 8 and f[0] in names.by_id:
+                siblings.append({"field": _label(names, f[0]), "used_by_changed": _label(names, i),
+                                 "also_used_by_unchanged": [_label(names, o) for o in others]})
+    seen_fields, uniq = set(), []
+    for x in siblings:
+        if x["field"] not in seen_fields:
+            seen_fields.add(x["field"])
+            uniq.append(x)
     imp = b["impact"] if "error" not in b["impact"] else {}
     return {
         "change_id": b["change_id"], "title": b["title"],
@@ -566,6 +590,7 @@ def review_facts(con, change_dir: str | Path) -> dict:
             "channels_crossed": imp.get("channels") or [],
             "shared_state_written": b["shared_state"],
             "scenarios_with_no_test": [s["name"] for s in b["scenarios"] if not s["test_exists"]],
+            "state_shared_with_functions_the_spec_leaves_alone": uniq[:30],
             "changed_code_no_test_reaches": imp.get("untested") or [],
             "patterns_involved": b["patterns"],
             "rules_failing_before_the_change": b["rules_failing_now"],

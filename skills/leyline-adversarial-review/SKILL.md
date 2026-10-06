@@ -26,6 +26,10 @@ written. Do one review per run: logic or performance. It needs the Leyline MCP s
 - Which channel does the change cross (process, HTTP, file, event), and does the spec say what the
   other end must do?
 - Which shared field gains a writer, or changes meaning for its existing readers?
+- Which state do the changed functions use that other, unchanged functions also use? If the change
+  adds a parallel structure (a second queue, a second flag), does every reader of the first one learn
+  about the second?
+- For each scenario: would its test still pass if the task it is meant to prove were left out?
 - Which scenario has no test? Which requirement has no scenario?
 - What do the scenarios leave out: the error path, the empty case, ordering, the second caller,
   what happens to data written before the change?
