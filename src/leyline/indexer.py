@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import json
 import re
 import subprocess
@@ -13,12 +14,18 @@ from pathlib import Path
 from typing import Optional
 
 from . import store
-from .adapters import BY_EXTENSION
+from .adapters import BY_EXTENSION, BY_LANGUAGE
 from .adapters.python import module_path
 from .model import CallSite, Edge, FieldUse, FileResult, Node
 
 SOURCE = "leyline-indexer/0.1"
 MODULE_MARKERS = ("pyproject.toml", "setup.py", "package.json", "__init__.py")
+# Languages where a file is a module and other files name what they take from it (import { a } from "./b").
+FILE_MODULE = ("python", "typescript")
+CTORS = (".ctor", "__init__", "constructor")
+NODE_BUILTINS = frozenset("""assert async_hooks buffer child_process cluster console constants crypto dgram dns domain
+events fs http http2 https inspector module net os path perf_hooks process punycode querystring readline repl stream
+string_decoder timers tls tty url util v8 vm worker_threads zlib test""".split())
 SKIP_DIRS = {".git", "node_modules", "bin", "obj", "__pycache__", ".venv", "venv", ".godot", ".leyline"}
 
 
@@ -44,13 +51,18 @@ def list_files(root: Path) -> list[str]:
 
 def _module_dirs(files: list[str]) -> set[str]:
     """Directories that are modules because they hold a project marker."""
-    dirs = set()
+    dirs, packages = set(), set()
     for f in files:
         d, _, base = f.rpartition("/")
         if base.endswith(".csproj") or base in MODULE_MARKERS:
             dirs.add(d)
-    # A nested __init__.py belongs to its top-most package, not to a module of its own.
-    return {d for d in dirs if not any(
+            if base == "__init__.py":
+                packages.add(d)
+    # A nested __init__.py belongs to its top-most package, not to a module of its own. A project file
+    # inside another project's folder (a workspace package) is a module of its own.
+    own = {d for d in dirs if d not in packages or any(
+        f.rpartition("/")[0] == d and (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS[:3]) for f in files)}
+    return {d for d in dirs if d in own or not any(
         d != o and d.startswith(o + "/") and o != "" for o in dirs)}
 
 
@@ -169,6 +181,7 @@ class Indexer:
             self._projects(files)
             self._build_indexes()
             self._resolve_imports()
+            self._script_entries()
             self._resolve_types()
             self._resolve_overrides()
             self._resolve_calls()
@@ -251,6 +264,13 @@ class Indexer:
         self.field_names: dict[str, set] = defaultdict(set)
         self.ns_modules: dict[str, set] = defaultdict(set)               # C# namespace -> module ids
         self.py_modules: dict[str, str] = {}                             # python module path -> file id
+        self.path_modules: dict[str, str] = {}                           # path without extension -> file id (TypeScript)
+        self.star_exports: dict[str, list] = defaultdict(list)           # file -> files it re-exports everything from
+        self.default_export: dict[str, str] = {}                         # file -> the node it exports as default
+        self.packages: dict[str, dict] = {}                              # npm package name -> {"dir", "exports", "main"}
+        for n in self.nodes.values():
+            if n.attrs.get("is_default_export") and n.kind in ("callable", "type"):
+                self.default_export[n.parent_id] = n.id
         self.file_of: dict[str, str] = {}
         for n in self.nodes.values():
             if n.kind == "type":
@@ -270,8 +290,10 @@ class Indexer:
             for d in res.declares:
                 if lang == "csharp":
                     self.ns_modules[d].add(mod_id)
-                else:
+                elif lang == "python":
                     self.py_modules[d] = fid
+                else:
+                    self.path_modules[d] = fid
             for n in res.nodes:
                 self.file_of[n.id] = fid
         # A package under a source root (src/flask) is imported by its own name (flask), not by its path.
@@ -291,6 +313,17 @@ class Indexer:
         self.cs_static: dict[str, list] = defaultdict(list)    # file -> type names from `using static`
         self.cs_alias: dict[str, dict] = defaultdict(dict)     # file -> alias -> type name
         self.py_names: dict[str, dict] = defaultdict(dict)     # file -> local name -> (file id, symbol|None)
+        self.outside_imports: dict[str, set] = defaultdict(set)  # file -> local names imported from outside the workspace
+        self.import_targets: dict[str, set] = defaultdict(set)   # file -> files it imports, by any form of import
+        for f in list_files(self.root):
+            if f.rsplit("/", 1)[-1] == "package.json":
+                try:
+                    data = json.loads((self.root / f).read_text())
+                except (OSError, ValueError):
+                    continue
+                if isinstance(data, dict) and data.get("name"):
+                    self.packages[data["name"]] = {"dir": f.rpartition("/")[0], "exports": data.get("exports"),
+                                                   "main": data.get("source") or data.get("module") or data.get("main") or data.get("types")}
         seen = set()
         stdlib = getattr(sys, "stdlib_module_names", frozenset())
         for fid, res in self.results.items():
@@ -325,25 +358,93 @@ class Indexer:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact"))
                 else:
-                    target = self._py_module(fid, imp.target)
+                    target = self._find_module(fid, imp.target)
                     if target:
                         if imp.symbols:
                             for s in imp.symbols:
                                 name, _, alias = s.partition(" as ")
-                                sub = self._py_module(fid, f"{imp.target}.{name}")
+                                if name == "*":
+                                    self.star_exports[fid].append(target)
+                                    continue
+                                sub = self._py_module(fid, f"{imp.target}.{name}") if lang == "python" else None
                                 self.py_names[fid][alias or name] = (sub, None) if sub else (target, name)
-                        else:
+                        elif imp.alias or lang == "python":
                             self.py_names[fid][imp.alias or imp.target] = (target, None)
+                        self.import_targets[fid].add(target)
                         if (fid, target) not in seen and target != fid:
                             seen.add((fid, target))
                             self.edges.append(Edge("imports", fid, target, "exact", {"symbols": imp.symbols}))
-                    else:
+                    elif lang == "python":
                         top = imp.target.split(".")[0] or imp.target
                         xid = self._external("python", top,
                                              {"category": "stdlib" if top in stdlib else "package"})
                         if (fid, xid) not in seen:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
+                    elif not imp.target.startswith("."):
+                        spec = imp.target[5:] if imp.target.startswith("node:") else imp.target
+                        parts = spec.split("/")
+                        top = "/".join(parts[:2]) if spec.startswith("@") else parts[0]
+                        builtin = imp.target.startswith("node:") or top in NODE_BUILTINS
+                        xid = self._external("npm", top, {"category": "stdlib" if builtin else "package"})
+                        for s in imp.symbols:   # a name from outside: calls to it are not ours to resolve
+                            self.outside_imports[fid].add(s.partition(" as ")[2] or s)
+                        if imp.alias:
+                            self.outside_imports[fid].add(imp.alias)
+                        if (fid, xid) not in seen:
+                            seen.add((fid, xid))
+                            self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
+
+    def _script_entries(self) -> None:
+        """A TypeScript file that does work at its top level and that nothing imports is a program:
+        a server's start file, a build script. Tests and config files are not."""
+        imported = {t for targets in self.import_targets.values() for t in targets}
+        for fid, res in self.results.items():
+            if self.file_lang[fid] != "typescript" or fid in imported:
+                continue
+            path = self.nodes[fid].path
+            base = path.rsplit("/", 1)[-1]
+            top = f"{self.repo}:typescript:{self._modpath(fid)}.<module>"
+            if top not in self.nodes or top + "#entry" in self.nodes or re.search(r"\.(test|spec|bench|config|setup|d)\.", base) \
+                    or "/test/" in "/" + path or "/__tests__/" in "/" + path or any(n.kind == "test" for n in res.nodes):
+                continue
+            calls = [c for c in res.calls if c.src_id == top and not c.ref]
+            if len(calls) < 1:
+                continue
+            ep = Node(id=top + "#entry", kind="entry_point", name=path, parent_id=fid, language="typescript", path=path,
+                      span_start=1, span_end=self.nodes[fid].span_end, attrs={"trigger": "cli", "address": path, "found_by": "nothing imports it"})
+            self._add(ep)
+            self.file_of[ep.id] = fid
+            self.edges.append(Edge("exposes", ep.id, top))
+
+    def _find_module(self, fid: str, target: str) -> Optional[str]:
+        if self.file_lang[fid] == "python":
+            return self._py_module(fid, target)
+        return self._path_module(target)
+
+    def _path_module(self, target: str) -> Optional[str]:
+        """A TypeScript import: ./path from the repo root (the adapter resolved it), or a workspace package."""
+        def at(path):
+            path = re.sub(r"\.(d\.[cm]?ts|[cm]?[jt]sx?)$", "", path.lstrip("./"))
+            return self.path_modules.get(path) or self.path_modules.get(path + "/index")
+        if target.startswith("."):
+            return at(target[2:] if target.startswith("./") else target)
+        name = max((p for p in self.packages if target == p or target.startswith(p + "/")), key=len, default=None)
+        if name is None:
+            return None
+        pkg, sub = self.packages[name], target[len(name):].lstrip("/")
+        exports = pkg["exports"]
+        entry = exports.get("./" + sub if sub else ".") if isinstance(exports, dict) else (exports if not sub else None)
+        while isinstance(entry, dict):   # {"import": ..., "types": ..., "default": ...}
+            entry = next((entry[k] for k in ("source", "import", "default", "types", "require") if k in entry), None)
+        tries = [entry] if isinstance(entry, str) else []
+        tries += [f"{sub}", f"src/{sub}"] if sub else [pkg["main"], "src/index", "index"]
+        for t in tries:
+            if t:
+                hit = at(posixpath.normpath(posixpath.join(pkg["dir"], t)))
+                if hit:
+                    return hit
+        return None
 
     def _py_module(self, fid: str, target: str) -> Optional[str]:
         if target in self.py_modules:
@@ -355,15 +456,28 @@ class Indexer:
             return self.py_modules[sibling]
         return None
 
+    def _modpath(self, fid: str) -> str:
+        return BY_LANGUAGE[self.file_lang[fid]].module_path(self.nodes[fid].path)
+
     def _py_export(self, target_fid: str, symbol: str, depth: int = 0) -> Optional[str]:
-        """The node a module exposes under a name, following re-exports (`from .app import Flask`)."""
-        cand = f"{self.repo}:python:{module_path(self.nodes[target_fid].path)}.{symbol}"
+        """The node a module exposes under a name, following re-exports (`from .app import Flask`,
+        `export { a } from "./b"`, `export * from "./c"`)."""
+        if target_fid not in self.file_lang:
+            return None
+        if symbol == "default" and target_fid in self.default_export:
+            return self.default_export[target_fid]
+        cand = f"{self.repo}:{self.file_lang[target_fid]}:{self._modpath(target_fid)}.{symbol}"
         if cand in self.nodes:
             return cand
-        if depth < 5 and symbol in self.py_names.get(target_fid, {}):
+        if depth < 6 and symbol in self.py_names.get(target_fid, {}):
             nxt, sub = self.py_names[target_fid][symbol]
             if sub is not None:
                 return self._py_export(nxt, sub, depth + 1)
+        if depth < 6:
+            for nxt in self.star_exports.get(target_fid, ()):
+                hit = self._py_export(nxt, symbol, depth + 1)
+                if hit:
+                    return hit
         return None
 
     def _py_fixtures(self) -> None:
@@ -425,10 +539,16 @@ class Indexer:
     def _visible(self, fid: str) -> Optional[set]:
         """Modules whose symbols a file can reference, or None when that is not knowable."""
         mod = self.nodes[fid].parent_id
-        if self.file_lang[fid] == "python":
-            out = {fid}
-            out.update(t for t, _ in self.py_names[fid].values())
-            return out
+        if self.file_lang[fid] in FILE_MODULE:
+            if fid not in self._vis_cache:
+                out, queue = {fid}, [t for t, _ in self.py_names[fid].values()] + list(self.star_exports.get(fid, ()))
+                while queue:   # a file re-exported with `export *` is seen through the file that re-exports it
+                    cur = queue.pop()
+                    if cur not in out:
+                        out.add(cur)
+                        queue.extend(self.star_exports.get(cur, ()))
+                self._vis_cache[fid] = out
+            return self._vis_cache[fid]
         if not (self.nodes[mod].attrs.get("marker") or "").endswith(".csproj"):
             return None  # a loose .cs file: no project file says what it can see
         if mod not in self._vis_cache:
@@ -442,12 +562,26 @@ class Indexer:
             self._vis_cache[mod] = seen
         return self._vis_cache[mod]
 
+    def _reach(self, fid: str) -> set:
+        """Files reachable through imports. A name found nowhere else in that set is a fair guess."""
+        key = ("reach", fid)
+        if key not in self._vis_cache:
+            out, queue = set(), [fid]
+            while queue:
+                cur = queue.pop()
+                if cur in out:
+                    continue
+                out.add(cur)
+                queue.extend(t for t in self.import_targets.get(cur, ()) if t not in out)
+            self._vis_cache[key] = out
+        return self._vis_cache[key]
+
     def _can_see(self, fid: str, node_id: str) -> bool:
         vis = self._visible(fid)
         if vis is None:
             return True
         target_file = self.file_of.get(node_id)
-        if self.file_lang[fid] == "python":
+        if self.file_lang[fid] in FILE_MODULE:
             return target_file in vis
         return target_file is not None and self.nodes[target_file].parent_id in vis
 
@@ -460,11 +594,17 @@ class Indexer:
             arity = int(count) if tick and count.isdigit() else 0
             if fid:
                 name = self.cs_alias[fid].get(name, name)
-        if lang == "python" and fid and name in self.py_names[fid]:
+        if lang in FILE_MODULE and fid and name in self.py_names[fid]:
             target, symbol = self.py_names[fid][name]
             cand = self._py_export(target, symbol or name)
             if cand and self.nodes[cand].kind == "type":
                 return cand
+        if lang == "typescript" and fid:
+            if name in self.outside_imports[fid]:
+                return None
+            own = f"{self.repo}:{lang}:{self._modpath(fid)}.{name}"
+            if own in self.nodes and self.nodes[own].kind == "type":
+                return own
         cands = self.types_by_name.get((lang, name), [])
         if lang == "csharp" and fid:
             cands = [c for c in cands if self._can_see(fid, c)]
@@ -496,7 +636,7 @@ class Indexer:
         seen = set()
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
-            adapter = f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"
+            adapter = BY_LANGUAGE[lang].NAME
             for ref in res.type_refs:
                 for i, name in enumerate(ref.names):
                     tid = self._type(lang, name, ref.src_id)
@@ -539,6 +679,8 @@ class Indexer:
 
     def _pick(self, cands: list[Node], argc: int, skip: int = 0) -> list[Node]:
         """Overloads that fit a call. `skip` is 1 for an extension method, whose first parameter is the receiver."""
+        if argc < 0:
+            return list(cands)   # a function named, not called: nothing to match arguments against
         argc += skip
         fit = [c for c in cands if c.attrs.get("argc_min", 0) <= argc <= c.attrs.get("argc_max", 99)]
         call = getattr(self, "_call", None)
@@ -595,6 +737,8 @@ class Indexer:
                 return got
         if r in ("?", "[]"):
             return None, False
+        if r in getattr(BY_LANGUAGE[lang], "GLOBALS", ()) and not self._type(lang, r, call.src_id):
+            return None, True   # JSON.stringify, Math.max: the platform's, not ours
         if r.startswith("."):
             names = self.field_types_global.get((lang, r[1:]), set())
             ids = {self._type(lang, n, call.src_id) for n in names}
@@ -651,9 +795,9 @@ class Indexer:
         out = None
         if targets and not guessed:
             t = targets[0]
-            if t.name in (".ctor", "__init__"):
+            if t.name in CTORS:
                 out = (t.parent_id, True)
-            elif lang == "python":
+            elif lang in FILE_MODULE:
                 if t.attrs.get("returns"):
                     tid = self._type(lang, t.attrs["returns"], t.id)
                     out = (tid, True) if tid else None
@@ -692,21 +836,38 @@ class Indexer:
         # Names seen on receivers of a known outside type (List.Add, dict.get). A call to such a
         # name on a receiver of unknown type is never guessed.
         self.outside_names: set = set()
+        for a in BY_LANGUAGE.values():
+            self.outside_names.update((a.LANGUAGE, n) for n in getattr(a, "COMMON_METHODS", ()))
         self._py_fixtures()
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
             for call in res.calls:
                 if call.receiver not in (None, "this", "base") and call.name != ".ctor":
-                    if lang == "python" and call.receiver in self.py_names[fid]:
+                    if lang in FILE_MODULE and call.receiver in self.py_names[fid]:
+                        continue
+                    if call.ref:
                         continue
                     tid, known = self._receiver_type(lang, call)
                     if known and tid is None:
                         self.outside_names.add((lang, call.name))
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
-            adapter = f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"
+            adapter = BY_LANGUAGE[lang].NAME
             st = self.stats[adapter]
             for call in res.calls:
+                if call.ref:
+                    # A function handed over by name. Linked when the name is one of ours; otherwise it was a value.
+                    self._guessed, self._call = False, None
+                    before = dict(st)
+                    targets = [t for t in (self._resolve_call(lang, fid, call) or []) if t.kind == "callable"]
+                    st.clear()
+                    st.update(before)
+                    if targets and not self._guessed:
+                        st["references_linked"] += 1
+                        for t in targets:
+                            self.calls.append((call.src_id, t.id, "reference", "heuristic", call.line))
+                            self.call_col[(call.src_id, t.id, call.line)] = call.col
+                    continue
                 st["calls_total"] += 1
                 self._guessed = False
                 self._call = call
@@ -727,8 +888,13 @@ class Indexer:
         """None = defined outside the workspace; [] = defined here but not pinned down."""
         name, argc = call.name, call.argc
         self._last_src = call.src_id
-        defined_here = any(self._can_see(fid, c.id) for c in self.by_name.get((lang, name), ())) or (
-            lang == "python" and bool(self.types_by_name.get((lang, name))))
+        if lang == "typescript":   # one hop is too strict where a store or a module object sits between caller and function
+            reach = self._reach(fid)
+            defined_here = any(self.file_of.get(c.id) in reach for c in self.by_name.get((lang, name), ())) or bool(
+                self.types_by_name.get((lang, name)))
+        else:
+            defined_here = any(self._can_see(fid, c.id) for c in self.by_name.get((lang, name), ())) or (
+                lang in FILE_MODULE and bool(self.types_by_name.get((lang, name))))
         if name == ".ctor":
             tid = self._type(lang, call.receiver_type or "", call.src_id)
             if tid is None:
@@ -743,7 +909,7 @@ class Indexer:
                 if local:
                     return self._pick(local, argc)
                 cur = self.nodes[cur].parent_id
-            if lang == "python":
+            if lang in FILE_MODULE:
                 return self._py_bare(fid, call, defined_here)
             found = self._methods(call.enclosing_type, name, argc)
             if found:
@@ -753,7 +919,9 @@ class Indexer:
                 if found:
                     return found
             return [] if defined_here else None
-        if lang == "python" and call.receiver not in ("this",) and call.receiver in self.py_names[fid]:
+        if lang == "typescript" and call.receiver in self.outside_imports[fid]:
+            return None   # React.useState(), path.join(): a namespace from outside
+        if lang in FILE_MODULE and call.receiver not in ("this",) and call.receiver in self.py_names[fid]:
             target, symbol = self.py_names[fid][call.receiver]
             if symbol is None:
                 return self._py_symbol(self._py_export(target, name) or "", argc)
@@ -769,18 +937,25 @@ class Indexer:
                 found = self._extensions(lang, fid, tid, name, argc)
                 if found:
                     return found
-            return None  # the type is ours but the method is inherited from outside
+            if not (lang == "typescript" and any(name in self.field_names.get(t, ()) for t in self._chain(tid))):
+                return None  # the type is ours but the method is inherited from outside
+            # A property that holds a function (`save: (x) => void` in an interface): whichever function was
+            # put there is not known from the type, so fall through to the unique-name guess.
+            tid, known = None, False
         if known:
             return None  # receiver has a type that is not in the workspace
         if not defined_here:
             return None
         if (lang, name) in self.outside_names:
-            self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]["calls_guess_declined"] += 1
-            return []
-        self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]["calls_by_unique_name"] += 1
+            self.stats[BY_LANGUAGE[lang].NAME]["calls_guess_declined"] += 1
+            # In TypeScript most receivers are untyped, and a name seen on built-in types (push, get, keys) is
+            # far more often the built-in than the one function here that shares it.
+            return None if lang == "typescript" else []
+        self.stats[BY_LANGUAGE[lang].NAME]["calls_by_unique_name"] += 1
         self._guessed = True
         # Receiver type unknown: accept only a name that is defined exactly once.
-        cands = self._pick([c for c in self.by_name[(lang, name)] if self._can_see(fid, c.id)], argc)
+        cands = self._pick([c for c in self.by_name[(lang, name)] if (
+            self.file_of.get(c.id) in self._reach(fid) if lang == "typescript" else self._can_see(fid, c.id))], argc)
         owners = {c.parent_id for c in cands}
         if len(owners) > 1:
             # Several declarations: if all but one are overrides or implementations of the same
@@ -834,13 +1009,13 @@ class Indexer:
         found: dict[tuple, list] = {}
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
-            st = self.stats[f"tree-sitter-{'c-sharp' if lang == 'csharp' else lang}"]
+            st = self.stats[BY_LANGUAGE[lang].NAME]
             for u in res.field_uses:
                 if u.src_id not in self.nodes:
                     continue
                 target, guessed = None, False
                 if u.receiver in (None, "this"):
-                    if u.receiver is None and lang == "python":
+                    if u.receiver is None and lang in FILE_MODULE:
                         continue  # a bare name in Python is a local or a global, never an attribute
                     owners = self._chain(u.enclosing_type)
                 elif u.receiver == "base":
@@ -1147,25 +1322,34 @@ class Indexer:
         if n is None:
             return None
         if n.kind == "callable":
-            return [n]
+            return [n] if argc < 0 else (self._pick([n], argc) or [n])
         if n.kind == "type":
-            init = self._methods(n.id, "__init__", argc)
+            init = next((found for c in CTORS for found in [self._methods(n.id, c, argc)] if found), None)
             self.edges.append(Edge("instantiates", self._last_src, n.id, "heuristic"))
             return init or None
         return None
 
     def _py_bare(self, fid: str, call: CallSite, defined_here: bool) -> Optional[list[Node]]:
         self._last_src = call.src_id
-        mod = module_path(self.nodes[fid].path)
-        hit = self._py_symbol(f"{self.repo}:python:{mod}.{call.name}", call.argc)
+        lang = self.file_lang[fid]
+        own = f"{self.repo}:{lang}:{self._modpath(fid)}.{call.name}"
+        hit = self._py_symbol(own, call.argc)
         if hit is not None:
             return hit
         if call.name in self.py_names[fid]:
             target, symbol = self.py_names[fid][call.name]
             return self._py_symbol(self._py_export(target, symbol or call.name) or "", call.argc)
-        if f"{self.repo}:python:{mod}.{call.name}" in self.nodes:
-            return None  # a class with no __init__
-        return None  # builtins and star imports
+        if lang == "typescript" and own not in self.nodes and call.name not in self.outside_imports[fid]:
+            # Not declared here and not imported by name: a local taken out of something (`const { save } = await
+            # load()`). If exactly one exported function reachable from this file has the name, say so as a guess.
+            reach = self._reach(fid)
+            cands = [c for c in self.by_name.get((lang, call.name), ())
+                     if self.file_of.get(c.id) in reach and c.parent_id == self.file_of.get(c.id) and c.attrs.get("visibility") == "public"]
+            if len(cands) == 1 and len(call.name) > 3:
+                self._guessed = True
+                self.stats[BY_LANGUAGE[lang].NAME]["calls_by_unique_name"] += 1
+                return cands
+        return None  # builtins, star imports, and classes with no constructor
 
     # -- write ---------------------------------------------------------------
     def _write(self, con) -> None:

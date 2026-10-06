@@ -1,0 +1,1 @@
+{ "name": "@fx/app", "dependencies": { "@fx/core": "*", "react": "*" } }

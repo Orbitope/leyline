@@ -1,0 +1,1 @@
+{ "name": "@fx/core", "exports": { ".": "./src/index.ts", "./ids": "./src/ids.ts" } }

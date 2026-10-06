@@ -717,3 +717,42 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
     assert v2["drift"] == [] and {t["key"]: t["state"] for t in v2["tasks"]}["1.4"] == "done"
     assert {t["key"]: t["state"] for t in v2["tasks"]}["1.2"] == "done"            # still seen as added, not as there all along
     assert spec.brief(c, ch, new_baseline=True)["baseline"] == "new"
+
+
+def test_typescript(tmp_path):
+    """A third language: workspace packages, re-exports, JSX, functions handed over by name, inline tests."""
+    db = tmp_path / "ts.db"
+    stats = index(Path(__file__).parent / "fixture3", db, "f3")
+    c = store.connect(db)
+    t = "f3:typescript:pkg."
+    assert stats["tree-sitter-typescript"]["calls_resolved"] + stats["tree-sitter-typescript"]["calls_external"] == \
+        stats["tree-sitter-typescript"]["calls_total"]                      # nothing left unresolved
+    assert {r[0] for r in c.execute("SELECT id FROM nodes WHERE kind = 'module'")} == {"f3:module:pkg/app", "f3:module:pkg/core"}
+    calls = {(r[0][len(t):], r[1][len(t):], r[2]) for r in c.execute("SELECT src_id, dst_id, dispatch FROM calls")}
+    # @fx/core -> src/index.ts -> `export *` from graph.ts; `makeId as newId` re-exported under another name
+    assert ("app.src.main.handlePick", "core.src.graph.build", "static") in calls
+    assert ("app.src.main.handlePick", "core.src.ids.makeId", "static") in calls
+    # typed by what build() returns; an object of functions is a type; a namespace import
+    assert ("app.src.main.handlePick", "core.src.graph.Graph.touch", "static") in calls
+    assert ("app.src.main.handlePick", "core.src.ids.store.save", "static") in calls
+    assert ("app.src.main.Panel.refresh", "core.src.graph.build", "static") in calls
+    # JSX renders a component; a handler passed by name is a reference
+    assert ("app.src.main.Panel", "app.src.main.Row", "static") in calls
+    assert ("app.src.main.Panel", "app.src.main.handlePick", "reference") in calls
+    assert ("app.src.main.Panel", "app.src.main.Panel.refresh", "reference") in calls
+    # a default import, constructed, then called
+    assert ("app.src.main.main", "core.src.index.Registry.register", "static") in calls
+    edges = {(r[0], r[1].split(":", 2)[-1], r[2].split(":", 2)[-1]) for r in c.execute("SELECT kind, src_id, dst_id FROM edges")}
+    assert ("instantiates", "pkg.app.src.main.main", "pkg.core.src.index.Registry") in edges
+    assert ("extends", "pkg.core.src.graph.Link", "pkg.core.src.graph.Stamped") in edges          # type X = A & { ... }
+    assert ("reads", "pkg.core.src.graph.describeLink", "pkg.core.src.graph.Stamped.at") in edges  # a field of the base
+    assert ("writes", "pkg.core.src.graph.Graph.add", "pkg.core.src.graph.Graph.items") in edges   # this.items.push(x)
+    assert ("writes", "pkg.core.src.graph.Graph.rename", "pkg.core.src.graph.Item.label") in edges
+    assert ("communicates", "pkg.app.src.main.main", "pkg.app.src.server.routes") in edges        # fetch -> app.post
+    assert ("imports", "pkg/app/src/main.tsx", "npm:react") in edges
+    tests = {r[0]: r[1] for r in c.execute("SELECT name, id FROM nodes WHERE kind = 'test'")}
+    assert set(tests) == {"adds a node", "counts %d"}
+    assert (tests["adds a node"][len(t):], "core.src.graph.Graph.add", "static") in calls
+    flows = {r[0] for r in c.execute("SELECT entry_id FROM flows")}
+    assert tests["adds a node"] in flows and "f3:typescript:pkg.app.src.main.<module>" in flows   # main() at the top of a file
+    c.close()
