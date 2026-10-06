@@ -147,12 +147,15 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
     """Turn tasks into change targets. Returns (targets, per-task links)."""
     targets, links, seen = [], [], set()
     for t in parsed["tasks"]:
-        link = {"key": t["key"], "text": t["text"], "action": t["action"], "nodes": [], "new": [], "ambiguous": [], "unknown": []}
+        link = {"key": t["key"], "text": t["text"], "action": t["action"], "nodes": [], "new": [], "ambiguous": [], "unknown": [],
+                "into": [], "scenarios": [s["key"] for s in parsed["scenarios"] if _norm(s["name"]) and _norm(s["name"]) in _norm(t["text"])]}
         for written in t["names"]:
             r = names.resolve(written)
             if r.get("skip"):
                 continue
-            if "ids" in r:
+            if "ids" in r and t["action"] == "add" and all(names.by_id[i]["kind"] in ("type", "file", "module") for i in r["ids"]):
+                link["into"].extend(r["ids"])   # "add X to `Foo`": Foo is where it goes, not something whose behavior changes
+            elif "ids" in r:
                 link["nodes"].extend(r["ids"])
                 for i in r["ids"]:
                     # Adding something to an existing type changes the type's behavior, not its contract.
@@ -163,7 +166,8 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
             elif "ambiguous" in r:
                 link["ambiguous"].append({"written": written, "could_be": r["ambiguous"]})
             elif t["action"] == "add" or r.get("parent"):
-                link["new"].append({"name": r["new"], "parent": r.get("parent")})
+                owner = names.by_id[r["parent"]]["name"] + "." if r.get("parent") in names.by_id else ""
+                link["new"].append({"name": r["new"], "parent": r.get("parent"), "label": owner + r["new"]})
                 if r.get("parent"):
                     targets.append({"action": "add", "name": r["new"], "parent": r["parent"],
                                     "note": f"task {t['key']}", "used_by": []})
@@ -214,6 +218,7 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
         tid = tests.get(_norm(s["name"]))
         scenarios.append({**s, "test": tid, "test_exists": bool(tid)})
     tasked = {i for l in links for i in l["nodes"]}
+    planned = {k for l in links for k in l["scenarios"]}   # scenarios some task says it will write the test for
 
     def covered(i):  # a node is covered by a task that names it, its type or its file
         cur = i
@@ -224,6 +229,15 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
         row = con.execute("SELECT file_id FROM ancestry WHERE node_id = ?", (i,)).fetchone()
         return bool(row and row[0] in tasked)
     uncovered = [m for m in report.get("must_edit", []) if not covered(m["id"])] if "error" not in report else []
+    if "error" not in report:
+        # A channel matters to this change when the changed code is one of its two ends. Being reachable from
+        # a program that some other program launches is true of nearly everything.
+        ends = {r[0] for r in con.execute("SELECT src_id FROM edges WHERE kind = 'communicates'")} | {
+            r[0] for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'communicates'")}
+        direct = [c for c in report.get("channels") or [] if c.get("to") in tasked and c.get("to") in ends]
+        report["channels"] = direct
+        if not direct:
+            report["risks"] = [r for r in report.get("risks") or [] if "far side of a channel" not in r["what"]]
     state = _shared_state_touched(con, tasked)
     patterns = _patterns_touched(con, tasked)
     rule_state = rules.check(con)
@@ -232,12 +246,13 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
         gaps += [f"task {l['key']}: `{a['written']}` could be {len(a['could_be'])} things; write it as `Owner.Name`" for a in l["ambiguous"]]
         gaps += [f"task {l['key']}: `{u}` is not on the map and the task does not say it is new" for u in l["unknown"]]
         gaps += [f"task {l['key']}: new `{n['name']}` has no stated home; write it as `Owner.{n['name']}`" for n in l["new"] if not n["parent"]]
-        if not (l["nodes"] or l["new"]):
+        if not (l["nodes"] or l["new"] or l["into"] or l["scenarios"]):
             gaps.append(f"task {l['key']} names no code, so it cannot be checked: {l['text'][:70]}")
     gaps += [f"must be edited but no task covers it: {m['name']} ({m.get('note', '')})" for m in uncovered]
-    gaps += [f"scenario \"{s['name']}\" has no test of that name yet" for s in scenarios if not s["test_exists"]]
+    gaps += [f"scenario \"{s['name']}\" has no test of that name, and no task says it will add one"
+             for s in scenarios if not s["test_exists"] and s["key"] not in planned]
     result = {"change_id": cid, "title": parsed["title"], "why": parsed["why"], "what": parsed["what"], "dir": parsed["dir"],
-              "tasks": [{**l, "labels": [_label(names, i) for i in l["nodes"]]} for l in links],
+              "tasks": [{**l, "labels": [_label(names, i) for i in l["nodes"]], "into_labels": [_label(names, i) for i in l["into"]]} for l in links],
               "scenarios": scenarios, "impact": {k: report.get(k) for k in ("summary", "risks", "by_module", "tests_to_run", "channels", "untested")}
               if "error" not in report else {"error": report["error"]},
               "must_edit_uncovered": uncovered, "shared_state": state, "patterns": patterns,
@@ -247,7 +262,8 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
     with con:
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
         con.executemany("INSERT INTO spec_items VALUES (?,?,?,?,?,?,?)",
-                        [(cid, "task", l["key"], l["text"], l["action"], json.dumps(l["nodes"]), json.dumps({"new": l["new"]})) for l in links]
+                        [(cid, "task", l["key"], l["text"], l["action"], json.dumps(l["nodes"]),
+                          json.dumps({"new": l["new"], "into": l["into"], "scenarios": l["scenarios"]})) for l in links]
                         + [(cid, "scenario", s["key"], s["name"], s["kind"], json.dumps([s["test"]] if s["test"] else []),
                             json.dumps({"when": s["when"], "then": s["then"], "requirement": s["requirement"]})) for s in scenarios])
     if write:
@@ -263,7 +279,7 @@ def _shared_state_touched(con, tasked: set) -> list[dict]:
     out = {}
     for i in tasked:
         for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'writes' AND (src_id = ? OR src_id LIKE ?)", (i, i + ".%")):
-            if r[0] in shared:
+            if r[0] in shared and len(shared[r[0]]["written_from"]) >= 2:
                 out[r[0]] = {"name": shared[r[0]]["name"], "also_written_from": shared[r[0]]["written_from"][:5]}
         if i in shared:
             out[i] = {"name": shared[i]["name"], "also_written_from": shared[i]["written_from"][:5]}
@@ -273,9 +289,13 @@ def _shared_state_touched(con, tasked: set) -> list[dict]:
 def _patterns_touched(con, tasked: set) -> list[dict]:
     from . import patterns
     out = []
+    owner = {r["id"]: r["parent_id"] for r in con.execute("SELECT id, parent_id FROM nodes WHERE kind IN ('callable', 'field')")}
+    near = set(tasked) | {owner[i] for i in tasked if i in owner}   # a method stands for its type here
     for p in patterns.listing(con, limit=2000)["patterns"]:
         ids = {n["id"] for ns in p["roles"].values() for n in ns}
-        if any(i in ids or any(j.startswith(i + ".") for j in ids) for i in tasked):
+        if p["pattern"] in ("factory", "process boundary") and not (ids & set(tasked)):
+            continue
+        if any(i in ids for i in near):
             out.append({"pattern": p["pattern"], "rationale": p["rationale"]})
     return out[:12]
 
@@ -299,8 +319,10 @@ def brief_text(b: dict) -> str:
         L += ["| Task | Does | Code |", "| --- | --- | --- |"]
         for t in b["tasks"]:
             code = ", ".join(sorted(set(t["labels"]))[:6]) + (f" and {len(set(t['labels'])) - 6} more" if len(set(t["labels"])) > 6 else "")
-            new = ", ".join(f"{n['name']} (new)" for n in t["new"])
-            L.append(f"| {t['key']} | {t['text'].replace('|', '/')} | {', '.join(x for x in (code, new) if x) or 'not tied to code'} |")
+            new = ", ".join(f"{n.get('label') or n['name']} (new)" for n in t["new"])
+            into = ", ".join(f"in {x}" for x in t.get("into_labels", []))
+            test = "a test for the scenario" if t.get("scenarios") else ""
+            L.append(f"| {t['key']} | {t['text'].replace('|', '/')} | {', '.join(x for x in (code, new, test, into) if x) or 'not tied to code'} |")
     else:
         L.append("No tasks yet.")
     imp = b["impact"]
@@ -405,12 +427,21 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     removed = {n["id"] for n in g["removed"]}
     added_names = {n["name"].split(".")[-1] for n in g["added"]} | {n["name"] for n in g["added"]}
     tasks = []
+    tests_now = _tests(con)
     for row in con.execute("SELECT * FROM spec_items WHERE change_id = ? AND kind = 'task' ORDER BY key", (cid,)):
-        ids, new = json.loads(row["nodes"] or "[]"), json.loads(row["attrs"] or "{}").get("new", [])
+        extra = json.loads(row["attrs"] or "{}")
+        ids, new = json.loads(row["nodes"] or "[]"), extra.get("new", [])
         hit = [i for i in ids if i in touched or i in removed or any(t.startswith(i + ".") or t.startswith(i + "/") or t.startswith(i + "(") or t.split("(")[0] == i.split("(")[0] for t in touched | removed)]
         made = [n["name"] for n in new if n["name"].split(".")[-1] in added_names]
         want = len({i.split("(")[0] for i in ids}) + len(new)
         got = len({i.split("(")[0] for i in hit}) + len(made)
+        for key in extra.get("scenarios", []):       # a task to write a scenario's test is done when that test exists
+            want += 1
+            got += _norm(key.split("/", 1)[-1]) in tests_now
+        if not want and extra.get("into"):           # "add something to `Foo`": done when something inside Foo is new or edited
+            want = 1
+            files = {r[0] for i in extra["into"] for r in con.execute("SELECT node_id FROM ancestry WHERE file_id = ? OR module_id = ?", (i, i))}
+            got = int(any(t in files or any(t.startswith(i + ".") for i in extra["into"]) for t in touched))
         state = "done" if want and got >= want else "partly" if got else "not done" if want else "cannot be checked"
         checked = next((t["done"] for t in parsed["tasks"] if t["key"] == row["key"]), False)
         tasks.append({"key": row["key"], "text": row["text"], "state": state, "ticked": checked,

@@ -656,7 +656,7 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
     b = spec.brief(c, ch)
     tasks = {t["key"]: t for t in b["tasks"]}
     assert tasks["1.1"]["labels"] == ["Engine.start"] and tasks["1.1"]["action"] == "behavior"
-    assert tasks["1.2"]["new"] == [{"name": "shout", "parent": "f2:python:py.src.pkg.core.Engine"}]
+    assert tasks["1.2"]["new"] == [{"name": "shout", "parent": "f2:python:py.src.pkg.core.Engine", "label": "Engine.shout"}]
     assert {s["name"]: s["test_exists"] for s in b["scenarios"]} == {"Start": True, "Shout": False}
     assert any("names no code" in g for g in b["gaps"]) and any("Shout" in g for g in b["gaps"]) and not b["ready"]
     page = (ch / "leyline.md").read_text()

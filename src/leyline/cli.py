@@ -37,6 +37,11 @@ def _spec(con, args) -> int:
         cid = "spec-" + Path(args.target).name
         for f in spec.findings(con, cid)["findings"]:
             print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+    elif args.action == "file":
+        r = spec.add_finding(con, "spec-" + Path(args.target).name, args.reviewer or "", args.severity or "", args.claim or "",
+                             args.evidence, args.proposal)
+        _print(r)
+        return 1 if "error" in r else 0
     elif args.action == "resolve":
         _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
     return 0
@@ -119,7 +124,12 @@ def main(argv=None) -> int:
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
     p = sub.add_parser("spec", help="a change stated as an OpenSpec folder: brief it, review it, verify it")
-    p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve"])
+    p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve", "file"])
+    p.add_argument("--reviewer", help="file: logic or performance")
+    p.add_argument("--severity", choices=["high", "medium", "low"], help="file")
+    p.add_argument("--claim", help="file: one sentence a person can check")
+    p.add_argument("--evidence", nargs="*", default=[], help="file: node ids that show it")
+    p.add_argument("--proposal", default="", help="file: the change to the spec")
     p.add_argument("target", help="the change folder (openspec/changes/<id>), or a finding id for resolve")
     p.add_argument("status", nargs="?", choices=["accepted", "rejected", "deferred", "open"], help="for resolve")
     p.add_argument("reason", nargs="?", help="for resolve: why")
