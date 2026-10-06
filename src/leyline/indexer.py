@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -1094,7 +1095,11 @@ class Indexer:
                 status = info.pop("status", "not_analyzed")
                 store.write_coverage(con, self.repo, name, "1" if status == "ok" else "-",
                                      status if status in ("ok", "failed") else "not_analyzed", self.commit, info)
-            store.write_coverage(con, self.repo, "coverage", "-", "not_analyzed", self.commit, {})
+            kept = con.execute("SELECT format, stats FROM coverage_runs ORDER BY created DESC LIMIT 1").fetchone()
+            if kept:   # an imported coverage file outlives a re-index
+                store.write_coverage(con, self.repo, "coverage", kept["format"], "ok", self.commit, json.loads(kept["stats"] or "{}"))
+            else:
+                store.write_coverage(con, self.repo, "coverage", "-", "not_analyzed", self.commit, {})
             store.rebuild_derived(con)
 
 

@@ -83,6 +83,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("patterns", help="design patterns found by their shape")
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
+    p = sub.add_parser("coverage", help="import a coverage file, or show what was measured")
+    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage) or a Cobertura XML report")
+    p.add_argument("--run", default="default", help="a name for this import")
     p = sub.add_parser("state", help="fields assigned from outside the type that declares them")
     p.add_argument("scope", nargs="?", help="a module id or an id prefix")
     p = sub.add_parser("tour", help="print a tour of the repository")
@@ -144,6 +147,21 @@ def main(argv=None) -> int:
         print(", ".join(f"{k} {v}" for k, v in sorted(r["by_pattern"].items())) or "no patterns found")
         for x in r["patterns"]:
             print(f"\n[{x['pattern']}  {x['confidence']:.2f}{'  stale' if x['stale'] else ''}] {x['rationale']}")
+    elif args.cmd == "coverage":
+        from . import coverage
+        if args.file:
+            _print(coverage.import_file(con, args.file, args.run))
+        r = coverage.summary(con)
+        if not r["imported"]:
+            print(r["how"])
+            return 0
+        print(f"{'module':<28}{'functions':>10}{'ran':>8}{'on a path, never ran':>24}{'ran off every path':>22}")
+        for m in r["modules"]:
+            print(f"{m['module']:<28}{m['functions']:>10}{m['ran']:>8}{m['path_but_never_ran']:>24}{m['ran_off_every_path']:>22}")
+        for run in r["runs"]:
+            if run["stale"]:
+                print(f"\nrun {run['run']!r} was measured at another commit; import a fresh file")
+        print("\n" + r["note"])
     elif args.cmd == "state":
         r = query.shared_state(con, args.scope, 60)
         print(f"{r['total']} fields are assigned from outside their own type\n")

@@ -239,6 +239,7 @@ class _Walker:
                    "native_kind": "method" if is_method else "function",
                    "argc_min": required, "argc_max": 99 if variadic else total, "type_id": class_id if is_method else None,
                    "params": pnames, "returns": returns,
+                   "body_line": body.start_point[0] + 1 if body is not None else None,
                    "is_fixture": any(re.search(r"\bfixture\b", d) for d in decorators) or None})
         self.res.nodes.append(fn_node)
         if body is not None:

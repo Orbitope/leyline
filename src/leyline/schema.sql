@@ -119,3 +119,13 @@ CREATE TABLE IF NOT EXISTS test_results (
   run TEXT NOT NULL, name TEXT NOT NULL, test_id TEXT, status TEXT NOT NULL, message TEXT, recorded TEXT,
   PRIMARY KEY (run, name)
 );
+
+-- Measured coverage: which functions actually ran, per test where the tool recorded it.
+CREATE TABLE IF NOT EXISTS coverage_runs (
+  run TEXT PRIMARY KEY, format TEXT, created TEXT, commit_sha TEXT, stats TEXT
+);
+CREATE TABLE IF NOT EXISTS covered (
+  run TEXT, test TEXT, test_id TEXT, node_id TEXT, lines INTEGER
+);
+CREATE INDEX IF NOT EXISTS covered_node ON covered (node_id);
+CREATE INDEX IF NOT EXISTS covered_test ON covered (test_id);

@@ -230,10 +230,22 @@ def generate(con, repo_id: str) -> dict:
         fns = [r[0] for r in q("SELECT id FROM nodes WHERE kind = 'callable' AND repo_id = ?", repo_id) if module.get(r[0]) in core]
         on = sum(1 for i in fns if i in tested)
         home = sorted(test_mods, key=lambda m: -(size.get(m, (0, 0))[1] or 0))
+        from . import coverage as measured
+        m = measured.summary(con)
+        watched = sum(x["functions"] for x in m.get("modules", []))
+        if m.get("imported") and watched:
+            did = sum(x["ran"] for x in m["modules"])
+            off = sum(x["ran_off_every_path"] for x in m["modules"])
+            never = sum(x["path_but_never_ran"] for x in m["modules"])
+            tail = (f"Coverage was measured: {did:,} of the {watched:,} functions in the watched files ran ({round(100 * did / watched)}%). "
+                    f"{off:,} of those ran without being on any test's path on the map, so they were reached through links the map "
+                    f"does not have; {never:,} are on a path and never ran.")
+        else:
+            tail = ("That is reachability read from the source, not measured coverage: a function on a path may sit behind a "
+                    "branch the test never takes. Import a coverage file to see what ran.")
         stop("How it is tested", "node", home[0],
-             f"There are {_plural(n_tests, 'test')} in {_names([mods[m]['name'] for m in home if m in mods])}. "
-             f"{on:,} of the {len(fns):,} functions outside test code are on some test's path ({round(100 * on / max(1, len(fns)))}%). "
-             f"That is reachability read from the source, not measured coverage: a function on a path may sit behind a branch the test never takes.")
+             f"There are {_plural(n_tests, 'test')} in {_names([mods[m_]['name'] for m_ in home if m_ in mods])}. "
+             f"{on:,} of the {len(fns):,} functions outside test code are on some test's path ({round(100 * on / max(1, len(fns)))}%). " + tail)
     cov = q("SELECT extractor, status, stats FROM extractor_coverage WHERE repo_id = ?", repo_id)
     blind = sorted(c["extractor"].split(":", 1)[-1] for c in cov if c["status"] == "not_analyzed" and c["extractor"].startswith("communicates"))
     guess = q("SELECT COUNT(*) FROM calls WHERE precision = 'guess'")[0][0]

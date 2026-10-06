@@ -183,6 +183,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
 .flow-head select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 6px 8px; max-width: 100%; min-width: 0; flex: 1 1 280px; }
 .flow-head span { font-size: 12px; color: var(--muted); }
+.steps button.idle { opacity: .55; }
 .tour { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 12px 14px 12px; margin-bottom: 18px; }
 .tour h2 { margin-top: 4px; }
 .tour .note { color: var(--ink); }
@@ -328,6 +329,18 @@ for (const p of D.patterns || []) {
   const owner = (nm.k === "callable" || nm.k === "field") && nm.p != null && D.nodes[nm.p].k === "type" ? D.nodes[nm.p].n + "." : "";
   PATTERN_AT.set(VIEWS.length, p);
   VIEWS.push({ id: p.id, kind: "pattern", title: `${cap}: ${owner}${nm.n}`, narrative: p.rationale, marks: p.marks.map((m) => ({ ...m, note: "" })), legend: {}, pattern: p });
+}
+// Measured coverage: which functions ran under which test.
+const MEAS = D.measured || { t: {}, any: [], watched: [] };
+const RAN_ANY = new Set(MEAS.any), WATCHED = new Set(MEAS.watched), RAN_IN = new Map(), TESTS_OF = new Map();
+for (const [t, ns] of Object.entries(MEAS.t)) { RAN_IN.set(+t, new Set(ns)); for (const n of ns) (TESTS_OF.get(n) || TESTS_OF.set(n, []).get(n)).push(+t); }
+const fileNodeOf = (i) => { let c = i; while (c != null && N[c].k !== "file") c = N[c].p; return c; };
+function measuredHtml(i) {
+  if (!MEAS.any.length || N[i].k !== "callable" || !WATCHED.has(fileNodeOf(i))) return "";
+  const ts = TESTS_OF.get(i) || [];
+  if (!RAN_ANY.has(i)) return `<h3>Measured</h3><p class="note"><span class="tag risk-medium">did not run</span> No test ran this function when coverage was measured.</p>`;
+  if (!ts.length) return `<h3>Measured</h3><p class="note">It ran when coverage was measured. The coverage file does not say under which test.</p>`;
+  return listHtml("Ran under these tests (measured)", ts.slice(0, 25).map((t) => ({ go: t, name: N[t].n, sub: N[t].f || "", ct: "" })), ts.length);
 }
 // Field access: which functions read and assign each field.
 const ACC_BY_FIELD = new Map(), ACC_BY_FN = new Map();
@@ -901,6 +914,7 @@ function nodeHtml(i, isFocus) {
     h += listHtml("Implements", bases.map((b) => ({ go: b, name: N[unitOf[b]].n + "." + short(b), sub: `${callersOf(b)} call sites go through it`, ct: "" })), bases.length);
     h += listHtml("Implemented by", impls.slice(0, 20).map((m) => ({ go: m, name: N[unitOf[m]].n + "." + short(m), sub: moduleOf[m] !== moduleOf[i] ? "in " + N[moduleOf[m]].n : "", ct: "" })), impls.length);
     h += listHtml("Called by", callers.slice(0, 30), callers.length, entryTargets.has(i) ? "Nothing calls it: execution starts here." : bases.length ? `No direct callers. Callers reach it through ${esc(N[unitOf[bases[0]]].n)}.${esc(short(bases[0]))}, listed above.` : "No callers found. It may be called through an event, a delegate or an outside framework.");
+    h += measuredHtml(i);
     h += accessHtml(i);
     h += listHtml("Other types it touches", types.slice(0, 12), types.length);
     const fl = flowsOf.get(i) || [], tests = fl.filter((fi) => FLOWS[fi].kind === "test");
@@ -983,11 +997,13 @@ function drawFlow() {
   }).join("");
   const opts = optsFor();
   const mods = [...new Set(f.steps.map((s) => moduleOf[s[0]]))];
+  const ranHere = f.kind === "test" ? RAN_IN.get(f.entry) : null;   // what this test ran when coverage was measured
   let prev = null;
   const rows = f.steps.map((s, k) => {
     const [i, d, via] = s, m = moduleOf[i], showMod = m !== prev; prev = m;
     const cur = S.sel && S.sel.node === i;
-    return `<li><button data-step="${i}" style="--d:${d}"${cur ? ` aria-current="true"` : ""}><span class="seq">${k + 1}</span><span class="ind"></span><span class="dot lang-dot" style="background:var(--${langOf(i) === "python" ? "py" : langOf(i) === "csharp" ? "cs" : "edge"})"></span><span>${esc(N[i].k === "test" ? N[i].n : qual(i))}</span>${via === "event" || via === "process" || via === "dispatch" ? `<span class="via">${via === "event" ? "through an event" : via === "process" ? "starts a program" : "one implementation"}</span>` : ""}${showMod ? `<span class="mod">${esc(N[m].n)}</span>` : ""}</button></li>`;
+    const idle = ranHere && k > 0 && WATCHED.has(fileNodeOf(i)) && !ranHere.has(i);
+    return `<li><button data-step="${i}" style="--d:${d}"${cur ? ` aria-current="true"` : ""}${idle ? ` class="idle"` : ""}><span class="seq">${k + 1}</span><span class="ind"></span><span class="dot lang-dot" style="background:var(--${langOf(i) === "python" ? "py" : langOf(i) === "csharp" ? "cs" : "edge"})"></span><span>${esc(N[i].k === "test" ? N[i].n : qual(i))}</span>${via === "event" || via === "process" || via === "dispatch" ? `<span class="via">${via === "event" ? "through an event" : via === "process" ? "starts a program" : "one implementation"}</span>` : ""}${idle ? `<span class="via">did not run</span>` : ""}${showMod ? `<span class="mod">${esc(N[m].n)}</span>` : ""}</button></li>`;
   }).join("");
   v.innerHTML = `<div class="flow-head">${FLOWS.length > 30 ? `<input id="flow-find" type="search" placeholder="Filter ${FLOWS.length.toLocaleString()} flows" aria-label="Filter flows" value="${esc(S.flowFilter || "")}">` : ""}<select id="flow-pick" aria-label="Flow">${opts}</select>${matched > shown ? `<span>first ${shown} of ${matched.toLocaleString()} listed; filter to narrow</span>` : ""}<span>${f.steps.length} steps across ${mods.length} module${mods.length === 1 ? "" : "s"}${f.truncated ? ", cut short" : ""}</span></div><ol class="steps" id="steps">${rows}</ol>`;
   $("flow-pick").onchange = (e) => { S.flow = +e.target.value; S.sel = null; drawFlow(); side(); v.scrollTop = 0; };
@@ -1003,7 +1019,18 @@ function flowHtml() {
     <p class="note">Everything this ${f.kind === "test" ? "test" : "entry point"} can reach, in the order the code is written. Each function appears once, at its first call. Indentation is call depth. Select a step to read its source here.</p>
     ${f.truncated ? `<p class="note">The walk stopped at ${f.steps.length} steps or 8 calls deep, so the deepest parts are missing.</p>` : ""}
     <p class="note">This is what can run, not what did run. Branches not taken at run time are still listed, and calls the indexer could not resolve are missing.</p>
-    ${listHtml("Modules it passes through", mods, mods.length)}`;
+    ${listHtml("Modules it passes through", mods, mods.length)}${flowMeasuredHtml(f)}`;
+}
+function flowMeasuredHtml(f) {
+  const ran = f.kind === "test" ? RAN_IN.get(f.entry) : null;
+  if (!ran) return MEAS.any.length && f.kind === "test" ? `<h3>Measured</h3><p class="note">The coverage file has nothing for this test.</p>` : "";
+  const on = new Set(f.steps.map((s) => s[0]));
+  const watched = f.steps.filter((s, k) => k > 0 && WATCHED.has(fileNodeOf(s[0])));
+  const idle = watched.filter((s) => !ran.has(s[0]));
+  const extra = [...ran].filter((i) => !on.has(i) && !isBody(i));
+  return `<h3>Measured</h3><p class="note">When coverage was measured, ${watched.length - idle.length} of the ${watched.length} steps in watched files ran. Steps that did not run are dimmed: the test can reach them on paper and took another branch.</p>`
+    + listHtml("Ran, but not on this path", extra.slice(0, 40).map((i) => ({ go: i, name: qual(i), sub: N[moduleOf[i]] ? "in " + N[moduleOf[i]].n : "", ct: "" })), extra.length)
+    + (extra.length ? `<p class="note">These ran through a link the map does not have, such as a framework calling back into the code.</p>` : "");
 }
 /* ---------- saved views ---------- */
 function viewKey() {

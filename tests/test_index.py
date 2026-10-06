@@ -556,3 +556,61 @@ def test_scip_index_confirms_and_adds_python_links(tmp_path):
     assert dict(store.connect(plain).execute(q, (poke, child)).fetchall()) == {"guess": 1}
     assert dict(store.connect(db).execute(q, (poke, child)).fetchall()) == {"exact": 1}     # confirmed once; the mention is not a call
     assert stats["exact:scip"]["status"] == "ok" and stats["exact:scip"]["calls_confirmed"] == 1
+
+
+def test_measured_coverage_is_set_against_static_paths(tmp_path):
+    import sqlite3
+
+    from leyline import change, coverage, export, tours
+
+    db = tmp_path / "c.db"
+    index(FIXTURE2, db, "f2")
+    c = store.connect(db)
+    assert coverage.summary(c)["imported"] is False
+    core = (FIXTURE2 / "py/src/pkg/core.py").read_text().splitlines()
+    line = lambda text: next(i for i, s in enumerate(core) if text in s) + 1
+    data = tmp_path / ".coverage"
+    cov = sqlite3.connect(data)
+    cov.executescript("CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT); CREATE TABLE context (id INTEGER PRIMARY KEY, context TEXT);"
+                      "CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);"
+                      "CREATE TABLE arc (file_id INTEGER, context_id INTEGER, fromno INTEGER, tono INTEGER);")
+    cov.execute("INSERT INTO file VALUES (1, ?)", (str(FIXTURE2 / "py/src/pkg/core.py"),))
+    cov.executemany("INSERT INTO context VALUES (?, ?)", [(1, ""), (2, "py/tests/test_engine.py::test_start|setup"),
+                                                           (3, "py/tests/test_engine.py::test_start|run")])
+    bits = lambda lines: bytes(sum(1 << (n % 8) for n in lines if n // 8 == i) for i in range(max(lines) // 8 + 1))
+    # Loading the file runs every `def` line; that must not count as running the functions.
+    cov.execute("INSERT INTO line_bits VALUES (1, 1, ?)", (bits([line("def start"), line("def child"), line("def stop")]),))
+    cov.execute("INSERT INTO line_bits VALUES (1, 2, ?)", (bits([line("self.name = name")]),))           # the fixture built an Engine
+    cov.execute("INSERT INTO arc VALUES (1, 3, ?, ?)", (line("return self.name"), -1))                    # the test ran start
+    cov.execute("INSERT INTO arc VALUES (1, 3, ?, ?)", (line("return Engine(self.name)"), -1))            # and child, off the static path
+    cov.commit()
+    cov.close()
+
+    r = coverage.import_file(c, data)
+    assert r["format"] == "coverage.py" and r["tests"] == 1 and r["tests_matched_to_the_map"] == 1
+    p = "f2:python:py.src.pkg.core."
+    assert coverage.ran(c) == {p + "Engine.__init__", p + "Engine.start", p + "Engine.child"}
+    assert coverage.tests_for(c, p + "Engine.child")[0]["id"] == "f2:python:py.tests.test_engine.test_start"
+    flow = c.execute("SELECT id FROM flows WHERE name LIKE '%test_engine.test_start'").fetchone()[0]
+    cmp = coverage.compare_flow(c, flow)
+    assert cmp["measured"] and [x["name"] for x in cmp["ran_but_not_on_path"]] == ["child"] and cmp["on_path_but_did_not_run"] == []
+    mods = {m["module"]: m for m in coverage.summary(c)["modules"]}
+    assert sum(m["ran"] for m in mods.values()) == 3 and sum(m["ran_off_every_path"] for m in mods.values()) >= 0
+
+    # A change to child: no static path from test_start reaches it, the measurement does.
+    a = change.assess(c, "child returns a copy", [{"id": p + "Engine.child", "action": "behavior"}])
+    hit = [t for t in a["tests_to_run"] if t["name"].endswith("test_start")]
+    assert hit and hit[0].get("measured")
+    assert "Coverage was measured" in " ".join(s["narrative"] for s in tours.get(c, "tour:orientation:f2")["stops"])
+    assert export.graph(c, with_sources=False)["measured"]["any"]
+
+    index(FIXTURE2, db, "f2")                                              # a re-index keeps the import
+    c = store.connect(db)
+    assert coverage.has(c) and c.execute("SELECT status FROM extractor_coverage WHERE extractor = 'coverage'").fetchone()[0] == "ok"
+
+    xml = tmp_path / "cobertura.xml"
+    xml.write_text(f"""<?xml version="1.0"?><coverage><sources><source>{FIXTURE2}</source></sources><packages><package><classes>
+      <class filename="py/src/pkg/core.py"><lines><line number="{line('return self.name')}" hits="3"/>
+      <line number="{line('return Engine("made")')}" hits="0"/></lines></class></classes></package></packages></coverage>""")
+    r = coverage.import_file(c, xml, run="xml")
+    assert r["format"] == "cobertura" and r["functions_ran"] == 1 and not r["per_test"]

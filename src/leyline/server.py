@@ -12,7 +12,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import change, diff, patterns as pattern_labels, query, rules, store, tours as tour_store
+from . import change, coverage as measured, diff, patterns as pattern_labels, query, rules, store, tours as tour_store
 
 mcp = FastMCP(
     "leyline",
@@ -203,6 +203,23 @@ def shared_state(scope: Optional[str] = None, limit: int = 40) -> dict:
     state with no single owner. `scope` is a module id or an id prefix. To see every reader and writer of
     one field, or the fields one function touches, call `expand` on it and read `data`."""
     return query.shared_state(_db(), scope, limit)
+
+
+@mcp.tool()
+def coverage(node_id: Optional[str] = None, flow_id: Optional[str] = None, import_path: Optional[str] = None) -> dict:
+    """Measured test coverage, as opposed to the static paths in `flows`. With no argument: per module,
+    how many functions ran, how many are on a test's path but never ran, and how many ran through links
+    the map does not have. `node_id`: the tests under which that function ran. `flow_id` (a test's flow):
+    its static path against what ran. `import_path`: read a coverage.py data file or a Cobertura XML
+    report into the store first."""
+    out = {}
+    if import_path:
+        out["imported"] = measured.import_file(_db(), import_path)
+    if flow_id:
+        return {**out, **measured.compare_flow(_db(), flow_id)}
+    if node_id:
+        return {**out, "node": node_id, "tests": measured.tests_for(_db(), node_id)}
+    return {**out, **measured.summary(_db())}
 
 
 @mcp.tool()

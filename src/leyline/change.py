@@ -203,6 +203,22 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                 f"SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
                 f" WHERE json_extract(f.attrs, '$.kind') = 'test' AND s.callable_id IN ({marks_sql})", sorted(touched)):
             tested.add(r[0])
+        # Tests that were measured running the changed code, whether or not a static path leads there.
+        from . import coverage as measured
+        if measured.has(con):
+            have = {f["entry"] for f in flows}
+            for r in con.execute(
+                    f"SELECT test, test_id, COUNT(DISTINCT node_id) AS hits FROM covered WHERE node_id IN ({marks_sql})"
+                    f" AND test != '' GROUP BY test ORDER BY hits DESC, test", sorted(touched)):
+                if r["test_id"] and r["test_id"] in nodes and r["test_id"] not in have:
+                    have.add(r["test_id"])
+                    flows.append({"id": f"flow:{r['test_id']}", "name": nodes[r["test_id"]]["name"], "kind": "test",
+                                  "trigger": "measured", "touched_steps": r["hits"], "entry": r["test_id"], "measured": True})
+                    mark(r["test_id"], "test", "ran the changed code when coverage was measured; run it", None)
+                elif r["test_id"] in have:
+                    next(f for f in flows if f["entry"] == r["test_id"])["measured"] = True
+            for r in con.execute(f"SELECT DISTINCT node_id FROM covered WHERE node_id IN ({marks_sql})", sorted(touched)):
+                tested.add(r[0])
     untested = sorted(t for t in touched if t not in tested and nodes[t]["kind"] == "callable")
 
     def module_of(i):
@@ -270,7 +286,8 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                     "depth": depth},
         "risks": risks,
         "must_edit": [brief(m) for m in ordered if m["role"] in ("must_edit", "contract")][:80],
-        "tests_to_run": [{"name": f["name"], "id": f["entry"], "touched_steps": f["touched_steps"]} for f in tests],
+        "tests_to_run": [{"name": f["name"], "id": f["entry"], "touched_steps": f["touched_steps"],
+                          **({"measured": True} if f.get("measured") else {})} for f in tests],
         "entry_points_affected": [{"name": f["name"], "trigger": f["trigger"], "id": f["entry"]} for f in flows if f["kind"] != "test"][:40],
         "untested": [{"id": t, "name": _label(nodes, t)} for t in untested][:40],
         "channels": [{**c, "from_name": _label(nodes, c["from"]), "to_name": _label(nodes, c["to"])} for c in channel_links],

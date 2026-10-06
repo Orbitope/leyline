@@ -407,6 +407,7 @@ class _Walker:
                    "is_virtual": in_interface or any(m in mods for m in ("virtual", "abstract", "override")),
                    "native_kind": t.replace("_declaration", "").replace("_statement", ""),
                    "argc_min": required, "argc_max": 99 if is_variadic else len(plist),
+                   "body_line": body.start_point[0] + 1 if body is not None else None,
                    "delegate_arity": [_delegate_arity(x) for x in ptypes], "generic_arity": generic_arity,
                    "returns_names": _type_names(ret) if ret is not None and t != "constructor_declaration" else [],
                    "type_params": [_text(_child(c, "identifier") or c) for c in tparams.children

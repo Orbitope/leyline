@@ -143,6 +143,10 @@ def check(con, rules_from=None) -> dict:
             tested = {r[0] for r in con.execute(
                 "SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
                 " WHERE json_extract(f.attrs, '$.kind') = 'test'")}
+            try:  # functions measured running under a test count as tested
+                tested |= {r[0] for r in con.execute("SELECT DISTINCT node_id FROM covered")}
+            except Exception:
+                pass
             for r in con.execute("SELECT id FROM nodes WHERE kind = 'callable'"):
                 if r[0] in scope and r[0] not in tested:
                     violations.append({"untested": r[0]})

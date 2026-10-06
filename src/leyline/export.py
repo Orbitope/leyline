@@ -145,6 +145,20 @@ def graph(con, with_sources: bool = True) -> dict:
     from . import query
     state = [{"i": index[f["id"]], "from": f["written_from"], "w": f["writers"], "r": f["readers"]}
              for f in query.shared_state(con, limit=60)["fields"] if f["id"] in index]
+    measured = {"t": {}, "any": [], "watched": []}
+    try:
+        from . import coverage as cov_store
+        if cov_store.has(con):
+            per = {}
+            for r in con.execute("SELECT DISTINCT test_id, node_id FROM covered WHERE test_id IS NOT NULL"):
+                if r["test_id"] in index and r["node_id"] in index:
+                    per.setdefault(index[r["test_id"]], []).append(index[r["node_id"]])
+            measured["t"] = per
+            measured["any"] = sorted(index[i] for i in cov_store.ran(con) if i in index)
+            measured["watched"] = sorted(index[r[0]] for r in con.execute(
+                "SELECT DISTINCT a.file_id FROM covered c JOIN ancestry a ON a.node_id = c.node_id") if r[0] in index)
+    except Exception:
+        pass
     tour_list = []
     try:
         from . import tours
@@ -165,7 +179,7 @@ def graph(con, with_sources: bool = True) -> dict:
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 if p.is_file():
                     sources[r["path"]] = p.read_text(errors="replace")
-    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list, "access": access, "state": state,
+    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list, "access": access, "state": state, "measured": measured,
             "coverage": coverage, "sources": sources}
 
 
