@@ -28,7 +28,8 @@ MCP server connected. If `spec_brief` is missing, say so and stop.
      `` `Owner.NewName` `` so its home is stated.
    - Start each task with what it does: add, remove, rename, change the signature of. One task, one
      thing a person could tick.
-   - Name each scenario so a test can carry the same name. Add a task to write that test.
+   - Name each scenario so a test can carry the same name. Add a task to write that test, quoting
+     the scenario's name: `- [ ] 3.1 Add the test "<scenario name>"`.
 5. **Call `spec_brief`** with the folder. Read `gaps`. Fix the spec, not the tool: an ambiguous name
    gets its owner, a must-edit with no task gets a task or a sentence in the proposal saying why not,
    a scenario with no test gets a task. Call it again until `gaps` is empty or each remaining gap is

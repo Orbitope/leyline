@@ -148,7 +148,10 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
     targets, links, seen = [], [], set()
     for t in parsed["tasks"]:
         link = {"key": t["key"], "text": t["text"], "action": t["action"], "nodes": [], "new": [], "ambiguous": [], "unknown": [],
-                "into": [], "scenarios": [s["key"] for s in parsed["scenarios"] if _norm(s["name"]) and _norm(s["name"]) in _norm(t["text"])]}
+                "into": [],
+                # A task covers a scenario's test when it quotes the scenario's name.
+                "scenarios": [s["key"] for s in parsed["scenarios"]
+                              if _norm(s["name"]) in {_norm(q) for q in re.findall(r'["\u201c]([^"\u201d]+)["\u201d]', t["text"])}]}
         for written in t["names"]:
             r = names.resolve(written)
             if r.get("skip"):
