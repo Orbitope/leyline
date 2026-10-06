@@ -75,6 +75,11 @@ def _annotation_types(text: str) -> list[str]:
     return [x for x in names if x[:1].isupper() and x not in WRAPPERS]
 
 
+# Methods that change the collection they are called on. A field used this way is written, not only read.
+MUTATORS = frozenset("""append extend insert remove pop clear add update discard sort reverse setdefault popitem
+popleft appendleft extendleft put put_nowait write writelines""".split())
+
+
 class _Walker:
     def __init__(self, repo: str, rel_path: str, file_id: str, src: bytes):
         self.repo = repo
@@ -362,6 +367,14 @@ class _Walker:
                 outer = up.parent
                 if outer is not None and outer.type in ("assignment", "augmented_assignment") and same(outer.child_by_field_name("left"), up):
                     access = "rw"  # self.x[i] = v changes what the field holds
+        if access == "r" and up is not None:   # self.x.append(v), self.x[k].add(v): a call that changes what the field holds
+            c2, u2 = cur, up
+            if u2.type == "subscript" and same(u2.child_by_field_name("value"), c2):
+                c2, u2 = u2, u2.parent
+            if u2 is not None and u2.type == "attribute" and same(u2.child_by_field_name("object"), c2) \
+                    and u2.parent is not None and u2.parent.type == "call" and same(u2.parent.child_by_field_name("function"), u2) \
+                    and _text(u2.child_by_field_name("attribute")) in MUTATORS:
+                access = "rw"
         self.res.field_uses.append(FieldUse(cid, name, receiver, rtype, access, node.start_point[0] + 1, class_id, chain))
 
     def _site(self, node, cid, class_id, scope) -> Optional[CallSite]:

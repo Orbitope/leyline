@@ -26,9 +26,11 @@ written. Do one review per run: logic or performance. It needs the Leyline MCP s
 - Which channel does the change cross (process, HTTP, file, event), and does the spec say what the
   other end must do?
 - Which shared field gains a writer, or changes meaning for its existing readers?
-- Which state do the changed functions use that other, unchanged functions also use? If the change
-  adds a parallel structure (a second queue, a second flag), does every reader of the first one learn
-  about the second?
+- Which new member is named like one its type already has (`new_members_named_like_existing_ones`)?
+  Read every user of the existing one: does it need the new one too?
+- Who else calls each changed function (`callers_of_changed_functions_the_spec_leaves_alone`)? Does
+  the change alter what those callers get or can assume?
+- Which state do the changed functions use that other, unchanged functions also use?
 - For each scenario: would its test still pass if the task it is meant to prove were left out?
 - Which scenario has no test? Which requirement has no scenario?
 - What do the scenarios leave out: the error path, the empty case, ordering, the second caller,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import hashlib
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
@@ -33,6 +34,26 @@ def snapshot(con, name: str) -> Path:
     con.backup(out)
     out.close()
     return target
+
+
+def _fingerprint(con) -> str:
+    h = hashlib.sha1()
+    for r in con.execute(f"SELECT id, content_hash FROM nodes WHERE layer = 'fact' AND kind IN ({','.join('?' * len(CODE_KINDS))})"
+                         " ORDER BY id", CODE_KINDS):
+        h.update(f"{r[0]}\0{r[1]}\n".encode())
+    return h.hexdigest()
+
+
+def moved_on(con, name: str) -> bool:
+    """True when a snapshot of this name exists and the code has changed since it was taken."""
+    snap = store_path(con).parent / "snapshots" / f"{name}.db"
+    if not snap.exists():
+        return False
+    before = _open(snap)
+    try:
+        return _fingerprint(before) != _fingerprint(con)
+    finally:
+        before.close()
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -290,7 +311,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
     not_predicted += [{**n, "why": "new, not declared in the proposal"} for n in outer]
     untouched = [{"id": i, "name": m.get("name", i), "note": m.get("note", "")} for i, m in sorted(predicted.items())
                  if i not in touched]
-    gone = {n["id"] for n in d["nodes"]["removed"]}
+    gone = {n["id"] for n in d["nodes"]["removed"]} | {n["id"] for n in d["nodes"]["added"]}   # new since the snapshot: it changed
     untouched = [u for u in untouched if u["id"] not in gone]
     removed_predicted = [n for n in d["nodes"]["removed"] if n["id"] in predicted]
     not_predicted += [{**n, "why": "removed"} for n in d["nodes"]["removed"] if n["id"] not in predicted]
@@ -345,4 +366,5 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
                 "predicted, not edited": "in the proposal, but not edited"},
         extra={"review": {k: v for k, v in report.items() if k not in ("as_predicted", "intent")}})
     report["view_id"] = saved.get("id")
+    report["baseline"] = (row["base_commit"] or "")[:7] or None
     return report

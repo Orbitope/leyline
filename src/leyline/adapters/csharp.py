@@ -223,6 +223,13 @@ def _outer_type(node) -> Optional[str]:
     return names[0] if names else None
 
 
+# Methods that change the collection they are called on. A field used this way is written, not only read.
+MUTATORS = frozenset("""Add AddRange AddFirst AddLast Insert InsertRange Remove RemoveAt RemoveAll RemoveRange RemoveFirst
+RemoveLast RemoveWhere Clear Enqueue Dequeue TryDequeue Push Pop TryPop TryAdd TryRemove TryUpdate TryTake Sort Reverse
+UnionWith ExceptWith IntersectWith SymmetricExceptWith Append AppendLine AppendFormat Set SetValue Fill EnsureCapacity
+TrimExcess GetOrAdd AddOrUpdate""".split())
+
+
 class _Walker:
     def __init__(self, repo: str, rel_path: str, file_id: str, src: bytes, module: str):
         self.repo = repo
@@ -640,6 +647,14 @@ class _Walker:
                 outer = up.parent
                 if outer is not None and outer.type == "assignment_expression" and same(outer.child_by_field_name("left"), up):
                     access = "rw"  # field[i] = x changes what the field holds
+        if access == "r" and up is not None:   # field.Add(x), field[k].Enqueue(x): a call that changes what the field holds
+            c2, u2 = cur, up
+            if u2.type == "element_access_expression" and same(u2.child_by_field_name("expression") or u2.named_children[0], c2):
+                c2, u2 = u2, u2.parent
+            if u2 is not None and u2.type == "member_access_expression" and same(u2.child_by_field_name("expression"), c2) \
+                    and u2.parent is not None and u2.parent.type == "invocation_expression" \
+                    and _text(u2.child_by_field_name("name")).split("<")[0] in MUTATORS:
+                access = "rw"
         self.res.field_uses.append(FieldUse(cid, name, receiver, rtype, access, node.start_point[0] + 1, type_id, chain))
 
     def _elem_of(self, expr, scope: dict[str, str], type_id: Optional[str]) -> Optional[str]:

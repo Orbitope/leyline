@@ -32,3 +32,13 @@ public static class Driver
         Make().Slots[0] = 2;
     }
 }
+
+public class Journal
+{
+    private readonly System.Collections.Generic.List<int> _items = new System.Collections.Generic.List<int>();
+    private readonly System.Collections.Generic.Dictionary<int, System.Collections.Generic.Queue<int>> _by
+        = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.Queue<int>>();
+
+    public void Note(int x) { _items.Add(x); _by[x].Enqueue(x); }
+    public int Count() => _items.Count + _by.Count;
+}

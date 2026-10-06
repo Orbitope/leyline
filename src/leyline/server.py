@@ -223,13 +223,14 @@ def coverage(node_id: Optional[str] = None, flow_id: Optional[str] = None, impor
 
 
 @mcp.tool()
-def spec_brief(change_dir: str) -> dict:
+def spec_brief(change_dir: str, new_baseline: bool = False) -> dict:
     """Assess a change written as an OpenSpec folder (proposal.md, tasks.md, specs/) before it is
     implemented. Ties each task to code named in backticks and each scenario to a test of the same name,
     computes the blast radius, and writes `leyline.md` into the folder: what will be written, what it
     affects, how the person will know it was done. Returns the same, with `gaps` to fix in the spec.
-    Run it again after every edit to the spec."""
-    return spec_loop.brief(_db(), change_dir)
+    Run it again after every edit to the spec. Once the code has changed, later briefs keep the first
+    picture of the code (`baseline: kept`) so a spec can be amended part-way; `new_baseline` starts over."""
+    return spec_loop.brief(_db(), change_dir, new_baseline=new_baseline)
 
 
 @mcp.tool()

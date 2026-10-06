@@ -34,6 +34,9 @@ MCP server connected. If `spec_brief` is missing, say so and stop.
    gets its owner, a must-edit with no task gets a task or a sentence in the proposal saying why not,
    a scenario with no test gets a task. Call it again until `gaps` is empty or each remaining gap is
    a choice the person made.
+   Then read the lines under "Uses the same things, and no task names it". Each is code that shares a
+   caller, a field or a look-alike new member with the change. For each, either add a task or be able
+   to say why it is right to leave alone. Do not pass this list to the person undigested.
 6. **Show the person `leyline.md`.** It is one page. Do not summarise it into something longer. Say
    which lines you are least sure of.
 7. **Get it reviewed** (the `leyline-adversarial-review` skill) before anyone implements.
@@ -46,6 +49,15 @@ MCP server connected. If `spec_brief` is missing, say so and stop.
 4. Report `done_as_agreed` first. Then each task not done, each scenario not proven, and each edit
    outside the spec. For every edit outside the spec, read its source and say whether the spec was
    incomplete or the implementation wandered. The person decides which; do not decide for them.
+
+## When the spec changes part-way
+
+Edit the spec and call `spec_brief` again. Once the code has changed it answers `baseline: kept`: the
+picture of the code from the first brief stays, so `spec_verify` still compares with the code as it
+was before any edit. Use `new_baseline` only to abandon what was done and start over.
+
+A new function that only code named in the spec calls is reported as a helper, not as an edit outside
+the spec. Read it anyway.
 
 ## Rules
 

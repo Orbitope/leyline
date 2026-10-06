@@ -204,8 +204,10 @@ def _norm(s: str) -> str:
 
 
 # -- the brief -------------------------------------------------------------------------------------
-def brief(con, change_dir: str | Path, write: bool = True) -> dict:
-    """Assess a spec before it is implemented, store the result, and write `leyline.md` into the folder."""
+def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = False) -> dict:
+    """Assess a spec before it is implemented, store the result, and write `leyline.md` into the folder.
+    Once the code has moved on from the first brief, later briefs keep that first picture of the code to
+    compare against, so a spec can be amended part-way through. `new_baseline` starts over from the code as it is."""
     parsed = parse(change_dir)
     if "error" in parsed:
         return parsed
@@ -213,7 +215,8 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
     targets, links = _targets(names, parsed)
     cid = "spec-" + parsed["id"]
     intent = parsed["what"] or parsed["why"] or parsed["title"]
-    report = change.propose(con, intent, targets, parsed["title"], source="spec", change_id=cid) if targets else {
+    report = change.propose(con, intent, targets, parsed["title"], source="spec", change_id=cid,
+                            keep_baseline=not new_baseline) if targets else {
         "error": "no task names code that is on the map. Put code names in backticks in tasks.md."}
     tests = _tests(con)
     scenarios = []
@@ -242,6 +245,7 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
         if not direct:
             report["risks"] = [r for r in report.get("risks") or [] if "far side of a channel" not in r["what"]]
     state = _shared_state_touched(con, tasked)
+    others = _left_alone(con, names, links)
     patterns = _patterns_touched(con, tasked)
     rule_state = rules.check(con)
     gaps = list(parsed["problems"])
@@ -258,9 +262,10 @@ def brief(con, change_dir: str | Path, write: bool = True) -> dict:
               "tasks": [{**l, "labels": [_label(names, i) for i in l["nodes"]], "into_labels": [_label(names, i) for i in l["into"]]} for l in links],
               "scenarios": scenarios, "impact": {k: report.get(k) for k in ("summary", "risks", "by_module", "tests_to_run", "channels", "untested")}
               if "error" not in report else {"error": report["error"]},
-              "must_edit_uncovered": uncovered, "shared_state": state, "patterns": patterns,
+              "must_edit_uncovered": uncovered, "shared_state": state, "left_alone": others, "patterns": patterns,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
+              "baseline": report.get("snapshot"),
               "ready": not gaps and not any(f["status"] == "open" and f["severity"] == "high" for f in findings(con, cid)["findings"])}
     with con:
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
@@ -289,6 +294,85 @@ def _shared_state_touched(con, tasked: set) -> list[dict]:
     return sorted(out.values(), key=lambda x: x["name"])
 
 
+def _words(name: str) -> list[str]:
+    return [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+", name)]
+
+
+def _task_functions(names: _Names, links: list[dict]) -> list[str]:
+    """Existing functions the tasks change. A named type stands for its functions."""
+    fns = []
+    for l in links:
+        for i in l["nodes"]:
+            kind = names.by_id[i]["kind"]
+            if kind in ("callable", "test"):
+                fns.append(i)
+            elif kind == "type":
+                fns += [r["id"] for r in names.rows if r["parent_id"] == i and r["kind"] == "callable"]
+    return list(dict.fromkeys(fns))
+
+
+def _left_alone(con, names: _Names, links: list[dict]) -> dict:
+    """Code that shares something with the change and that no task names: other callers of a changed function,
+    and other users of a field a changed function uses. A parallel edit is most often forgotten here."""
+    fns = _task_functions(names, links)
+    inside = set(fns)
+
+    def product(i):
+        return i in names.by_id and names.by_id[i]["kind"] != "test" and names.module.get(i) not in names.test_modules
+    def owner(i):
+        return names.by_id[i]["parent_id"] if i in names.by_id else None
+
+    def is_ctor(i):
+        return names.by_id[i]["name"] in (".ctor", "__init__", "constructor")
+    callers, state, seen = [], [], set()
+    for i in fns:
+        who = sorted({r[0] for r in con.execute("SELECT DISTINCT src_id FROM calls WHERE dst_id = ?", (i,))
+                      if r[0] not in inside and product(r[0])})
+        if who:
+            callers.append({"id": i, "changed": _label(names, i), "callers": [_label(names, w) for w in who], "caller_ids": who,
+                            "far": len({names.module.get(w) for w in who} - {names.module.get(i)}),
+                            "other_types": len({owner(w) for w in who} - {owner(i)})})
+        for f in con.execute("SELECT dst_id, MAX(kind = 'writes') FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?"
+                             " GROUP BY dst_id ORDER BY 2 DESC", (i,)):
+            if f[0] in seen or f[0] not in names.by_id:
+                continue
+            # A constructor setting a field up is not a second user of it.
+            users = sorted({r[0] for r in con.execute(
+                "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f[0],))
+                if r[0] not in inside and product(r[0]) and not is_ctor(r[0])})
+            if 0 < len(users) <= 8:       # a field half the program uses says nothing about this change
+                seen.add(f[0])
+                state.append({"field": _label(names, f[0]), "used_by_changed": _label(names, i),
+                              "also_used_by_unchanged": [_label(names, u) for u in users], "user_ids": users,
+                              # State the changed type owns is where a parallel edit gets forgotten; a field of
+                              # some other type that the change only reads rarely is.
+                              "own": owner(f[0]) == owner(i), "changed_writes_it": bool(f[1]),
+                              "other_types": len({owner(u) for u in users} - {owner(f[0])})})
+    # A new member named like one its type already has (EmergencyQueues beside EntryQueues) is usually a second
+    # one of the same thing, and whoever uses the first is a candidate to need the second.
+    beside = []
+    fresh = [(n["name"].split(".")[-1], n.get("parent")) for l in links for n in l["new"] if n.get("parent")]
+    fresh += [(names.by_id[i]["name"], owner(i)) for l in links if l["action"] == "add" for i in l["nodes"]
+              if names.by_id[i]["kind"] in ("field", "callable")]
+    fresh_names = {(n, p) for n, p in fresh}
+    for name, parent in dict.fromkeys(fresh):
+        last = _words(name)[-1:]
+        if not last or len(_words(name)) < 2:
+            continue
+        for r in names.rows:
+            if r["parent_id"] != parent or r["kind"] != "field" or (r["name"], parent) in fresh_names or _words(r["name"])[-1:] != last:
+                continue
+            users = sorted({u[0] for u in con.execute(
+                "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (r["id"],))
+                if u[0] not in inside and product(u[0]) and not is_ctor(u[0])})
+            if users:
+                beside.append({"new": _label(names, parent) + "." + name, "existing": _label(names, r["id"]),
+                               "existing_used_by_unchanged": [_label(names, u) for u in users], "user_ids": users})
+    callers.sort(key=lambda c: (-c["far"], -c["other_types"], len(c["callers"])))
+    state.sort(key=lambda x: (not x["own"], not x["changed_writes_it"], -x["other_types"], len(x["also_used_by_unchanged"])))
+    return {"beside": beside, "callers": callers, "state": state}
+
+
 def _patterns_touched(con, tasked: set) -> list[dict]:
     from . import patterns
     out = []
@@ -311,6 +395,16 @@ def _write(path: Path, body: str) -> None:
         path.write_text(old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"))
     else:
         path.write_text(block)
+
+
+def _some(xs: list[str], n: int = 4) -> str:
+    return ", ".join(xs[:n]) + (f" and {len(xs) - n} more" if len(xs) > n else "")
+
+
+def _first_sentence(text: str, limit: int = 220) -> str:
+    m = re.match(r"(.+?[.!?])(\s|$)", text.strip(), re.S)
+    out = (m.group(1) if m else text.strip()).replace("\n", " ")
+    return out if len(out) <= limit else out[:limit - 3].rstrip() + "..."
 
 
 def brief_text(b: dict) -> str:
@@ -345,8 +439,19 @@ def brief_text(b: dict) -> str:
             L.append(f"- Crosses a {c['channel']} boundary: {c['from_name']} to {c['to_name']}. The other side has no compile-time link to this change.")
     if b["must_edit_uncovered"]:
         L += ["", "**Must be edited, and no task covers it:**"] + [f"- {m['name']}: {m.get('note', '')}" for m in b["must_edit_uncovered"][:20]]
-    if b["shared_state"]:
-        L += ["", "**Shared state it writes:**"] + [f"- {x['name']}, also assigned from {', '.join(x['also_written_from'])}" for x in b["shared_state"][:8]]
+    la = {"beside": [], "callers": [], "state": [], **(b.get("left_alone") or {})}
+    # One page: new members that double an existing one, callers outside the changed function's own type,
+    # and state the changed type owns.
+    cal = [c for c in la["callers"] if c.get("other_types", 1)]
+    own = [x for x in la["state"] if x.get("own", True)]
+    rows = [f"- {x['new']} (new) sits beside {x['existing']}, which is used by {_some(x['existing_used_by_unchanged'], 6)}" for x in la["beside"][:3]]
+    rows += [f"- {c['changed']} is also called by {_some(c['callers'])}" for c in cal[:max(2, 5 - len(rows))]]
+    rows += [f"- {x['field']} (used by {x['used_by_changed']}) is also used by {_some(x['also_used_by_unchanged'])}" for x in own[:max(2, 8 - len(rows))]]
+    more = len(la["beside"]) + len(la["callers"]) + len(la["state"]) - len(rows)
+    if rows:
+        L += ["", "**Uses the same things, and no task names it.** Each line is right to leave alone or a missing task:"] + rows
+        if more > 0:
+            L.append(f"- and {more} more: `leyline spec facts`")
     if b["patterns"]:
         L += ["", "**Design it sits in:**"] + [f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]
     L += ["", "## 3. How you will know it was done", ""]
@@ -360,9 +465,14 @@ def brief_text(b: dict) -> str:
     opened = [f for f in b["findings"] if f["status"] == "open"]
     L += ["", "## Review findings", ""]
     if b["findings"]:
-        for f in sorted(b["findings"], key=lambda f: (f["status"] != "open", {"high": 0, "medium": 1, "low": 2}.get(f["severity"], 3))):
-            L.append(f"- **{f['status']}, {f['severity']}** ({f['reviewer']}, {f['id']}): {f['claim']}"
-                     + (f" Proposed: {f['proposal']}" if f["proposal"] else "") + (f" Resolution: {f['resolution']}" if f["resolution"] else ""))
+        order = {"high": 0, "medium": 1, "low": 2}
+        for f in sorted(opened, key=lambda f: order.get(f["severity"], 3)):
+            L.append(f"- **open, {f['severity']}** ({f['reviewer']}, {f['id']}): {f['claim']}" + (f" Proposed: {f['proposal']}" if f["proposal"] else ""))
+        closed = [f for f in b["findings"] if f["status"] != "open"]
+        if closed:   # a settled finding is one line: the full text stays in `leyline spec findings`
+            L += ["", f"{len(closed)} settled (full text: `leyline spec findings`):"] if opened else [f"{len(closed)} raised, all settled (full text: `leyline spec findings`):"]
+            for f in sorted(closed, key=lambda f: order.get(f["severity"], 3)):
+                L.append(f"- {f['status']}, {f['severity']}: {_first_sentence(f['resolution'] or f['claim'])}")
     else:
         L.append("No review has been run.")
     L += ["", "## Before implementation", ""]
@@ -467,7 +577,8 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
                  else "passes" if res is not None else "test exists, not run")
         scenarios.append({"name": s["name"], "state": state, "test": tid, "reaches_the_change": static,
                           "measured_running_the_change": ran_change, "message": res["message"] if res is not None and res["status"] != "pass" else ""})
-    open_high = [f for f in findings(con, cid)["findings"] if f["status"] == "open" and f["severity"] == "high"]
+    all_findings = findings(con, cid)["findings"]
+    open_high = [f for f in all_findings if f["status"] == "open" and f["severity"] == "high"]
     test_ids = set(tests.values())
     # A new or edited test is how a scenario gets proven, not an edit outside the spec.
     tests_touched = [n for n in review["not_predicted"] if n["id"] in test_ids or n["id"].split("/test:")[0] in test_ids and "/test:" in n["id"]]
@@ -479,6 +590,19 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     def in_container(i):
         return i in inside or any(i.startswith(c + ".") or i.startswith(c + "/") for c in into)
     drift = [n for n in review["not_predicted"] if n not in tests_touched and not in_container(n["id"])]
+    # A new function that only code named in the spec calls is how a task got done, not a change of its own.
+    added = {n["id"] for n in g["added"]}
+    named = {i for row in con.execute("SELECT nodes FROM spec_items WHERE change_id = ? AND kind = 'task'", (cid,))
+             for i in json.loads(row[0] or "[]")}
+    in_spec = {t for t in touched if t not in {n["id"] for n in drift}} | named
+    helpers = []
+    for n in list(drift):
+        if n["id"] not in added or n.get("kind") != "callable":
+            continue
+        callers = {r[0] for r in con.execute("SELECT DISTINCT src_id FROM calls WHERE dst_id = ?", (n["id"],))} - {n["id"]}
+        if callers and all(c in in_spec or in_container(c) or any(c.split("(")[0] == i.split("(")[0] for i in named) for c in callers):
+            helpers.append({"name": n["name"], "id": n["id"], "called_by": sorted(_label(names, c) for c in callers)})
+            drift.remove(n)
     verdict = []
     if any(t["state"] in ("not done", "partly") for t in tasks):
         verdict.append("some tasks are not done")
@@ -497,7 +621,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     out = {"change_id": cid, "title": parsed["title"], "tasks": tasks, "scenarios": scenarios, "drift": drift,
            "predicted_not_edited": review["predicted_untouched"], "new_dependencies": review["graph"]["structure"]["new_dependencies"],
            "rules_newly_failing": review["rules"]["new_violations"], "tests": review["tests"], "open_high_findings": open_high,
-           "tests_added_or_changed": [n["name"] for n in tests_touched],
+           "tests_added_or_changed": [n["name"] for n in tests_touched], "helpers_added": helpers,
+           "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings)},
+           "baseline": review.get("baseline"),
            "done_as_agreed": not verdict, "why_not": verdict, "view_id": review.get("view_id")}
     if write:
         path = Path(parsed["dir"]) / "leyline.md"
@@ -524,6 +650,9 @@ def verify_text(v: dict) -> str:
         L.append(f"| {s['name']} | {s['state']} | {s['message'] or ev} |")
     if v["drift"]:
         L += ["", "**Changed, but not in the spec:**"] + [f"- {n['name']} ({n.get('why') or n['kind']}) {n.get('path') or ''}" for n in v["drift"][:25]]
+    if v.get("helpers_added"):
+        L += ["", "**Helpers added** (new, and called only by code the spec names):"] + [
+            f"- {h['name']}, called by {_some(h['called_by'])}" for h in v["helpers_added"][:15]]
     if v["predicted_not_edited"]:
         L += ["", "**Expected to change, and did not:**"] + [f"- {n['name']}" for n in v["predicted_not_edited"][:25]]
     if v["new_dependencies"]:
@@ -536,6 +665,11 @@ def verify_text(v: dict) -> str:
         L += [f"- now fails: {x['name']}: {x['message']}" for x in t["newly_failing"]]
     else:
         L += ["", "No test runs were recorded, so scenarios cannot be marked as passing."]
+    r = v.get("review") or {}
+    L.append("No review was recorded before implementation." if not r.get("findings")
+             else f"Review: {r['findings']} findings, {r['open']} still open.")
+    if v.get("baseline"):
+        L.append(f"Compared with the code as it was at {v['baseline']}.")
     return "\n".join(L) + "\n"
 
 
@@ -565,23 +699,7 @@ def review_facts(con, change_dir: str | Path) -> dict:
     perf_tests = [{"id": r["id"], "name": r["name"]} for r in con.execute(
         "SELECT id, name FROM nodes WHERE (kind = 'test' OR json_extract(attrs, '$.is_test') = 1)") if re.search(
         r"per\s?sec|/sec|perf|bench|throughput|latency|\bfast|\bslow|\d+k\b|\bms\b", r["name"], re.I)]
-    # State the changed functions use, and who else uses it without being in the spec: the place a parallel
-    # change is most often forgotten (a second queue added, and one of three readers of the first left alone).
-    task_fns = set(dict.fromkeys(fns))
-    siblings = []
-    for i in sorted(task_fns):
-        for f in con.execute("SELECT DISTINCT dst_id FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?", (i,)):
-            others = [r[0] for r in con.execute(
-                "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f[0],))
-                if r[0] not in task_fns and r[0] in names.by_id and names.module.get(r[0]) not in names.test_modules]
-            if 0 < len(others) <= 8 and f[0] in names.by_id:
-                siblings.append({"field": _label(names, f[0]), "used_by_changed": _label(names, i),
-                                 "also_used_by_unchanged": [_label(names, o) for o in others]})
-    seen_fields, uniq = set(), []
-    for x in siblings:
-        if x["field"] not in seen_fields:
-            seen_fields.add(x["field"])
-            uniq.append(x)
+    la = b["left_alone"]
     imp = b["impact"] if "error" not in b["impact"] else {}
     return {
         "change_id": b["change_id"], "title": b["title"],
@@ -590,7 +708,9 @@ def review_facts(con, change_dir: str | Path) -> dict:
             "channels_crossed": imp.get("channels") or [],
             "shared_state_written": b["shared_state"],
             "scenarios_with_no_test": [s["name"] for s in b["scenarios"] if not s["test_exists"]],
-            "state_shared_with_functions_the_spec_leaves_alone": uniq[:30],
+            "new_members_named_like_existing_ones": la["beside"][:20],
+            "callers_of_changed_functions_the_spec_leaves_alone": la["callers"][:30],
+            "state_shared_with_functions_the_spec_leaves_alone": la["state"][:30],
             "changed_code_no_test_reaches": imp.get("untested") or [],
             "patterns_involved": b["patterns"],
             "rules_failing_before_the_change": b["rules_failing_now"],

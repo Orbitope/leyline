@@ -486,6 +486,14 @@ def test_field_reads_and_writes(con2):
     assert access("Driver.Peek(Counter)") == {("reads", "Limit", False)}                        # the local Value hides nothing
     assert access("Driver.Reset(Counter)") == {("writes", "Value", False), ("reads", "Slots", False), ("writes", "Slots", False)}
 
+    # Calling a method that changes a collection writes the field that holds it.
+    assert access("Journal.Note(int)") == {("reads", "_items", False), ("writes", "_items", False),
+                                           ("reads", "_by", False), ("writes", "_by", False)}
+    assert access("Journal.Count()") == {("reads", "_items", False), ("reads", "_by", False)}
+    pj = {(r[0], r[1].split(".")[-1], r[2].split(".")[-1]) for r in con2.execute(
+        "SELECT kind, src_id, dst_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id LIKE 'f2:python:py.src.pkg.core.Journal.%'")}
+    assert {("writes", "note", "items"), ("writes", "note", "by")} <= pj and ("writes", "count", "items") not in pj
+
     field = query.expand(con2, s + "Counter.Value")["data"]
     assert {x["name"] for x in field["written_by"]} == {"Bump", "Make", "Reset"} and field["written_outside_its_type"] == 2
     assert {f["name"]: (f["readers"], f["writers"]) for f in query.expand(con2, s + "Counter")["data"]["fields"]}["Limit"] == (2, 1)
@@ -663,6 +671,11 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
     assert "## 1. What code will be written" in page and "## 3. How you will know it was done" in page and "Engine.start" in page
     assert (tmp_path / "snapshots" / "spec-loud-engine.db").exists()
 
+    assert b["baseline"] == "new"
+    # Engine.child uses the field Engine.start uses and no task names it: the place a reviewer should look first.
+    assert [(x["field"], x["also_used_by_unchanged"]) for x in b["left_alone"]["state"]] == [("Engine.name", ["Engine.child"])]
+    assert "Engine.name (used by Engine.start) is also used by Engine.child" in page
+
     facts = spec.review_facts(c, ch)
     assert facts["logic"]["scenarios_with_no_test"] == ["Shout"]
     assert facts["performance"]["changed_functions_by_how_much_runs_through_them"][0]["name"] == "Engine.start"
@@ -675,7 +688,7 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
 
     # Implement: both tasks, a test for the new scenario, and one edit nobody asked for.
     core = work / "py/src/pkg/core.py"
-    text = core.read_text().replace("        return self.name\n", "        return self.name.upper()\n\n    def shout(self):\n        return self.name + \"!\"\n", 1)
+    text = core.read_text().replace("        return self.name\n", "        return self._loud()\n\n    def _loud(self):\n        return self.name.upper()\n\n    def shout(self):\n        return self.name + \"!\"\n", 1)
     core.write_text(text.replace("        return Engine(self.name)", "        return Engine(self.name + \"-child\")"))
     tests = work / "py/tests/test_engine.py"
     tests.write_text(tests.read_text() + "\n\ndef test_shout(engine):\n    assert engine.shout().endswith(\"!\")\n")
@@ -694,3 +707,13 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
     page = (ch / "leyline.md").read_text()
     assert "## 4. Was it done as agreed" in page and page.count("## 1. What code will be written") == 1
     assert "Engine.child" in page.split("## 4.")[1]
+    assert [h["name"] for h in v["helpers_added"]] == ["Engine._loud"] and "Helpers added" in page   # not an edit outside the spec
+
+    # Amend the spec after the code has changed: the first picture of the code is kept, so verify still compares with it.
+    (ch / "tasks.md").write_text((ch / "tasks.md").read_text() + "- [ ] 1.4 Change `Engine.child` to mark the child's name\n")
+    b2 = spec.brief(c, ch)
+    assert b2["baseline"] == "kept"
+    v2 = spec.verify(c, ch, after_run="after")
+    assert v2["drift"] == [] and {t["key"]: t["state"] for t in v2["tasks"]}["1.4"] == "done"
+    assert {t["key"]: t["state"] for t in v2["tasks"]}["1.2"] == "done"            # still seen as added, not as there all along
+    assert spec.brief(c, ch, new_baseline=True)["baseline"] == "new"

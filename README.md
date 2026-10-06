@@ -66,15 +66,22 @@ The brief ties each task to code and each scenario to a test, by three conventio
   else is a change in behavior.
 - A scenario is proven by a test with the same name.
 
-It then lists what the change reaches that no task covers, the shared state and patterns it sits in,
-and the gaps that block implementation. Reviewers (the `leyline-adversarial-review` skill, one run
+It then lists what the change reaches that no task covers, the patterns it sits in, the gaps that
+block implementation, and the code that uses the same things and that no task names: other callers of
+a changed function, other users of a field it uses, and users of an existing member that a new one is
+named like (a new `EmergencyQueues` beside `EntryQueues`). Each of those lines is either right to
+leave alone or a missing task. Reviewers (the `leyline-adversarial-review` skill, one run
 for logic and one for performance) file findings with node ids as evidence; only the person
 resolves them (`leyline spec resolve <finding> accepted|rejected|deferred "why"`).
 
 After implementation and a re-index, `verify` marks each task from the graph diff and each scenario
 from its test's recorded result, lists edits outside the spec, new links between modules and rules
 newly broken, and appends the result to `leyline.md`. It exits 0 only when the change was done as
-agreed.
+agreed. A new function that only code named in the spec calls is listed as a helper, not as an edit
+outside the spec.
+
+A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
+the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.
 

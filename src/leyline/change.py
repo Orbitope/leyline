@@ -267,9 +267,6 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
         risks.append({"level": "low", "what": f"{guessed_links} direct caller links are guesses by name, so the caller list may be wrong."})
     if any(t["action"] in BREAKING for t in targets) and not must:
         risks.append({"level": "low", "what": "A breaking change with no callers found. Check for use through reflection, events or outside code."})
-    fields = [t["id"] for t in targets if t["action"] != "add" and nodes[t["id"]]["kind"] == "field"]
-    if fields:
-        risks.append({"level": "medium", "what": "Reads and writes of fields are not tracked yet, so users of the changed fields are missing."})
 
     def brief(m):
         n = nodes[m["id"]]
@@ -296,12 +293,12 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
         "new_nodes": new_nodes,
         "marks": [brief(m) for m in ordered],
         "limits": "Static analysis: it shows what the change can reach, not whether behavior stays correct. "
-                  "Links found only at run time, and field reads and writes, are not included.",
+                  "Links found only at run time, and changes made by calling a method on a field (adding to a list), are not included.",
     }
 
 
 def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, depth: int = 4,
-            source: str = "mcp", change_id: Optional[str] = None) -> dict:
+            source: str = "mcp", change_id: Optional[str] = None, keep_baseline: bool = False) -> dict:
     """Assess a change, store it as a draft proposal, and save a view of its blast radius.
     `change_id` keeps one id across revisions (a spec folder's name); without it the id follows the content."""
     report = assess(con, intent, targets, depth)
@@ -310,23 +307,39 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
     cid = change_id or "chg-" + hashlib.sha1((intent + json.dumps(targets, sort_keys=True)).encode()).hexdigest()[:8]
     commit = con.execute("SELECT commit_sha FROM nodes WHERE kind = 'repo' LIMIT 1").fetchone()
     title = title or (intent if len(intent) <= 70 else intent[:67] + "...")
+    # A revised proposal for code that has already moved on keeps the first picture of the code and the
+    # first prediction's ids, so what was done can still be compared with what the code was.
+    from . import diff
+    kept = keep_baseline and diff.moved_on(con, cid)
+    old = con.execute("SELECT base_commit FROM change_proposals WHERE id = ?", (cid,)).fetchone() if kept else None
+    base = old[0] if old else (commit[0] if commit else None)
     with con:
         con.execute("INSERT OR REPLACE INTO change_proposals (id, intent, status, base_commit, head_commit, attrs)"
                     " VALUES (?,?,?,?,NULL,?)",
-                    (cid, intent, "draft", commit[0] if commit else None,
+                    (cid, intent, "draft", base,
                      json.dumps({"title": title, "targets": targets, "report": {k: v for k, v in report.items() if k != "marks"}})))
-    view = save_view(con, title, intent, report["marks"], kind="change", source=source, change_id=cid,
+    marks = report["marks"]
+    if kept:   # what the earlier brief predicted stays predicted: by now those things exist and look like plain edits
+        prior = con.execute("SELECT spec FROM views WHERE id = ?", ("view-" + cid,)).fetchone()
+        prior = json.loads(prior[0] or "{}") if prior else {}
+        have = {m["id"] for m in marks}
+        marks = marks + [m for m in prior.get("marks", []) if m["id"] not in have]
+        named = {n["name"] for n in report["new_nodes"]}
+        report["new_nodes"] = report["new_nodes"] + [n for n in prior.get("new_nodes", []) if n["name"] not in named]
+    view = save_view(con, title, intent, marks, kind="change", source=source, change_id=cid,
                      extra={"summary": report["summary"], "risks": report["risks"], "tests_to_run": report["tests_to_run"],
                             "channels": report["channels"], "by_module": report["by_module"], "by_system": report["by_system"],
                             "new_nodes": report["new_nodes"], "untested": report["untested"],
                             "entry_points_affected": report["entry_points_affected"], "limits": report["limits"]},
                      view_id="view-" + cid)
-    try:  # keep the graph as it was when the change was proposed, to compare against later
-        from . import diff
-        diff.snapshot(con, cid)
-        report["snapshot"] = True
-    except Exception:
-        report["snapshot"] = False
+    if kept:
+        report["snapshot"] = "kept"
+    else:
+        try:  # keep the graph as it was when the change was proposed, to compare against later
+            diff.snapshot(con, cid)
+            report["snapshot"] = "new"
+        except Exception:
+            report["snapshot"] = False
     report["change_id"], report["view_id"] = cid, view["id"]
     report["marks"] = report["marks"][:60]
     return report

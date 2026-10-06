@@ -17,11 +17,13 @@ DEFAULT_DB = ".leyline/leyline.db"
 def _spec(con, args) -> int:
     from . import spec
     if args.action == "brief":
-        r = spec.brief(con, args.target)
+        r = spec.brief(con, args.target, new_baseline=args.new_baseline)
         if "error" in r:
             _print(r)
             return 1
         print(spec.brief_text(r))
+        if r.get("baseline") == "kept":
+            print("The code has changed since the first brief; verify will still compare with the code as it was then.")
         print(f"written to {r['written']}")
         return 0 if r["ready"] else 1
     if args.action == "verify":
@@ -125,6 +127,8 @@ def main(argv=None) -> int:
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
     p = sub.add_parser("spec", help="a change stated as an OpenSpec folder: brief it, review it, verify it")
     p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve", "file"])
+    p.add_argument("--new-baseline", action="store_true",
+                   help="brief: compare from the code as it is now, forgetting the picture kept from the first brief")
     p.add_argument("--reviewer", help="file: logic or performance")
     p.add_argument("--severity", choices=["high", "medium", "low"], help="file")
     p.add_argument("--claim", help="file: one sentence a person can check")

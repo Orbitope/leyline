@@ -24,3 +24,16 @@ def make_engine():
 def poke(thing):
     handler = thing.child
     return thing.child()
+
+
+class Journal:
+    def __init__(self):
+        self.items = []
+        self.by = {}
+
+    def note(self, x):
+        self.items.append(x)
+        self.by[x].add(x)
+
+    def count(self):
+        return len(self.items) + len(self.by)
