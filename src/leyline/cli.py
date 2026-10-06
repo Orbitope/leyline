@@ -62,6 +62,12 @@ def main(argv=None) -> int:
     p = sub.add_parser("source", help="source text of a node")
     p.add_argument("node_id")
     sub.add_parser("serve", help="serve the store over MCP (stdio)")
+    p = sub.add_parser("export", help="write the map as one self-contained HTML page")
+    p.add_argument("-o", "--out", default="leyline-map.html")
+    p.add_argument("--fragment", action="store_true", help="omit the html/head/body wrapper")
+    p.add_argument("--no-sources", action="store_true", help="leave source text out of the page")
+    p = sub.add_parser("view", help="serve the map on localhost")
+    p.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
 
     if args.cmd == "index":
@@ -79,6 +85,34 @@ def main(argv=None) -> int:
         print(f"leyline: no store at {args.db}. Run `leyline index` first.", file=sys.stderr)
         return 2
     con = store.connect(args.db)
+    if args.cmd == "export":
+        from . import export
+        text = (export.fragment if args.fragment else export.page)(con, not args.no_sources)
+        Path(args.out).write_text(text)
+        print(f"wrote {args.out} ({len(text) // 1024} KB)")
+        return 0
+    if args.cmd == "view":
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from . import export
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # re-read the store on every load, so a re-index shows up on refresh
+                body = export.page(store.connect(args.db)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        print(f"Leyline map at http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
+        try:
+            HTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+        except KeyboardInterrupt:
+            pass
+        return 0
     if args.cmd == "overview":
         o = query.overview(con)
         _print(o) if args.json else print(_summary(o))

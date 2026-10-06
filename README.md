@@ -19,9 +19,27 @@ leyline --db path/to/repo/.leyline/leyline.db overview
 leyline --db ... search "Simulation Step"
 leyline --db ... expand "<node id>"
 leyline --db ... serve              # MCP server over stdio
+leyline --db ... view               # the map, served on http://127.0.0.1:8765
+leyline --db ... export -o map.html # the map as one self-contained page
 ```
 
 To use it from an MCP client, register the command `leyline --db <path> serve`.
+
+## The map
+
+`view` and `export` open the same page. It has three zoom levels:
+
+1. **Modules.** One box per module, with an arrow for each dependency and a count of the links behind it.
+2. **Inside a module.** One box per type, or per file where functions sit outside any type.
+3. **Inside a type or file.** One box per function, with the outside callers and callees around it.
+
+Select a box or an arrow to see detail in the side panel: members, callers, callees, the links that
+make up an arrow, and source text. Double-click a box to open it. The Matrix tab shows the same level
+as a dependency matrix, ordered so that cycles appear above the diagonal. Solid arrows are exact;
+dashed arrows are heuristic.
+
+The exported page embeds the graph and the source text of every indexed file, so share it with the
+same care as the repository. Pass `--no-sources` to leave source text out.
 
 ## MCP tools
 

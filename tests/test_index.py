@@ -111,3 +111,20 @@ def test_reindex_is_idempotent(con, tmp_path):
     c2 = store.connect(db)
     after = c2.execute("SELECT (SELECT COUNT(*) FROM nodes), (SELECT COUNT(*) FROM edges), (SELECT COUNT(*) FROM calls)").fetchone()
     assert tuple(before) == tuple(after)
+
+
+def test_export_embeds_a_loadable_graph(con):
+    import json
+    import re
+
+    from leyline import export
+
+    g = export.graph(con)
+    kinds = {n["k"] for n in g["nodes"]}
+    assert {"repo", "module", "file", "type", "callable"} <= kinds
+    assert all(0 <= e[1] < len(g["nodes"]) and 0 <= e[2] < len(g["nodes"]) for e in g["edges"])
+    assert "scripts/run.py" in g["sources"]
+    page = export.page(con)
+    data = re.search(r'<script id="leyline-data" type="application/json">(.*?)</script>', page, re.S).group(1)
+    assert json.loads(data)["nodes"][0]["k"] == "repo"
+    assert "__LEYLINE" not in page
