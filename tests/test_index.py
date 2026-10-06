@@ -285,3 +285,72 @@ def test_change_assessment_and_saved_views(tmp_path):
     index(work, db, "fx")
     c = store.connect(db)
     assert change.list_views(c)["total"] == 2
+
+
+def test_rules_are_checked_against_the_graph(tmp_path):
+    from leyline import rules
+
+    db = tmp_path / "r.db"
+    index(FIXTURE, db, "fx")
+    c = store.connect(db)
+    assert "error" in rules.add_rule(c, "forbid", "module:Nope", "module:Lib")
+    ok = rules.add_rule(c, "forbid", "module:Lib", "module:App", reason="the library must not know the app")
+    assert ok["status"] == "suggested"
+    bad = rules.add_rule(c, "forbid", "module:App", "module:Lib", status="confirmed")
+    rules.add_rule(c, "no_cycle", "modules")
+    r = {x["id"]: x for x in rules.check(c)["rules"]}
+    assert r[ok["id"]]["passes"]
+    assert not r[bad["id"]]["passes"] and r[bad["id"]]["examples"]
+    assert all(x["passes"] for x in r.values() if x["kind"] == "no_cycle")
+    assert rules.confirm_rule(c, ok["id"])["status"] == "confirmed"
+
+
+def test_review_compares_an_implemented_change_with_its_proposal(tmp_path):
+    import shutil
+
+    from leyline import change, diff, export, rules
+
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE, work)
+    db = tmp_path / "store" / "d.db"
+    db.parent.mkdir()
+    index(work, db, "fx")
+    c = store.connect(db)
+    rules.add_rule(c, "forbid", "module:Lib", "external:System.IO")
+    p = change.propose(c, "Circle area in square metres",
+                       [{"id": "fx:csharp:Lib::Lib.Circle.Area()", "action": "behavior"}])
+    assert (db.parent / "snapshots" / f"{p['change_id']}.db").exists()
+    assert "error" in diff.review(c, "chg-none")
+
+    results = diff.parse_test_output("  PASS  canvas totals\n  FAIL  other thing: boom\nnoise\n")
+    assert results == [{"name": "canvas totals", "status": "pass", "message": None},
+                       {"name": "other thing", "status": "fail", "message": "boom"}]
+    assert diff.record_tests(c, "before", [{"name": "canvas totals", "status": "pass"}])["matched_to_test_nodes"] == 1
+
+    shapes = work / "Lib" / "Shapes.cs"
+    text = shapes.read_text()
+    text = text.replace("Math.PI * R * R;", "Math.PI * R * R / 10000.0;")                         # the predicted edit
+    text = text.replace("{ _shapes.Add(s); }", "{ File.Delete(\"x\"); _shapes.Add(s); }")            # not predicted
+    text = text.replace("using System;", "using System;\nusing System.IO;")                      # breaks the rule
+    text = text.replace("Total(double scale) => Total() * scale;",
+                        "Total(double scale, int n) => Total() * scale * n;")                     # a new signature
+    shapes.write_text(text)
+    index(work, db, "fx")
+    c = store.connect(db)
+    diff.record_tests(c, "after", [{"name": "canvas totals", "status": "fail", "message": "expected 3.14"}])
+
+    r = diff.review(c, p["change_id"], "before", "after")
+    assert [n["name"] for n in r["as_predicted"]] == ["Circle.Area"]
+    surprise = {n["name"] for n in r["not_predicted"]}
+    assert {"Canvas.Add", "Canvas.Total"} <= surprise and "Canvas" not in surprise
+    assert r["predicted_untouched"] == []
+    assert [(n["was"], n["now"]) for n in r["graph"]["nodes"]["resigned"]] == [("double", "double,int")]
+    assert [x["kind"] for x in r["rules"]["new_violations"]] == ["forbid"]
+    assert r["tests"]["newly_failing"][0]["name"] == "canvas totals"
+    assert {v["level"] for v in r["verdict"]} == {"medium", "high"}
+    assert "not predicted" in diff.review_text(r)
+
+    view = change.get_view(c, r["view_id"])
+    assert view["kind"] == "review" and {m["role"] for m in view["marks"]} == {"edited as predicted", "edited, not predicted"}
+    exported = next(v for v in export.graph(c, with_sources=False)["views"] if v["kind"] == "review")
+    assert all(isinstance(n["i"], int) for n in exported["review"]["not_predicted"])

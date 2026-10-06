@@ -113,3 +113,9 @@ CREATE TABLE IF NOT EXISTS views (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL, layer TEXT NOT NULL,
   source TEXT NOT NULL, created TEXT, change_id TEXT, spec TEXT NOT NULL
 );
+
+-- Outcomes of test runs, labelled so two runs can be compared.
+CREATE TABLE IF NOT EXISTS test_results (
+  run TEXT NOT NULL, name TEXT NOT NULL, test_id TEXT, status TEXT NOT NULL, message TEXT, recorded TEXT,
+  PRIMARY KEY (run, name)
+);

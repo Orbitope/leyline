@@ -96,6 +96,18 @@ def graph(con, with_sources: bool = True) -> dict:
                 g["i"] = index.get(g.get("id"))
             for nn in spec.get("new_nodes", []):
                 nn["pi"] = index.get(nn.get("parent"))
+            def attach(x):
+                # Give every record in a review that names a node the node's index.
+                if isinstance(x, dict):
+                    for key, out in (("id", "i"), ("from_id", "fi"), ("to_id", "ti")):
+                        if isinstance(x.get(key), str):
+                            x[out] = index.get(x[key])
+                    for value in x.values():
+                        attach(value)
+                elif isinstance(x, list):
+                    for value in x:
+                        attach(value)
+            attach(spec.get("review"))
             views.append({"id": v["id"], "title": v["title"], "kind": v["kind"], "created": v["created"], **spec})
     except Exception:  # a store written before views existed
         views = []

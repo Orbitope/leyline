@@ -22,6 +22,10 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=OFF")  # edges may point at nodes written later in a run
     con.executescript(resources.files("leyline").joinpath("schema.sql").read_text())
+    have = {r[1] for r in con.execute("PRAGMA table_info(rules)")}
+    for col in ("status", "source", "created"):
+        if col not in have:
+            con.execute(f"ALTER TABLE rules ADD COLUMN {col} TEXT")
     con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
     return con
 

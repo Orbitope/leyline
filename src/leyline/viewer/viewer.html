@@ -309,6 +309,7 @@ for (const [k, s, d] of D.edges) if (k === "overrides") { (implsOf.get(d) || imp
 const linkLabel = (L) => (L[6] ? LABEL[L[6].channel] || L[6].channel : LABEL[L[0]]);
 const VIEWS = D.views || [];
 const ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect"];
+const REVIEW_CLS = { "edited as predicted": "c0", "new, as declared": "c2", "edited, not predicted": "c3", "predicted, not edited": "c1" };
 const ROLE_LABEL = { changed: "changed", new: "new", contract: "interface that must change", must_edit: "must be edited", direct: "calls it directly", test: "test to run", indirect: "reached further out" };
 const FLOWS = D.flows || [];
 const flowsOf = new Map();
@@ -348,7 +349,7 @@ function viewSetup() {
   if (!v) return;
   const custom = [...new Set(v.marks.map((m) => m.role))].filter((r) => !ROLE_ORDER.includes(r));
   VW.roles = [...ROLE_ORDER.filter((r) => v.marks.some((m) => m.role === r)), ...custom];
-  VW.cls = (r) => (ROLE_ORDER.includes(r) ? r : "c" + (custom.indexOf(r) % 6));
+  VW.cls = (r) => (ROLE_ORDER.includes(r) ? r : REVIEW_CLS[r] || "c" + (custom.indexOf(r) % 6));
   const rankOf = (r) => VW.roles.indexOf(r);
   let marks = v.marks;
   const boxOf = (i) => (unitOf[i] != null ? unitOf[i] : i);
@@ -670,7 +671,7 @@ function tools() {
   const chip = (label, on, fn, cls) => { const b = document.createElement("button"); b.className = "chip" + (cls ? " " + cls : ""); b.textContent = label; if (on != null) b.setAttribute("aria-pressed", on); b.onclick = fn; t.appendChild(b); };
   if (S.mode === "flows") return;
   if (S.mode === "views") {
-    if (VIEWS.length) { const sel = document.createElement("select"); sel.id = "view-pick"; sel.setAttribute("aria-label", "Saved view"); VIEWS.forEach((v, i) => { const o = document.createElement("option"); o.value = i; o.textContent = (v.kind === "change" ? "Change: " : "View: ") + v.title; o.selected = i === S.viewIdx; sel.appendChild(o); }); sel.onchange = () => { S.viewIdx = +sel.value; S.sel = null; viewSetup(); render(true); viewKey(); }; t.appendChild(sel); }
+    if (VIEWS.length) { const sel = document.createElement("select"); sel.id = "view-pick"; sel.setAttribute("aria-label", "Saved view"); VIEWS.forEach((v, i) => { const o = document.createElement("option"); o.value = i; o.textContent = (v.kind === "change" ? "Change: " : v.kind === "review" ? "" : "View: ") + v.title; o.selected = i === S.viewIdx; sel.appendChild(o); }); sel.onchange = () => { S.viewIdx = +sel.value; S.sel = null; viewSetup(); render(true); viewKey(); }; t.appendChild(sel); }
     chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom");
     return;
   }
@@ -939,6 +940,7 @@ function viewHtml() {
   const v = VIEWS[S.viewIdx];
   if (!v) return `<div class="eyebrow">Views</div><h2>No saved views</h2><p class="note">A view is a set of nodes an agent marked for you: the reach of a proposed change, or any other slice of the code. Ask an agent connected to Leyline to assess a change, then re-open or refresh this page.</p>`;
   const lvl = (r) => `<span class="tag ${r.level === "high" ? "risk-high" : r.level === "medium" ? "risk-medium" : ""}">${r.level} risk</span>`;
+  if (v.kind === "review" && v.review) return reviewHtml(v);
   let h = `<div class="eyebrow">${v.kind === "change" ? "Proposed change" : "Saved view"} <span class="tag heur">${v.kind === "change" ? "static assessment" : "authored by an agent"}</span></div><h2>${esc(v.title)}</h2><p class="note">${esc(v.narrative || "")}</p>`;
   if (v.summary) { const s = v.summary; h += `<div class="facts"><div><b>${s.changed + s.added}</b><span>changed</span></div><div><b>${s.must_edit}</b><span>must edit</span></div><div><b>${s.reached}</b><span>reached</span></div><div><b>${s.tests_to_run}</b><span>tests to run</span></div></div>`; }
   if (v.risks && v.risks.length) h += `<h3>Risks</h3>` + v.risks.map((r) => `<p class="note">${lvl(r)} ${esc(r.what)}</p>`).join("");
@@ -963,6 +965,37 @@ function viewHtml() {
     for (const r of VW.roles) h += listHtml(esc((v.legend && v.legend[r]) || ROLE_LABEL[r] || r), byRole(r).slice(0, 40).map(row), byRole(r).length);
   }
   if (VW.trimmed) h += `<p class="note">The map leaves out the outer ring of indirectly reached code to stay readable. It is still listed here.</p>`;
+  return h;
+}
+function reviewHtml(v) {
+  const r = v.review, p = r.prediction, g = r.graph, t = r.tests;
+  const lvl = (x) => `<span class="tag ${x.level === "high" ? "risk-high" : x.level === "medium" ? "risk-medium" : ""}">${x.level}</span>`;
+  const nrow = (n, sub) => ({ go: n.i, name: n.name, sub: sub != null ? sub : [n.why, n.path ? n.path + (n.line ? ":" + n.line : "") : ""].filter(Boolean).join(" · "), ct: "" });
+  let h = `<div class="eyebrow">Change review <span class="tag heur">graph before and after</span></div><h2>${esc(v.title.replace(/^Review: /, ""))}</h2><p class="note">${esc(v.narrative || "")}</p>`;
+  h += `<div class="facts"><div><b>${p.as_predicted}/${p.predicted}</b><span>predicted edits made</span></div><div><b>${p.not_predicted}</b><span>not predicted</span></div><div><b>${g.structure.new_dependencies.length}</b><span>new module links</span></div><div><b>${t ? t.after.passed + "/" + t.after.total : "–"}</b><span>tests passing</span></div></div>`;
+  h += `<h3>Findings</h3>` + (r.verdict.length ? r.verdict.map((x) => `<p class="note">${lvl(x)} ${esc(x.what)}</p>`).join("") : `<p class="note">Nothing flagged: the edits match the proposal, no new links between modules, no rule or test newly failing.</p>`);
+  const byRole = (role) => v.marks.filter((m) => m.role === role).map((m) => ({ go: m.i, name: N[m.i].k === "callable" ? qual(m.i) : N[m.i].n, sub: [m.note, N[moduleOf[m.i]] ? "in " + N[moduleOf[m.i]].n : ""].filter(Boolean).join(" · "), ct: "" }));
+  h += listHtml("Edited, not in the proposal", r.not_predicted.map((n) => nrow(n)), r.not_predicted.length);
+  h += listHtml("In the proposal, not edited", r.predicted_untouched.map((n) => nrow(n, n.note)), r.predicted_untouched.length);
+  h += listHtml("Edited as predicted", byRole("edited as predicted"), byRole("edited as predicted").length);
+  h += listHtml("New, as declared", byRole("new, as declared"), byRole("new, as declared").length);
+  h += listHtml("Signatures changed", g.nodes.resigned.map((n) => nrow(n, `(${n.was}) → (${n.now})`)), g.nodes.resigned.length);
+  h += listHtml("New links between modules", g.structure.new_dependencies.map((d) => ({ go: d.fi, name: `${d.from} → ${d.to}`, sub: "", ct: d.links + (d.links === 1 ? " link" : " links") })), g.structure.new_dependencies.length);
+  h += listHtml("Links between modules that went away", g.structure.removed_dependencies.map((d) => ({ name: `${d.from} → ${d.to}`, sub: "", ct: d.links + "" })), g.structure.removed_dependencies.length);
+  if (g.flows.changed) {
+    h += listHtml(`Flows now pass through (${g.flows.changed} flows changed path)`, g.flows.now_pass_through.map((n) => ({ go: n.i, name: n.name, sub: "", ct: n.flows + " flows" })), g.flows.now_pass_through.length);
+    h += listHtml("Flows no longer pass through", g.flows.no_longer_pass_through.map((n) => ({ go: n.i, name: n.name, sub: "", ct: n.flows + " flows" })), g.flows.no_longer_pass_through.length);
+  }
+  const newly = new Set(r.rules.new_violations.map((x) => x.id));
+  const rules = r.rules.all || [];
+  if (rules.length) h += `<h3>Rules <span>${rules.length - r.rules.failing} of ${rules.length} hold</span></h3>` + rules.map((x) => `<p class="note"><span class="tag ${x.passes ? "" : newly.has(x.id) ? "risk-high" : "risk-medium"}">${x.passes ? "holds" : newly.has(x.id) ? "newly broken" : "broken before too"}</span> ${esc(x.kind === "forbid" ? `${x.from} must not use ${x.to}` : x.kind === "no_cycle" ? `no cycles between ${x.from}` : `${x.from} must be on a test's path`)}${x.status === "suggested" ? ` <span class="tag heur">suggested</span>` : ""}${x.passes ? "" : ` · ${x.violations} ${x.violations === 1 ? "violation" : "violations"}`}</p>`).join("");
+  if (t) {
+    h += `<h3>Tests</h3><p class="note">${t.before.passed} of ${t.before.total} passed before, ${t.after.passed} of ${t.after.total} after.</p>`;
+    h += listHtml("Now failing", t.newly_failing.map((x) => ({ name: x.name, sub: x.message || "", ct: "" })), t.newly_failing.length);
+    h += listHtml("Tests added", t.added.map((x) => ({ name: x, sub: "", ct: "" })), t.added.length);
+    h += listHtml("Tests removed", t.removed.map((x) => ({ name: x, sub: "", ct: "" })), t.removed.length);
+  } else h += `<h3>Tests</h3><p class="note">No test runs were recorded for this change.</p>`;
+  h += `<p class="note">${esc(r.limits || "")}</p>`;
   return h;
 }
 function viewNodeHtml(i) {

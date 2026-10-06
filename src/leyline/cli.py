@@ -66,6 +66,16 @@ def main(argv=None) -> int:
     p.add_argument("-o", "--out", default="leyline-map.html")
     p.add_argument("--fragment", action="store_true", help="omit the html/head/body wrapper")
     p.add_argument("--no-sources", action="store_true", help="leave source text out of the page")
+    p = sub.add_parser("record-tests", help="store a test run read from a test runner's output")
+    p.add_argument("run", help="a label for the run, such as before or after")
+    p.add_argument("file", help="runner output with one PASS or FAIL line per test; - for stdin")
+    p = sub.add_parser("rules", help="check the architecture rules")
+    p.add_argument("--confirm", type=int, metavar="ID", help="confirm a suggested rule")
+    p = sub.add_parser("review", help="compare an implemented change with its proposal")
+    p.add_argument("change_id")
+    p.add_argument("--before", help="label of the test run recorded before the change")
+    p.add_argument("--after", help="label of the test run recorded after it")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("view", help="serve the map on localhost")
     p.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
@@ -113,7 +123,28 @@ def main(argv=None) -> int:
         except KeyboardInterrupt:
             pass
         return 0
-    if args.cmd == "overview":
+    if args.cmd == "record-tests":
+        from . import diff
+        text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text()
+        _print(diff.record_tests(con, args.run, diff.parse_test_output(text)))
+    elif args.cmd == "rules":
+        from . import rules
+        if args.confirm:
+            _print(rules.confirm_rule(con, args.confirm))
+        r = rules.check(con)
+        for x in r["rules"]:
+            scope = x["from"] + (" -> " + x["to"] if x["to"] else "")
+            print(f"{'ok  ' if x['passes'] else 'FAIL'}  #{x['id']} {x['kind']} {scope}  [{x['status']}]"
+                  + ("" if x["passes"] else f"  {x['violations']} violations"))
+        return 1 if any(not x["passes"] and x["status"] == "confirmed" and x["severity"] == "error" for x in r["rules"]) else 0
+    elif args.cmd == "review":
+        from . import diff
+        r = diff.review(con, args.change_id, args.before, args.after)
+        if args.json or "error" in r:
+            _print(r)
+        else:
+            print(diff.review_text(r))
+    elif args.cmd == "overview":
         o = query.overview(con)
         _print(o) if args.json else print(_summary(o))
     elif args.cmd == "expand":

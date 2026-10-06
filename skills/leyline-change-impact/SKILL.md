@@ -1,6 +1,6 @@
 ---
 name: leyline-change-impact
-description: Assess a described code change against a Leyline map and save a blast-radius view, or save any custom view of the code. Use when asked what a change will touch, break or need tested.
+description: Assess a described code change against a Leyline map and save a blast-radius view, review an implemented change against its proposal, or save any custom view of the code. Use when asked what a change will touch, break or need tested, or whether a change went as planned.
 ---
 
 # Assess a change with Leyline
@@ -40,6 +40,24 @@ tell the user which is which.
 8. **Report** in this order: what must be edited, the risks as flagged, the tests to run, what no
    test covers, and what Leyline could not see. Tell the user the view is saved under the title you
    gave it and appears in the map's Views tab after a refresh.
+
+## After the change is implemented
+
+Do this when the user asks whether a change went as planned, or when you implemented it yourself.
+
+1. Before editing, run the tests and call `record_test_run` with run `before`. If the edits are
+   already made, skip this and say the review has no test baseline.
+2. After the edits, run the tests again and record run `after`. Ask for the repository to be
+   re-indexed (`leyline index`); the review compares stores, not files.
+3. Call `review_change` with the change id and the two run labels.
+4. Report the findings first. Then, for each edit that was not predicted, read its `source` and say
+   whether it was a needed follow-on the proposal missed or drift outside the change. For each
+   predicted edit that did not happen, say whether the prediction was wrong or the work is unfinished.
+5. A new link between modules or a newly broken rule is a design decision: put it to the user, do
+   not wave it through.
+
+To record a design constraint, call `add_rule`. Pass `confirmed=true` only when the user stated the
+rule themselves; a rule you inferred from the code or the docs is a suggestion, with your `reason`.
 
 ## Custom views
 

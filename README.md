@@ -51,6 +51,44 @@ stale when the code behind its evidence changes.
 `skills/leyline-change-impact/SKILL.md` tells an agent how to do steps 2 and 3 well. The same
 `save_view` tool lets an agent save any other slice of the code as a view.
 
+### Reviewing a change after it is made
+
+`propose_change` copies the store to `.leyline/snapshots/<change id>.db` before it returns. Once the
+change is implemented:
+
+```
+<run the tests> > before.txt        # before the change, on the old code
+leyline record-tests before before.txt
+... implement ...
+<run the tests> > after.txt
+leyline index .
+leyline record-tests after after.txt
+leyline review <change id> --before before --after after
+```
+
+`review` compares the snapshot with the graph as it is now and reports:
+
+- which predicted edits were made, which edits were not in the proposal, and which predicted edits
+  did not happen. A method whose parameters changed gets a new id; it is paired with the old one
+  by owner and name, so it counts as one edited method.
+- links between modules that are new or gone, and the flows whose path changed
+- rules that fail now and held before
+- tests that fail now and passed before
+
+It saves the result as a view, which the map shows under Views as "Review: ...".
+`record-tests` reads one `PASS name` or `FAIL name: message` line per test; an agent can pass
+results in any other format through the `record_test_run` tool.
+
+### Rules
+
+A rule is a constraint on the graph, checked with no inference: `forbid` (nothing in A may use
+anything in B), `no_cycle` (between modules or systems), `must_be_tested` (every function in A is on
+some test's path). Selectors are `module:Name`, `system:Name`, `external:Name`, `path:prefix`,
+`id:prefix` and `*`. A rule an agent adds is stored as suggested until you confirm it with
+`leyline rules --confirm ID`. `leyline rules` checks all of them and exits 1 when a confirmed
+error-level rule fails, so it can run in CI. A `forbid` rule on an external package sees imports
+(`using`, `import`), not fully qualified names used inline.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
@@ -89,6 +127,10 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `annotate(node_id, key, value, evidence, confidence, layer)` | Write an inferred or intent statement about a node |
 | `propose_change(intent, targets, title?)` | Assess a change before it is made and save its blast-radius view |
 | `save_view(title, narrative, marks, legend?)` | Save any set of marked nodes as a view |
+| `review_change(change_id, before_run?, after_run?)` | Compare an implemented change with its proposal and save a review view |
+| `record_test_run(run, results)` | Store one test run under a label |
+| `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
+| `check_rules()` | Evaluate every rule against the graph |
 | `views()`, `view(view_id)` | List saved views, or read one in full |
 
 ## What is indexed

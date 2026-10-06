@@ -289,6 +289,12 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
                             "new_nodes": report["new_nodes"], "untested": report["untested"],
                             "entry_points_affected": report["entry_points_affected"], "limits": report["limits"]},
                      view_id="view-" + cid)
+    try:  # keep the graph as it was when the change was proposed, to compare against later
+        from . import diff
+        diff.snapshot(con, cid)
+        report["snapshot"] = True
+    except Exception:
+        report["snapshot"] = False
     report["change_id"], report["view_id"] = cid, view["id"]
     report["marks"] = report["marks"][:60]
     return report

@@ -114,7 +114,12 @@ class Indexer:
             self.results[file_id] = res
             self.file_lang[file_id] = adapter.LANGUAGE
             self.stats[adapter.NAME]["files"] += 1
+            lines = data.split(b"\n")
             for n in res.nodes:
+                if n.span_start and n.kind in ("type", "callable", "test", "field"):
+                    # A hash of the node's own text, so a later index can tell which nodes were edited.
+                    body = b"\n".join(ln.strip() for ln in lines[n.span_start - 1:n.span_end])
+                    n.content_hash = hashlib.sha1(body).hexdigest()[:16]
                 self._add(n)
             self.edges.extend(res.edges)
         self._projects(files)

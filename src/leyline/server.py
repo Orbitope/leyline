@@ -1,4 +1,4 @@
-"""MCP server over a Leyline store. Reads everything; writes only annotations."""
+"""MCP server over a Leyline store. Reads facts; writes annotations, views, proposals, rules and test runs."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import change, query, store
+from . import change, diff, query, rules, store
 
 mcp = FastMCP(
     "leyline",
@@ -140,6 +140,40 @@ def views() -> dict:
 def view(view_id: str) -> dict:
     """One saved view in full: its narrative, marks and, for a change, its impact report."""
     return change.get_view(_db(), view_id)
+
+
+@mcp.tool()
+def review_change(change_id: str, before_run: Optional[str] = None, after_run: Optional[str] = None) -> dict:
+    """After a proposed change has been implemented and the repository re-indexed: compare the graph
+    with the snapshot taken at proposal time. Returns which predicted edits happened, which edits were
+    not predicted, new and removed dependencies between modules, flows whose path changed, rule
+    results, and the test delta if two runs were recorded with `record_test_run`. Saves a review view."""
+    return diff.review(_db(), change_id, before_run, after_run)
+
+
+@mcp.tool()
+def record_test_run(run: str, results: list[dict]) -> dict:
+    """Store the outcome of one test run under a label such as `before` or `after`.
+    Each result is {"name": test name, "status": "pass" | "fail" | "skip", "message": optional}."""
+    return diff.record_tests(_db(), run, results)
+
+
+@mcp.tool()
+def add_rule(kind: str, selector_from: str, selector_to: str = "", edge_kinds: Optional[list[str]] = None,
+             severity: str = "error", reason: str = "", confirmed: bool = False) -> dict:
+    """Add an architecture rule. Kinds: `forbid` (nothing in selector_from may link to selector_to),
+    `no_cycle` (selector_from is `modules` or `systems`), `must_be_tested` (every function in
+    selector_from is on some test's path). Selectors: `module:Name`, `system:Name`, `external:Name`,
+    `path:prefix`, `id:prefix`, `*`. A rule is the user's intent: pass confirmed=true only when the
+    user stated it. Otherwise it is stored as suggested, with your `reason`."""
+    return rules.add_rule(_db(), kind, selector_from, selector_to, edge_kinds, severity, reason,
+                          "confirmed" if confirmed else "suggested", "mcp")
+
+
+@mcp.tool()
+def check_rules() -> dict:
+    """Evaluate every architecture rule against the current graph, with examples of each violation."""
+    return rules.check(_db())
 
 
 def main() -> None:
