@@ -77,3 +77,10 @@ Node ids are stable across file moves within a project:
 ```bash
 pytest
 ```
+
+## License
+
+Copyright (C) 2026 Matthew Burke.
+
+Leyline is free software, licensed under the GNU General Public License, version 3.
+See [LICENSE](LICENSE) for the full text. It comes with no warranty.
