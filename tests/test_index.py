@@ -232,3 +232,56 @@ def test_systems_are_proposed_and_named_through_annotations(tmp_path):
     c.close()
     stats = index(work, db, "fx")
     assert stats["stale_annotations"] >= 1
+
+
+def test_change_assessment_and_saved_views(tmp_path):
+    import shutil
+
+    from leyline import change, export
+
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE, work)
+    db = tmp_path / "c.db"
+    index(work, db, "fx")
+    c = store.connect(db)
+    area = "fx:csharp:Lib::Lib.IShape.Area()"
+
+    bad = change.propose(c, "x", [{"id": "nope", "action": "signature"}])
+    assert "error" in bad
+
+    r = change.propose(c, "Make Area take a unit", [{"id": area, "action": "signature", "note": "adds a unit"}])
+    must = {m["id"]: m for m in r["must_edit"]}
+    assert "fx:csharp:Lib::Lib.Circle.Area()" in must                      # the implementation
+    assert "fx:csharp:Lib::Lib.Canvas.Total()" in must                     # the direct caller
+    assert any(t["name"] == "canvas totals" for t in r["tests_to_run"])
+    assert {g["module"] for g in r["by_module"]} >= {"Lib", "App"}
+    assert any("outside its own module" in k["what"] for k in r["risks"])
+    # The Python launcher reaches it through the process channel.
+    assert any(ch["channel"] == "process" for ch in r["channels"])
+
+    # Changing one implementation pulls in the interface and its other callers.
+    r2 = change.assess(c, "Circle area in square metres", [{"id": "fx:csharp:Lib::Lib.Circle.Area()", "action": "signature"}])
+    roles = {m["id"]: m["role"] for m in r2["marks"]}
+    assert roles[area] == "contract"
+    assert roles["fx:csharp:Lib::Lib.Canvas.Total()"] == "must_edit"
+
+    # Something new attaches to what will call it.
+    r3 = change.assess(c, "Add a perimeter", [{"action": "add", "name": "Canvas.Perimeter()",
+                                               "parent": "fx:csharp:Lib::Lib.Canvas",
+                                               "used_by": ["fx:csharp:App::Program.Main(string[])"]}])
+    assert r3["summary"]["added"] == 1 and r3["must_edit"][0]["id"].startswith("fx:csharp:App::Program.Main(")
+
+    v = change.save_view(c, "Shapes", "The shape types.", [
+        {"id": "fx:csharp:Lib::Lib.Circle", "role": "shape", "note": "a circle"}, {"id": "missing", "role": "x"}])
+    assert v["marks"] == 1 and v["missing"] == ["missing"]
+    listed = change.list_views(c)["views"]
+    assert {x["kind"] for x in listed} == {"change", "custom"}
+    assert change.get_view(c, r["view_id"])["summary"]["must_edit"] == r["summary"]["must_edit"]
+    g = export.graph(c)
+    assert len(g["views"]) == 2 and all("i" in m for vw in g["views"] for m in vw["marks"])
+
+    # Views and proposals survive a re-index; they are not facts.
+    c.close()
+    index(work, db, "fx")
+    c = store.connect(db)
+    assert change.list_views(c)["total"] == 2

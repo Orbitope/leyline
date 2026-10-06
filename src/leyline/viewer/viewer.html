@@ -156,6 +156,28 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
 .status { font: 12px var(--mono); }
 .status.ok { color: var(--accent); } .status.na { color: var(--muted); }
 .tag.chan { border-color: var(--chan); color: var(--chan); }
+.tag.risk-high { border-color: var(--warn); color: var(--warn); } .tag.risk-medium { border-color: var(--mark); color: var(--mark); }
+.node.role-changed rect:first-child { fill: var(--mark-soft); stroke: var(--mark); stroke-width: 2.4; }
+.node.role-new rect:first-child { fill: var(--mark-soft); stroke: var(--mark); stroke-width: 2; stroke-dasharray: 5 3; }
+.node.role-contract rect:first-child { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 3; }
+.node.role-must_edit rect:first-child { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.8; }
+.node.role-direct rect:first-child { stroke: var(--accent); stroke-width: 1.8; fill: var(--accent-soft); }
+.node.role-test rect:first-child { stroke: var(--chan); stroke-width: 1.6; }
+.node.role-indirect rect:first-child { stroke: var(--line); }
+.node.role-c0 rect:first-child { stroke: var(--accent); stroke-width: 2; fill: var(--accent-soft); }
+.node.role-c1 rect:first-child { stroke: var(--mark); stroke-width: 2; fill: var(--mark-soft); }
+.node.role-c2 rect:first-child { stroke: var(--chan); stroke-width: 2; }
+.node.role-c3 rect:first-child { stroke: var(--warn); stroke-width: 2; fill: var(--warn-soft); }
+.node.role-c4 rect:first-child { stroke: var(--cs); stroke-width: 2; }
+.node.role-c5 rect:first-child { stroke: var(--py); stroke-width: 2; }
+.key { display: inline-flex; align-items: center; gap: 6px; }
+.key b { width: 14px; height: 10px; border-radius: 2px; border: 2px solid var(--line); display: inline-block; }
+.key .k-changed, .key .k-c1, .key .k-new { background: var(--mark-soft); border-color: var(--mark); }
+.key .k-must_edit, .key .k-contract, .key .k-c3 { background: var(--warn-soft); border-color: var(--warn); }
+.key .k-direct, .key .k-c0 { background: var(--accent-soft); border-color: var(--accent); }
+.key .k-test, .key .k-c2 { border-color: var(--chan); } .key .k-c4 { border-color: var(--cs); } .key .k-c5 { border-color: var(--py); }
+.tools select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--edge);
+  border-radius: 6px; padding: 4px 8px; max-width: min(100%, 460px); }
 .flow-wrap { height: 100%; overflow: auto; padding: 14px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
 .flow-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .flow-head select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line);
@@ -194,6 +216,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
       <button id="tab-map" aria-pressed="true">Map</button>
       <button id="tab-matrix" aria-pressed="false">Matrix</button>
       <button id="tab-flows" aria-pressed="false">Flows</button>
+      <button id="tab-views" aria-pressed="false">Views</button>
     </div>
     <div class="search">
       <input id="q" type="search" placeholder="Find a type, function or file" autocomplete="off" aria-label="Search">
@@ -214,6 +237,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
       <div class="matrix-wrap" id="matrix" hidden></div>
       <div class="flow-wrap" id="flowview" hidden></div>
       <div class="tools" id="tools"></div>
+      <div class="hint" id="viewkey" hidden></div>
       <div class="hint" id="hint">
         <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="1.5"/></svg>exact</i>
         <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/></svg>worked out from syntax</i>
@@ -283,6 +307,9 @@ const grp = (u) => (sysOf.has(u) ? sysOf.get(u) : u);
 const implsOf = new Map(), basesOf = new Map();
 for (const [k, s, d] of D.edges) if (k === "overrides") { (implsOf.get(d) || implsOf.set(d, []).get(d)).push(s); (basesOf.get(s) || basesOf.set(s, []).get(s)).push(d); }
 const linkLabel = (L) => (L[6] ? LABEL[L[6].channel] || L[6].channel : LABEL[L[0]]);
+const VIEWS = D.views || [];
+const ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect"];
+const ROLE_LABEL = { changed: "changed", new: "new", contract: "interface that must change", must_edit: "must be edited", direct: "calls it directly", test: "test to run", indirect: "reached further out" };
 const FLOWS = D.flows || [];
 const flowsOf = new Map();
 FLOWS.forEach((f, fi) => { for (const st of f.steps) { if (!flowsOf.has(st[0])) flowsOf.set(st[0], []); flowsOf.get(st[0]).push(fi); } });
@@ -307,14 +334,30 @@ const S = { level: "repo", focus: null, sel: null, hover: null, mode: "map", ext
   filters: { repo: { calls: true, types: true, inherit: true, imports: true, channels: true },
              module: { calls: true, types: false, inherit: true, imports: false, channels: true },
              system: { calls: true, types: false, inherit: true, imports: false, channels: true },
-             unit: { calls: true, types: false, inherit: true, imports: false, channels: true } },
-  flow: 0,
-  outside: { module: false, system: true, unit: true } };
+             unit: { calls: true, types: false, inherit: true, imports: false, channels: true },
+             view: { calls: true, types: false, inherit: true, imports: false, channels: true } },
+  flow: 0, viewIdx: 0, prev: null,
+  outside: { module: false, system: true, unit: true, view: true } };
 const cam = { x: 0, y: 0, k: 1 };
 
 /* ---------- build the graph for the current level ---------- */
+// The current saved view: which box each marked node falls in, and that box's strongest role.
+let VW = null;
+function viewSetup() {
+  const v = VIEWS[S.viewIdx]; VW = { boxes: new Map(), marksIn: new Map(), roles: [] };
+  if (!v) return;
+  const custom = [...new Set(v.marks.map((m) => m.role))].filter((r) => !ROLE_ORDER.includes(r));
+  VW.roles = [...ROLE_ORDER.filter((r) => v.marks.some((m) => m.role === r)), ...custom];
+  VW.cls = (r) => (ROLE_ORDER.includes(r) ? r : "c" + (custom.indexOf(r) % 6));
+  const rankOf = (r) => VW.roles.indexOf(r);
+  let marks = v.marks;
+  const boxOf = (i) => (unitOf[i] != null ? unitOf[i] : i);
+  if (new Set(marks.map((m) => boxOf(m.i))).size > 70) { marks = marks.filter((m) => m.role !== "indirect"); VW.trimmed = true; }
+  for (const m of marks) { const b = boxOf(m.i); (VW.marksIn.get(b) || VW.marksIn.set(b, []).get(b)).push(m); if (!VW.boxes.has(b) || rankOf(m.role) < rankOf(VW.boxes.get(b))) VW.boxes.set(b, m.role); }
+}
 function rep(i) {
   const n = N[i];
+  if (S.level === "view") { const b = unitOf[i] != null ? unitOf[i] : i; return VW.boxes.has(b) ? b : null; }
   if (S.level === "repo") return n.k === "external" ? (S.externals ? i : null) : n.k === "module" ? i : moduleOf[i];
   if (n.k === "external") return null;
   if (n.k === "system") return null;
@@ -325,6 +368,7 @@ function rep(i) {
   return u;
 }
 function inside(i) {
+  if (S.level === "view") return VW.boxes.has(i);
   if (S.level === "repo") return N[i].k === "module" || N[i].k === "external";
   if (S.level === "module") return N[i].k === "system" ? N[i].p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i);
   if (S.level === "system") return unitOf[i] === i && sysOf.get(i) === S.focus;
@@ -351,7 +395,8 @@ function buildView() {
     used.add(a); used.add(b);
   }
   const nodes = [];
-  if (S.level === "repo") { N.forEach((n, i) => { if (n.k === "module" || (S.externals && n.k === "external" && used.has(i))) nodes.push(i); }); }
+  if (S.level === "view") { for (const b of VW.boxes.keys()) nodes.push(b); }
+  else if (S.level === "repo") { N.forEach((n, i) => { if (n.k === "module" || (S.externals && n.k === "external" && used.has(i))) nodes.push(i); }); }
   else if (S.level === "module") { N.forEach((n, i) => { if (n.k === "system" ? n.p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i) && (n.k === "type" || kids[i].some((c) => N[c].k === "callable"))) nodes.push(i); }); }
   else if (S.level === "system") { for (const u of unitsOf.get(S.focus) || []) nodes.push(u); }
   else { for (const c of kids[S.focus]) if (N[c].k === "callable" || N[c].k === "type") nodes.push(c); }
@@ -370,9 +415,9 @@ function buildView() {
 const meter = document.createElement("canvas").getContext("2d");
 function measure(text, font) { meter.font = font; return meter.measureText(text).width; }
 function layout(view) {
-  const two = S.level === "repo" || (S.level === "module" && view.nodes.some((i) => N[i].k === "system"));
+  const two = S.level === "repo" || S.level === "view" || (S.level === "module" && view.nodes.some((i) => N[i].k === "system"));
   const boxes = new Map();
-  const homeMod = S.level === "module" ? S.focus : S.level === "repo" ? null : moduleOf[S.focus];
+  const homeMod = S.level === "module" ? S.focus : S.level === "repo" || S.level === "view" ? null : moduleOf[S.focus];
   for (const i of view.nodes) {
     const far = homeMod != null && N[i].k !== "module" && moduleOf[i] !== homeMod;
     const label = (far ? N[moduleOf[i]].n + " / " : "") + short(i);
@@ -445,6 +490,7 @@ function layout(view) {
 }
 function metaLine(i) {
   const n = N[i];
+  if (S.level === "view") { const ms = VW.marksIn.get(i) || []; const where = n.k === "module" ? "module" : N[moduleOf[i]] ? N[moduleOf[i]].n : ""; return `${where}${ms.length > 1 ? " · " + ms.length + " marked" : ""}`; }
   if (n.k === "external") return (n.x && (n.x.category || n.x.ecosystem)) || "external";
   if (n.k === "system") { const us = unitsOf.get(i) || []; return `${us.length} types and files · ${us.reduce((t, u) => t + count(u, "callable"), 0)} functions`; }
   if (n.k !== "module") return kindName(i);
@@ -486,7 +532,7 @@ function draw() {
   for (const b of L.boxes.values()) {
     if (b.dummy) continue;
     const n = N[b.i];
-    const g = el("g", { class: "node" + (b.stub ? " stub" : "") , transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
+    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (S.level === "view" && VW.boxes.has(b.i) ? " role-" + VW.cls(VW.boxes.get(b.i)) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
     el("rect", { width: b.w, height: b.h, rx: 5 }, g);
     el("rect", { class: "lang-" + langOf(b.i), x: 0, y: 0, width: 4, height: b.h, rx: 2, style: "stroke:none" }, g);
     const t = el("text", { x: 14, y: b.meta ? 19 : 19.5 }, g); t.textContent = b.label;
@@ -495,7 +541,7 @@ function draw() {
     g.addEventListener("click", (ev) => { ev.stopPropagation(); select({ node: b.i }); });
     g.addEventListener("pointerenter", () => { S.hover = b.i; mark(); });
     g.addEventListener("pointerleave", () => { S.hover = null; mark(); });
-    g.addEventListener("dblclick", (ev) => { ev.stopPropagation(); open(b.i); });
+    g.addEventListener("dblclick", (ev) => { ev.stopPropagation(); if (S.mode === "views") goTo(b.i); else open(b.i); });
     g.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.shiftKey ? open(b.i) : select({ node: b.i }); } });
   }
   mark();
@@ -554,7 +600,7 @@ function fit() {
   if (!r.width || !L.boxes.size) return;
   let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
   for (const b of L.boxes.values()) { x0 = Math.min(x0, b.x - b.w / 2); x1 = Math.max(x1, b.x + b.w / 2); y0 = Math.min(y0, b.y); y1 = Math.max(y1, b.y + b.h); }
-  const padT = $("tools").getBoundingClientRect().height + 36, padB = $("hint").getBoundingClientRect().height + 28, pad = 20;
+  const padT = $("tools").getBoundingClientRect().height + 36, padB = Math.max($("hint").getBoundingClientRect().height, $("viewkey").getBoundingClientRect().height) + 28, pad = 20;
   cam.k = Math.min(1.25, (r.width - 2 * pad) / (x1 - x0), (r.height - padT - padB) / (y1 - y0));
   cam.k = Math.max(cam.k, 0.3);
   cam.x = r.width / 2 - ((x0 + x1) / 2) * cam.k;
@@ -592,6 +638,7 @@ function open(i) {
 function goTo(i) {
   const n = N[i];
   if (n.k === "test") { const fi = FLOWS.findIndex((f) => f.entry === i); if (fi >= 0) return openFlow(fi, null); }
+  if (S.mode === "views") setMode("map");
   if (S.mode === "flows") { if (FLOWS[S.flow] && FLOWS[S.flow].steps.some((s) => s[0] === i)) { S.sel = { node: i }; drawFlow(); side(); const cur = $("flowview").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "center" }); return; } setMode("map"); }
   if (n.k === "repo") return setLevel("repo", null);
   if (n.k === "module") return setLevel("repo", null, { node: i });
@@ -604,6 +651,7 @@ function goTo(i) {
 }
 function render(refit) { crumbs(); tools(); draw(); side(); if (refit) requestAnimationFrame(fit); }
 function crumbs() {
+  if (S.level === "view") { $("crumbs").textContent = ""; return; }
   const parts = [[repoIdx, () => setLevel("repo", null)]];
   if (S.level !== "repo") { const m = S.level === "module" ? S.focus : moduleOf[S.focus]; parts.push([m, () => setLevel("module", m)]); }
   const sy = S.level === "system" ? S.focus : S.level === "unit" ? sysOf.get(S.focus) : null;
@@ -621,6 +669,11 @@ function tools() {
   const t = $("tools"); t.textContent = "";
   const chip = (label, on, fn, cls) => { const b = document.createElement("button"); b.className = "chip" + (cls ? " " + cls : ""); b.textContent = label; if (on != null) b.setAttribute("aria-pressed", on); b.onclick = fn; t.appendChild(b); };
   if (S.mode === "flows") return;
+  if (S.mode === "views") {
+    if (VIEWS.length) { const sel = document.createElement("select"); sel.id = "view-pick"; sel.setAttribute("aria-label", "Saved view"); VIEWS.forEach((v, i) => { const o = document.createElement("option"); o.value = i; o.textContent = (v.kind === "change" ? "Change: " : "View: ") + v.title; o.selected = i === S.viewIdx; sel.appendChild(o); }); sel.onchange = () => { S.viewIdx = +sel.value; S.sel = null; viewSetup(); render(true); viewKey(); }; t.appendChild(sel); }
+    chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom");
+    return;
+  }
   for (const [k, label] of [["calls", "Calls"], ["types", "Type use"], ["inherit", "Inheritance"], ["imports", "Imports"], ["channels", "Events and processes"]]) {
     if (k === "channels" && S.mode === "matrix") continue;
     if (k === "imports" && S.level !== "repo") continue;
@@ -679,7 +732,8 @@ const byMember = (j) => (N[j].k === "external" ? null : N[j].k === "callable" ||
 function side() {
   const s = $("side"), sel = S.sel || {};
   let html = "";
-  if (S.mode === "flows") html = sel.node != null ? nodeHtml(sel.node) : flowHtml();
+  if (S.mode === "views") html = sel.edge ? edgeHtml(sel.edge) : sel.node != null ? viewNodeHtml(sel.node) : viewHtml();
+  else if (S.mode === "flows") html = sel.node != null ? nodeHtml(sel.node) : flowHtml();
   else if (sel.edge) html = edgeHtml(sel.edge);
   else if (sel.node != null) html = nodeHtml(sel.node);
   else if (S.level === "repo") html = repoHtml();
@@ -875,18 +929,63 @@ function flowHtml() {
     <p class="note">This is what can run, not what did run. Branches not taken at run time are still listed, and calls the indexer could not resolve are missing.</p>
     ${listHtml("Modules it passes through", mods, mods.length)}`;
 }
+/* ---------- saved views ---------- */
+function viewKey() {
+  const k = $("viewkey"); if (!VW) return;
+  const lg = (VIEWS[S.viewIdx] || {}).legend || {};
+  k.innerHTML = VW.roles.map((r) => `<i class="key"><b class="k-${VW.cls(r)}"></b>${esc(lg[r] || ROLE_LABEL[r] || r)}</i>`).join("") + `<i>Double-click a box to open it on the map.</i>`;
+}
+function viewHtml() {
+  const v = VIEWS[S.viewIdx];
+  if (!v) return `<div class="eyebrow">Views</div><h2>No saved views</h2><p class="note">A view is a set of nodes an agent marked for you: the reach of a proposed change, or any other slice of the code. Ask an agent connected to Leyline to assess a change, then re-open or refresh this page.</p>`;
+  const lvl = (r) => `<span class="tag ${r.level === "high" ? "risk-high" : r.level === "medium" ? "risk-medium" : ""}">${r.level} risk</span>`;
+  let h = `<div class="eyebrow">${v.kind === "change" ? "Proposed change" : "Saved view"} <span class="tag heur">${v.kind === "change" ? "static assessment" : "authored by an agent"}</span></div><h2>${esc(v.title)}</h2><p class="note">${esc(v.narrative || "")}</p>`;
+  if (v.summary) { const s = v.summary; h += `<div class="facts"><div><b>${s.changed + s.added}</b><span>changed</span></div><div><b>${s.must_edit}</b><span>must edit</span></div><div><b>${s.reached}</b><span>reached</span></div><div><b>${s.tests_to_run}</b><span>tests to run</span></div></div>`; }
+  if (v.risks && v.risks.length) h += `<h3>Risks</h3>` + v.risks.map((r) => `<p class="note">${lvl(r)} ${esc(r.what)}</p>`).join("");
+  else if (v.kind === "change") h += `<h3>Risks</h3><p class="note">None flagged by the static checks.</p>`;
+  if (v.new_nodes && v.new_nodes.length) h += listHtml("To be added", v.new_nodes.map((n) => ({ go: n.pi, name: n.name, sub: `in ${n.pi != null ? N[n.pi].n : "?"}${n.note ? " · " + n.note : ""}`, ct: "new" })), v.new_nodes.length);
+  const byRole = (r) => v.marks.filter((m) => m.role === r);
+  const row = (m) => ({ go: m.i, name: N[m.i].k === "callable" || N[m.i].k === "field" ? qual(m.i) : N[m.i].n, sub: [m.note, N[moduleOf[m.i]] ? "in " + N[moduleOf[m.i]].n : ""].filter(Boolean).join(" · "), ct: "" });
+  if (v.kind === "change") {
+    h += listHtml("Changed", byRole("changed").map(row), byRole("changed").length);
+    const must = [...byRole("contract"), ...byRole("must_edit")];
+    h += listHtml("Must be edited with it", must.slice(0, 40).map(row), must.length);
+    if (v.channels && v.channels.length) h += listHtml("Reached through a channel", v.channels.map((c) => ({ go: c.fi, name: `${c.from_name} → ${c.to_name}`, sub: c.channel + (c.guessed ? " · guessed" : ""), ct: "" })), v.channels.length);
+    h += listHtml("Tests to run", (v.tests_to_run || []).slice(0, 30).map((t) => ({ go: t.i, name: t.name, ct: t.touched_steps + " steps" })), (v.tests_to_run || []).length, "No test passes through the change.");
+    h += listHtml("Changed code no test reaches", (v.untested || []).map((t) => ({ go: t.i, name: t.name, ct: "" })), (v.untested || []).length);
+    h += listHtml("Entry points affected", (v.entry_points_affected || []).slice(0, 15).map((t) => ({ go: t.i, name: t.name, ct: t.trigger || "" })), (v.entry_points_affected || []).length);
+    h += listHtml("By system", (v.by_system || []).map((g) => ({ go: g.i, name: g.system, sub: [g.changed ? g.changed + " changed" : "", g.must_edit ? g.must_edit + " to edit" : "", g.reached ? g.reached + " reached" : ""].filter(Boolean).join(" · "), ct: "" })), (v.by_system || []).length);
+    h += listHtml("By module", (v.by_module || []).map((g) => ({ go: g.i, name: g.module, sub: [g.changed ? g.changed + " changed" : "", g.must_edit ? g.must_edit + " to edit" : "", g.reached ? g.reached + " reached" : ""].filter(Boolean).join(" · "), ct: "" })), (v.by_module || []).length);
+    const rest = [...byRole("direct"), ...byRole("indirect")];
+    h += listHtml("Reached, no edit needed", rest.slice(0, 30).map(row), rest.length);
+    if (v.limits) h += `<p class="note">${esc(v.limits)}</p>`;
+  } else {
+    for (const r of VW.roles) h += listHtml(esc((v.legend && v.legend[r]) || ROLE_LABEL[r] || r), byRole(r).slice(0, 40).map(row), byRole(r).length);
+  }
+  if (VW.trimmed) h += `<p class="note">The map leaves out the outer ring of indirectly reached code to stay readable. It is still listed here.</p>`;
+  return h;
+}
+function viewNodeHtml(i) {
+  const ms = VW.marksIn.get(i) || [];
+  const rows = ms.map((m) => ({ go: m.i, name: m.i === i ? N[i].n : qual(m.i), sub: m.note, ct: ROLE_LABEL[m.role] || m.role }));
+  return `<div class="eyebrow">In this view</div>` + listHtml("Why it is here", rows, rows.length).replace("<h3>", `<h3 style="margin-top:4px">`) + `<div style="height:14px"></div>` + nodeHtml(i);
+}
 function openFlow(fi, node) { S.flow = fi; S.sel = node != null ? { node } : null; setMode("flows"); const cur = $("flowview").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "center" }); }
 function setMode(mode) {
   S.mode = mode;
-  for (const m of ["map", "matrix", "flows"]) $("tab-" + m).setAttribute("aria-pressed", mode === m);
-  $("map").toggleAttribute("hidden", mode !== "map"); $("matrix").hidden = mode !== "matrix"; $("flowview").hidden = mode !== "flows"; $("hint").hidden = mode !== "map";
-  $("crumbs").style.visibility = mode === "flows" ? "hidden" : "";
+  for (const m of ["map", "matrix", "flows", "views"]) $("tab-" + m).setAttribute("aria-pressed", mode === m);
+  const onMap = mode === "map" || mode === "views";
+  $("map").toggleAttribute("hidden", !onMap); $("matrix").hidden = mode !== "matrix"; $("flowview").hidden = mode !== "flows"; $("hint").hidden = mode !== "map"; $("viewkey").hidden = mode !== "views";
+  $("crumbs").style.visibility = mode === "flows" || mode === "views" ? "hidden" : "";
+  if (mode === "views" && S.level !== "view") { S.prev = { level: S.level, focus: S.focus }; S.level = "view"; S.focus = null; S.sel = null; viewSetup(); viewKey(); draw(); }
+  else if (mode !== "views" && S.level === "view") { S.level = S.prev ? S.prev.level : "repo"; S.focus = S.prev ? S.prev.focus : null; S.sel = null; crumbs(); draw(); }
   tools();
   if (mode === "matrix") drawMatrix(); else if (mode === "flows") drawFlow(); else requestAnimationFrame(fit);
   side();
 }
 $("tab-map").onclick = () => setMode("map"); $("tab-matrix").onclick = () => setMode("matrix");
 $("tab-flows").onclick = () => { if (S.sel && S.sel.edge) S.sel = null; setMode("flows"); };
+$("tab-views").onclick = () => setMode("views");
 
 /* ---------- search ---------- */
 const searchable = N.filter((n) => ["system", "module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
@@ -905,7 +1004,7 @@ $("q").addEventListener("input", () => {
   hits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   box.innerHTML = hits.slice(0, 14).map(([, , n]) => `<button data-go="${n.idx}"><b>${esc(n.k === "callable" || n.k === "field" ? qual(n.idx) : n.n)}</b><span>${esc(kindName(n.idx))} · ${esc(where(n.idx))}</span></button>`).join("") || `<button disabled><span>Nothing matches “${esc(q)}”.</span></button>`;
   box.hidden = false;
-  for (const b of box.querySelectorAll("[data-go]")) b.onclick = () => { box.hidden = true; $("q").value = ""; if (S.mode === "matrix") setMode("map"); goTo(+b.dataset.go); };
+  for (const b of box.querySelectorAll("[data-go]")) b.onclick = () => { box.hidden = true; $("q").value = ""; if (S.mode === "matrix" || S.mode === "views") setMode("map"); goTo(+b.dataset.go); };
 });
 $("q").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("results").hidden = true; $("q").blur(); } if (e.key === "Enter") { const b = $("results").querySelector("[data-go]"); if (b) b.click(); } });
 document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });

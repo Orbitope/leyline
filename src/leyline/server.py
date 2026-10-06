@@ -11,7 +11,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import query, store
+from . import change, query, store
 
 mcp = FastMCP(
     "leyline",
@@ -19,6 +19,8 @@ mcp = FastMCP(
         "Leyline is a graph of a codebase. Start with `overview` for the module map, `search` to find a"
         " node id by name, then `expand` a node to see what it contains and how it connects."
         " Edges marked heuristic come from syntax alone and can be wrong; exact edges cannot."
+        " To assess a change described in words: find the nodes it touches with `search` and `expand`,"
+        " then call `propose_change`. To show the user any other slice of the code, call `save_view`."
     ),
 )
 
@@ -102,6 +104,42 @@ def annotate(node_id: str, key: str, value: str, evidence: Optional[list[str]] =
     `evidence`, with a confidence from 0 to 1) or `intent` (the user's own statement). The store flags
     an inferred annotation as stale when the files behind its evidence change. Facts cannot be written."""
     return query.annotate(_db(), node_id, key, value, evidence, confidence, layer, "mcp")
+
+
+@mcp.tool()
+def propose_change(intent: str, targets: list[dict], title: Optional[str] = None, depth: int = 4) -> dict:
+    """Assess a change before any code is written, and save a blast-radius view the user can open.
+    `intent` is the change in the user's words. `targets` lists what will change, each as
+    {"id": node id, "action": ..., "note": why}. Actions: `behavior` (same contract, different result),
+    `signature` (parameters or return type change), `rename`, `remove`, or `add` for something new:
+    {"action": "add", "name": ..., "parent": id of the type, file or module it goes in,
+     "uses": [ids it will call], "used_by": [ids that will call it]}.
+    Returns what must be edited, what is reached, the tests to run, entry points affected, channel
+    crossings, untested targets and risk flags. Target a function when you can; a type, file or system
+    counts every function inside it."""
+    return change.propose(_db(), intent, targets, title, depth, "mcp")
+
+
+@mcp.tool()
+def save_view(title: str, narrative: str, marks: list[dict], legend: Optional[dict] = None) -> dict:
+    """Save a custom view for the user: any set of nodes worth looking at together, such as the parts
+    of a design alternative or everything involved in one feature. Each mark is
+    {"id": node id, "role": short label for its group, "note": one line on why it is here}.
+    `narrative` explains the view in a few sentences. `legend` maps each role to a description.
+    The view appears in the map's Views tab."""
+    return change.save_view(_db(), title, narrative, marks, "custom", "mcp", legend=legend)
+
+
+@mcp.tool()
+def views() -> dict:
+    """List saved views, including the blast-radius view of every proposed change."""
+    return change.list_views(_db())
+
+
+@mcp.tool()
+def view(view_id: str) -> dict:
+    """One saved view in full: its narrative, marks and, for a change, its impact report."""
+    return change.get_view(_db(), view_id)
 
 
 def main() -> None:

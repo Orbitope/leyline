@@ -106,3 +106,10 @@ CREATE TABLE IF NOT EXISTS ancestry (
 CREATE INDEX IF NOT EXISTS ancestry_module ON ancestry(module_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(node_id UNINDEXED, name, qualified, path, kind UNINDEXED);
+
+-- A saved view: a named set of marked nodes with a narrative. Change proposals create one;
+-- an agent can also author its own.
+CREATE TABLE IF NOT EXISTS views (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL, layer TEXT NOT NULL,
+  source TEXT NOT NULL, created TEXT, change_id TEXT, spec TEXT NOT NULL
+);

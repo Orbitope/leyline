@@ -25,6 +25,32 @@ leyline --db ... export -o map.html # the map as one self-contained page
 
 To use it from an MCP client, register the command `leyline --db <path> serve`.
 
+## How the pieces fit
+
+Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
+read and write it, and none of them runs unless you start it.
+
+| Piece | Started by | Reads | Writes |
+| --- | --- | --- | --- |
+| `leyline index` | You, a git hook or CI | The working tree | Facts, flows and system proposals. Replaces the previous facts. |
+| `leyline serve` (MCP) | Your coding agent, when it starts | The store | Annotations, change proposals and saved views |
+| `leyline view` or `export` | You | The store | Nothing |
+
+Annotations, proposals and views are not facts, so re-indexing keeps them. An annotation is flagged
+stale when the code behind its evidence changes.
+
+### Assessing a change
+
+1. You describe a change to an agent that has the Leyline MCP server connected.
+2. The agent finds the nodes the description refers to and calls `propose_change`.
+3. Leyline walks callers, interface links, channels and flows from those nodes and stores the result
+   as a draft proposal with a saved view.
+4. You refresh the map and open the Views tab: the change, what must be edited with it, what it
+   reaches, the tests to run and the risks.
+
+`skills/leyline-change-impact/SKILL.md` tells an agent how to do steps 2 and 3 well. The same
+`save_view` tool lets an agent save any other slice of the code as a view.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
@@ -41,6 +67,8 @@ process launches.
 
 The Matrix tab shows the same level as a dependency matrix, ordered so that cycles appear above the
 diagonal. The Flows tab steps through one flow at a time, with the source of the selected step beside it.
+The Views tab shows saved views: for a proposed change, the marked code colored by role beside the
+impact report.
 
 The exported page embeds the graph and the source text of every indexed file, so share it with the
 same care as the repository. Pass `--no-sources` to leave source text out.
@@ -59,6 +87,9 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |
 | `impact(node_id)` | What can reach a node: callers by module and the flows through it |
 | `annotate(node_id, key, value, evidence, confidence, layer)` | Write an inferred or intent statement about a node |
+| `propose_change(intent, targets, title?)` | Assess a change before it is made and save its blast-radius view |
+| `save_view(title, narrative, marks, legend?)` | Save any set of marked nodes as a view |
+| `views()`, `view(view_id)` | List saved views, or read one in full |
 
 ## What is indexed
 

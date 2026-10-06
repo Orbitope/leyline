@@ -82,6 +82,23 @@ def graph(con, with_sources: bool = True) -> dict:
         if a["node_id"] in index:
             notes.setdefault(index[a["node_id"]], {})[a["key"]] = {
                 "v": a["value"], "layer": a["layer"], "c": a["confidence"], "stale": bool(a["stale"])}
+    views = []
+    try:
+        for v in con.execute("SELECT * FROM views ORDER BY created DESC"):
+            spec = json.loads(v["spec"])
+            spec["marks"] = [{**m, "i": index[m["id"]]} for m in spec.get("marks", []) if m["id"] in index]
+            for key in ("tests_to_run", "entry_points_affected", "untested"):
+                for item in spec.get(key, []):
+                    item["i"] = index.get(item.get("id"))
+            for c in spec.get("channels", []):
+                c["fi"], c["ti"] = index.get(c.get("from")), index.get(c.get("to"))
+            for g in spec.get("by_module", []) + spec.get("by_system", []):
+                g["i"] = index.get(g.get("id"))
+            for nn in spec.get("new_nodes", []):
+                nn["pi"] = index.get(nn.get("parent"))
+            views.append({"id": v["id"], "title": v["title"], "kind": v["kind"], "created": v["created"], **spec})
+    except Exception:  # a store written before views existed
+        views = []
     repos = [{"id": r["id"], "commit": r["commit_sha"], **(json.loads(r["attrs"]) if r["attrs"] else {})}
              for r in rows if r["kind"] == "repo"]
     sources = {}
@@ -92,7 +109,7 @@ def graph(con, with_sources: bool = True) -> dict:
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 if p.is_file():
                     sources[r["path"]] = p.read_text(errors="replace")
-    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes,
+    return {"version": 2, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views,
             "coverage": coverage, "sources": sources}
 
 
