@@ -173,6 +173,7 @@ class _Walker:
         self.tree = _parser.parse(src)
         self.field_types: dict[str, dict[str, str]] = {}  # type id -> member name -> type name
         self.redirect: dict[tuple, str] = {}  # lambda span -> node its body's calls belong to
+        self.done_calls: dict[tuple, Optional[CallSite]] = {}  # invocation span -> its call site
 
     # -- ids -----------------------------------------------------------------
     def _qid(self, qualified: str) -> str:
@@ -380,7 +381,11 @@ class _Walker:
                    "native_kind": t.replace("_declaration", "").replace("_statement", ""),
                    "argc_min": required, "argc_max": 99 if is_variadic else len(plist),
                    "delegate_arity": [_delegate_arity(x) for x in ptypes], "generic_arity": generic_arity,
-                   "param_types": [re.split(r"[<\[?]", x, maxsplit=1)[0].rsplit(".", 1)[-1] for x in ptypes],
+                   "returns_names": _type_names(ret) if ret is not None and t != "constructor_declaration" else [],
+                   "type_params": [_text(_child(c, "identifier") or c) for c in tparams.children
+                                   if c.type == "type_parameter"] if tparams is not None else [],
+                   "is_extension": bool(plist) and any(_text(c) == "this" for c in plist[0].children) or None,
+                   "param_types": [(_type_names(p.child_by_field_name("type")) or [""])[0] for p in plist],
                    "type_id": type_id}))
         for p, ptext in zip(plist, ptypes):
             names = _type_names(p.child_by_field_name("type"))
@@ -432,8 +437,17 @@ class _Walker:
                     continue
                 nm = _text(v.child_by_field_name("name") or _child(v, "identifier"))
                 vt = declared or self._infer(v, scope, type_id)
+                if nm:
+                    scope.pop("~" + nm, None)
                 if nm and vt:
                     scope[nm] = vt
+                elif nm:
+                    # `var x = a.Make();`: the type is whatever Make returns, known once calls are resolved.
+                    init = self._call_in(v)
+                    if init is not None:
+                        site = self._invocation(init, cid, type_id, scope)
+                        if site is not None:
+                            scope["~" + nm] = site
                 elem = _elem_type(tnode) if declared else self._infer(v, scope, type_id, elem=True)
                 if nm and elem:
                     scope[nm + "[]"] = elem
@@ -524,7 +538,20 @@ class _Walker:
                     return self.field_types.get(type_id or "", {}).get(name)
         return None
 
-    def _invocation(self, node, cid: str, type_id: Optional[str], scope: dict[str, str]) -> None:
+    def _call_in(self, declarator):
+        """The call a variable is initialised from, looking through `await` and parentheses."""
+        cur = declarator.named_children[-1] if declarator.named_child_count > 1 else None
+        if cur is not None and cur.type == "equals_value_clause":
+            cur = cur.named_children[-1] if cur.named_children else None
+        while cur is not None and cur.type in ("await_expression", "parenthesized_expression") and cur.named_children:
+            cur = cur.named_children[-1]
+        return cur if cur is not None and cur.type == "invocation_expression" else None
+
+    def _invocation(self, node, cid: str, type_id: Optional[str], scope: dict[str, str]):
+        key = (node.start_byte, node.end_byte)
+        if key in self.done_calls:
+            return self.done_calls[key]  # already recorded as the receiver or initialiser of something
+        self.done_calls[key] = None
         fn = node.child_by_field_name("function")
         args = node.child_by_field_name("arguments")
         argc = len([a for a in args.children if a.type == "argument"]) if args is not None else 0
@@ -534,6 +561,7 @@ class _Walker:
         name = None
         receiver = None
         rtype = None
+        chain = None
         targs = 0
         generic = fn if fn.type == "generic_name" else (
             fn.child_by_field_name("name") if fn.type == "member_access_expression" else None)
@@ -547,6 +575,14 @@ class _Walker:
             name = _text(_child(nm, "identifier")) if nm is not None and nm.type == "generic_name" else _text(nm)
             expr = fn.child_by_field_name("expression")
             receiver, rtype = self._receiver(expr, scope, type_id)
+            inner = expr
+            while inner is not None and inner.type in ("parenthesized_expression", "await_expression") and inner.named_children:
+                inner = inner.named_children[-1]
+            if inner is not None and inner.type == "invocation_expression":
+                chain = self._invocation(inner, cid, type_id, scope)  # a.Make().Run(): typed by what Make returns
+                receiver = "?"
+            elif rtype is None and receiver and "~" + receiver in scope:
+                chain = scope["~" + receiver]
         elif fn.type == "conditional_access_expression":
             binding = None
             for c in fn.children:
@@ -572,9 +608,12 @@ class _Walker:
                 span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
                 attrs={"framework": "inline runner", "runner": name}))
             self.redirect[(lam.start_byte, lam.end_byte)] = tid
-        self.res.calls.append(CallSite(cid, name, receiver, rtype, argc, line, type_id, node.start_point[1],
-                                       tuple(_arg_hint(a, scope) for a in arg_nodes) if len(arg_nodes) == argc else (),
-                                       targs))
+        site = CallSite(cid, name, receiver, rtype, argc, line, type_id, node.start_point[1],
+                        tuple(_arg_hint(a, scope) for a in arg_nodes) if len(arg_nodes) == argc else (),
+                        targs, chain)
+        self.res.calls.append(site)
+        self.done_calls[key] = site
+        return site
 
     def _receiver(self, expr, scope: dict[str, str], type_id: Optional[str]):
         if expr is None:
@@ -589,7 +628,8 @@ class _Walker:
             nm = _text(expr)
             return nm, scope.get(nm) or own.get(nm)
         if t == "generic_name":
-            return _text(_child(expr, "identifier")), None
+            names = _type_names(expr)  # Policy<int>.Handle(): the generic Policy, not the plain one
+            return _text(_child(expr, "identifier")), (names[0] if names and "`" in names[0] else None)
         if t == "member_access_expression":
             inner = expr.child_by_field_name("expression")
             nm = _text(expr.child_by_field_name("name"))

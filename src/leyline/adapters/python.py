@@ -72,6 +72,7 @@ class _Walker:
         self.top_id = f"{repo}:python:{self.mod}.<module>"
         self.top_used = False
         self.self_types: dict[str, dict[str, str]] = {}  # class id -> attribute -> class name
+        self.done_calls: dict = {}  # call span -> its call site
         self.consts: dict[str, list[str]] = {}  # module-level NAME = "..." or [...] -> its strings
         self.all_strings: Optional[list[str]] = None
         base = rel_path.rsplit("/", 1)[-1]
@@ -304,6 +305,47 @@ class _Walker:
                     symbols.append("*")
             self.res.imports.append(ImportRef(self.file_id, target, symbols=symbols))
 
+    def _site(self, node, cid, class_id, scope) -> Optional[CallSite]:
+        """Record one call. A call used as the receiver of another is recorded once and shared."""
+        key = (node.start_byte, node.end_byte)
+        if key in self.done_calls:
+            return self.done_calls[key]
+        self.done_calls[key] = None
+        fn = node.child_by_field_name("function")
+        args = node.child_by_field_name("arguments")
+        if fn is None:
+            return None
+        argc = len(args.named_children) if args is not None else 0
+        line, col = node.start_point[0] + 1, node.start_point[1]
+        site = None
+        if fn.type == "identifier":
+            site = CallSite(cid, _text(fn), None, None, argc, line, class_id, col)
+        elif fn.type == "attribute":
+            obj = fn.child_by_field_name("object")
+            name = _text(fn.child_by_field_name("attribute"))
+            otext = _text(obj)
+            if obj is not None and obj.type == "call" and _text(obj.child_by_field_name("function")) == "super":
+                site = CallSite(cid, name, "base", None, argc, line, class_id, col)
+            elif otext == "self":
+                site = CallSite(cid, name, "this", None, argc, line, class_id, col)
+            elif obj is not None and obj.type == "identifier":
+                known = scope.get(otext)
+                site = CallSite(cid, name, otext, known, argc, line, class_id, col,
+                                chain=None if known else scope.get("~" + otext))
+            elif obj is not None and obj.type == "attribute" and _text(obj.child_by_field_name("object")) == "self":
+                attr = _text(obj.child_by_field_name("attribute"))
+                rtype = self.self_types.get(class_id or "", {}).get(attr)
+                site = CallSite(cid, name, "." + attr, rtype, argc, line, class_id, col)
+            elif obj is not None and obj.type == "call":
+                site = CallSite(cid, name, "?", None, argc, line, class_id, col,
+                                chain=self._site(obj, cid, class_id, scope))  # a.make().run()
+            else:
+                site = CallSite(cid, name, "?", None, argc, line, class_id, col)
+        if site is not None:
+            self.res.calls.append(site)
+        self.done_calls[key] = site
+        return site
+
     # -- bodies --------------------------------------------------------------
     def _body(self, node, cid, class_id, scope, qual=None) -> None:
         t = node.type
@@ -318,9 +360,17 @@ class _Walker:
             right = node.child_by_field_name("right")
             if left is not None and right is not None and right.type == "call":
                 cls = _text(right.child_by_field_name("function")).split(".")[-1]
+                if left.type == "identifier":
+                    scope.pop("~" + _text(left), None)
                 if cls[:1].isupper():
                     if left.type == "identifier":
                         scope[_text(left)] = cls
+                elif left.type == "identifier" and cid is not None:
+                    # `x = a.make()`: typed by what make returns, once calls are resolved.
+                    site = self._site(right, cid, class_id, scope)
+                    if site is not None:
+                        scope.pop(_text(left), None)
+                        scope["~" + _text(left)] = site
             if left is not None and left.type == "attribute" and class_id is not None:
                 obj = left.child_by_field_name("object")
                 attr = _text(left.child_by_field_name("attribute"))
@@ -345,24 +395,16 @@ class _Walker:
                 if cid == self.top_id:
                     self.top_used = True
             if fn is not None and cid is not None:
-                if fn.type == "identifier":
-                    self.res.calls.append(CallSite(cid, _text(fn), None, None, argc, line, class_id, node.start_point[1]))
-                elif fn.type == "attribute":
-                    obj = fn.child_by_field_name("object")
-                    name = _text(fn.child_by_field_name("attribute"))
-                    otext = _text(obj)
-                    if obj is not None and obj.type == "call" and _text(obj.child_by_field_name("function")) == "super":
-                        self.res.calls.append(CallSite(cid, name, "base", None, argc, line, class_id, node.start_point[1]))
-                    elif otext == "self":
-                        self.res.calls.append(CallSite(cid, name, "this", None, argc, line, class_id, node.start_point[1]))
-                    elif obj is not None and obj.type == "identifier":
-                        self.res.calls.append(CallSite(cid, name, otext, scope.get(otext), argc, line, class_id, node.start_point[1]))
-                    elif obj is not None and obj.type == "attribute" and _text(obj.child_by_field_name("object")) == "self":
-                        attr = _text(obj.child_by_field_name("attribute"))
-                        rtype = self.self_types.get(class_id or "", {}).get(attr)
-                        self.res.calls.append(CallSite(cid, name, "." + attr, rtype, argc, line, class_id, node.start_point[1]))
-                    else:
-                        self.res.calls.append(CallSite(cid, name, "?", None, argc, line, class_id, node.start_point[1]))
+                self._site(node, cid, class_id, scope)
+        elif t == "as_pattern" and cid is not None and node.named_child_count >= 2:
+            # `with app.test_client() as c:` binds c to what the call returns.
+            value, alias = node.named_children[0], node.named_children[-1]
+            target = alias.named_children[0] if alias.type == "as_pattern_target" and alias.named_children else alias
+            if value.type == "call" and target.type == "identifier":
+                site = self._site(value, cid, class_id, scope)
+                if site is not None:
+                    scope.pop(_text(target), None)
+                    scope["~" + _text(target)] = site
         for c in node.children:
             self._body(c, cid, class_id, scope, qual)
 

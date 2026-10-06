@@ -402,3 +402,13 @@ def test_python_package_roots_reexports_and_fixtures(con2):
     flow = con2.execute("SELECT id FROM flows WHERE name LIKE '%test_start'").fetchone()
     steps = ids(con2, "SELECT callable_id FROM flow_steps WHERE flow_id = ?", flow[0])
     assert p + "src.pkg.core.Engine.__init__" in steps
+
+
+def test_receivers_typed_by_what_a_call_returns(con2):
+    go = {r[0].split("Mod.Fluent.")[1] for r in con2.execute(
+        "SELECT dst_id FROM calls WHERE src_id LIKE '%Use.Go(Plan)' AND precision != 'guess'")}
+    assert go == {"Plan.First()", "Step.Then()", "Step.Done()", "StepExtensions.Twice(Step)", "Plan.FirstAsync()"}
+    p = "f2:python:py."
+    assert calls(con2, p + "tests.test_engine.test_chain") == {
+        p + "tests.conftest.engine", p + "src.pkg.core.Engine.child", p + "src.pkg.core.Engine.start",
+        p + "src.pkg.core.Engine.stop"}

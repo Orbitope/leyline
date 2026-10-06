@@ -491,7 +491,9 @@ class Indexer:
                 queue.append(parent)
         return out
 
-    def _pick(self, cands: list[Node], argc: int) -> list[Node]:
+    def _pick(self, cands: list[Node], argc: int, skip: int = 0) -> list[Node]:
+        """Overloads that fit a call. `skip` is 1 for an extension method, whose first parameter is the receiver."""
+        argc += skip
         fit = [c for c in cands if c.attrs.get("argc_min", 0) <= argc <= c.attrs.get("argc_max", 99)]
         call = getattr(self, "_call", None)
         if len(fit) > 1 and call is not None:
@@ -502,7 +504,7 @@ class Indexer:
 
             def possible(c: Node) -> bool:
                 want = c.attrs.get("delegate_arity") or []
-                for i, h in enumerate(hints):
+                for i, h in enumerate(hints, skip):
                     if isinstance(h, int) and not isinstance(h, bool) and i < len(want):
                         if want[i] == -2 or (want[i] >= 0 and want[i] != h):
                             return False  # a lambda passed where no delegate of that shape is taken
@@ -511,10 +513,10 @@ class Indexer:
             def score(c: Node) -> int:
                 want, types = c.attrs.get("delegate_arity") or [], c.attrs.get("param_types") or []
                 n = 0
-                for i, h in enumerate(hints):
+                for i, h in enumerate(hints, skip):
                     if isinstance(h, int) and i < len(want) and want[i] == h:
                         n += 1
-                    elif isinstance(h, str) and i < len(types) and types[i] == h:
+                    elif isinstance(h, str) and i < len(types) and types[i].split("`")[0] == h:
                         n += 1
                 return n
             fit = [c for c in fit if possible(c)] or fit
@@ -539,6 +541,10 @@ class Indexer:
             return (bases[0] if bases else None), True
         if call.receiver_type:
             return self._type(lang, call.receiver_type, call.src_id), True
+        if call.chain is not None and not call.receiver_type:
+            got = self._returned_type(lang, call.chain)
+            if got is not None:
+                return got
         if r in ("?", "[]"):
             return None, False
         if r.startswith("."):
@@ -572,7 +578,69 @@ class Indexer:
             return None, True  # PascalCase, not a member, not ours: a type from outside (File.Open)
         return None, False
 
+    WRAPPERS = {"Task", "ValueTask", "Task`1", "ValueTask`1", "Nullable`1"}
+
+    def _returned_type(self, lang: str, inner: CallSite, depth: int = 0) -> Optional[tuple]:
+        """The type of a call's result, from the declared return type of what it resolves to.
+        Returns (type id or None, known) like _receiver_type, or None when nothing can be said."""
+        key = id(inner)
+        if key in self._chain_memo:
+            return self._chain_memo[key]
+        self._chain_memo[key] = None
+        if depth > 6:
+            return None
+        saved = (getattr(self, "_guessed", False), getattr(self, "_call", None), getattr(self, "_last_src", None))
+        self._guessed = False
+        stats_before = {k: dict(v) for k, v in self.stats.items()}
+        self._call = inner
+        fid = self.file_of.get(inner.src_id)
+        targets = self._resolve_call(lang, fid, inner) if fid else None
+        guessed = self._guessed
+        self._guessed, self._call, self._last_src = saved[0], saved[1], saved[2]
+        for k, v in stats_before.items():  # the inner call is counted when its own turn comes
+            self.stats[k].clear()
+            self.stats[k].update(v)
+        out = None
+        if targets and not guessed:
+            t = targets[0]
+            if t.name in (".ctor", "__init__"):
+                out = (t.parent_id, True)
+            elif lang == "python":
+                if t.attrs.get("returns"):
+                    tid = self._type(lang, t.attrs["returns"], t.id)
+                    out = (tid, True) if tid else None
+            else:
+                names = [n for n in t.attrs.get("returns_names") or [] if n not in self.WRAPPERS]
+                if names and names[0] not in (t.attrs.get("type_params") or []):
+                    tid = self._type(lang, names[0], t.id)
+                    owner_params = re.findall(r"[A-Za-z_]\w*", (self.nodes[t.parent_id].attrs.get("signature") or "").split(":")[0].partition("<")[2]) \
+                        if t.parent_id in self.nodes else []
+                    if tid:
+                        out = (tid, True)
+                    elif names[0].split("`")[0] not in owner_params and names[0] not in ("void", "var", "dynamic", "object"):
+                        out = (None, True)  # a declared type from outside the workspace
+        self._chain_memo[key] = out
+        return out
+
+    def _extensions(self, lang: str, fid: str, tid: str, name: str, argc: int) -> list[Node]:
+        """Extension methods called on a receiver of a known type: static methods whose `this` parameter is that type."""
+        cands = [c for c in self.by_name.get((lang, name), ()) if c.attrs.get("is_extension") and self._can_see(fid, c.id)]
+        if not cands:
+            return []
+        # Foo and Foo<T> are different receivers: compare the name together with its generic arity.
+        names = {self.nodes[t].name.split("`")[0] + (f"`{_arity(t)}" if _arity(t) else "")
+                 for t in self._chain(tid) if t in self.nodes}
+        exact = [c for c in cands if (c.attrs.get("param_types") or [""])[0] in names]
+        loose = [c for c in cands if (c.attrs.get("param_types") or [""])[0] in (c.attrs.get("type_params") or [])]
+        pool = exact or loose
+        if not pool:
+            return []
+        if not exact:
+            self._guessed = True  # `this TBuilder builder`: the constraint is not checked
+        return self._pick(pool, argc, skip=1)
+
     def _resolve_calls(self) -> None:
+        self._chain_memo: dict = {}
         # Names seen on receivers of a known outside type (List.Add, dict.get). A call to such a
         # name on a receiver of unknown type is never guessed.
         self.outside_names: set = set()
@@ -649,6 +717,10 @@ class Indexer:
             found = self._methods(tid, name, argc)
             if found:
                 return found
+            if lang == "csharp":
+                found = self._extensions(lang, fid, tid, name, argc)
+                if found:
+                    return found
             return None  # the type is ours but the method is inherited from outside
         if known:
             return None  # receiver has a type that is not in the workspace

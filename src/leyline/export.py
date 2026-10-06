@@ -30,9 +30,16 @@ def graph(con, with_sources: bool = True) -> dict:
     rows = con.execute("SELECT * FROM nodes ORDER BY kind = 'repo' DESC, id").fetchall()
     index = {r["id"]: i for i, r in enumerate(rows)}
     nodes = []
+    module_names: dict[str, int] = {}
+    for r in rows:
+        if r["kind"] == "module":
+            module_names[r["name"]] = module_names.get(r["name"], 0) + 1
     for r in rows:
         attrs = json.loads(r["attrs"]) if r["attrs"] else {}
         n = {"i": r["id"], "k": r["kind"], "n": r["name"]}
+        if r["kind"] == "module" and module_names[r["name"]] > 1:
+            # Two modules with one name (src/Shared, test/Shared): show the path to tell them apart.
+            n["n"] = r["path"] if r["path"] not in (None, "", ".") else "(repository root)"
         if r["parent_id"] in index:
             n["p"] = index[r["parent_id"]]
         if r["language"]:

@@ -13,3 +13,9 @@ def test_child(child):
 
 def test_made():
     assert make_engine().name == "made"
+
+
+def test_chain(engine):
+    assert engine.child().start()
+    kid = engine.child()
+    kid.stop()

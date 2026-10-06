@@ -183,6 +183,8 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
 .flow-head select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line);
   border-radius: 6px; padding: 6px 8px; max-width: 100%; min-width: 0; flex: 1 1 280px; }
 .flow-head span { font-size: 12px; color: var(--muted); }
+.flow-head input { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; min-width: 190px; }
+.flow-head select { max-width: min(100%, 560px); }
 .steps { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
   overflow-x: auto; }
 .steps li { border-top: 1px solid var(--line); min-width: max-content; }
@@ -322,6 +324,7 @@ const repoIdx = N.findIndex((n) => n.k === "repo");
 const count = (root, kind) => { let c = 0; const st = [root]; while (st.length) { const i = st.pop(); if (i !== root && N[i].k === kind) c++; st.push(...kids[i]); } return c; };
 const linesOf = (i) => { let c = 0; const st = [i]; while (st.length) { const j = st.pop(); if (N[j].k === "file") c += N[j].b || 0; else st.push(...kids[j]); } return c; };
 const isBody = (i) => N[i].n === "<module>" || N[i].n === "<top-level>";
+const big = (n) => (n >= 100000 ? Math.round(n / 1000) + "k" : n >= 10000 ? (n / 1000).toFixed(1) + "k" : n.toLocaleString());
 const short = (i) => {
   const n = N[i];
   if (isBody(i)) return "script body";
@@ -747,7 +750,7 @@ function side() {
 function repoHtml() {
   const r = D.repos[0] || {};
   const mods = N.filter((n) => n.k === "module").length;
-  const facts = [[mods, "modules"], [N.filter((n) => n.k === "file").length, "files"], [linesOf(repoIdx).toLocaleString(), "lines"], [N.filter((n) => n.k === "type").length, "types"], [N.filter((n) => n.k === "callable").length, "functions"]];
+  const facts = [[mods, "modules"], [N.filter((n) => n.k === "file").length, "files"], [big(linesOf(repoIdx)), "lines"], [N.filter((n) => n.k === "type").length, "types"], [N.filter((n) => n.k === "callable").length, "functions"]];
   const entries = [...entryOf.entries()].filter(([t, e]) => (N[e].x || {}).trigger === "cli").map(([t, e]) => ({ go: t, name: qual(t), sub: isBody(t) ? N[moduleOf[t]].n + " · script" : N[t].f, ct: "" }));
   const ok = D.coverage.filter((c) => c.status === "ok"), na = D.coverage.filter((c) => c.status !== "ok");
   const stat = ok.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: ").replace("flows:static", "flows (static)").replace("systems:louvain", "systems (clustering)"))}<small>${esc(describe(c))}</small></span><span class="status ok">ran</span></div></li>`).join("");
@@ -907,7 +910,17 @@ function drawFlow() {
   const f = FLOWS[S.flow];
   const groups = {};
   FLOWS.forEach((x, i) => (groups[flowGroup(x)] = groups[flowGroup(x)] || []).push(i));
-  const opts = ["Tests", "Program starts", "Framework callbacks"].filter((g) => groups[g]).map((g) => `<optgroup label="${g} (${groups[g].length})">${groups[g].map((i) => `<option value="${i}"${i === S.flow ? " selected" : ""}>${esc(flowName(FLOWS[i]))} (${FLOWS[i].steps.length})</option>`).join("")}</optgroup>`).join("");
+  // With thousands of flows a plain list is useless: filter by words in the flow's name or module.
+  const words = (S.flowFilter || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = (x) => (flowName(x) + " " + N[moduleOf[x.entry]].n + " " + (N[x.entry].f || "")).toLowerCase();
+  const CAP = 400; let shown = 0, matched = 0;
+  const optsFor = () => ["Program starts", "Tests", "Framework callbacks"].filter((g) => groups[g]).map((g) => {
+    const hit = groups[g].filter((i) => i === S.flow || !words.length || words.every((w) => hay(FLOWS[i]).includes(w)));
+    matched += hit.length;
+    const list = hit.slice(0, Math.max(0, CAP - shown)); if (hit.includes(S.flow) && !list.includes(S.flow)) list.push(S.flow); shown += list.length;
+    return list.length ? `<optgroup label="${g} (${hit.length})">${list.map((i) => `<option value="${i}"${i === S.flow ? " selected" : ""}>${esc(flowName(FLOWS[i]))} (${FLOWS[i].steps.length})</option>`).join("")}</optgroup>` : "";
+  }).join("");
+  const opts = optsFor();
   const mods = [...new Set(f.steps.map((s) => moduleOf[s[0]]))];
   let prev = null;
   const rows = f.steps.map((s, k) => {
@@ -915,8 +928,9 @@ function drawFlow() {
     const cur = S.sel && S.sel.node === i;
     return `<li><button data-step="${i}" style="--d:${d}"${cur ? ` aria-current="true"` : ""}><span class="seq">${k + 1}</span><span class="ind"></span><span class="dot lang-dot" style="background:var(--${langOf(i) === "python" ? "py" : langOf(i) === "csharp" ? "cs" : "edge"})"></span><span>${esc(N[i].k === "test" ? N[i].n : qual(i))}</span>${via === "event" || via === "process" || via === "dispatch" ? `<span class="via">${via === "event" ? "through an event" : via === "process" ? "starts a program" : "one implementation"}</span>` : ""}${showMod ? `<span class="mod">${esc(N[m].n)}</span>` : ""}</button></li>`;
   }).join("");
-  v.innerHTML = `<div class="flow-head"><select id="flow-pick" aria-label="Flow">${opts}</select><span>${f.steps.length} steps across ${mods.length} module${mods.length === 1 ? "" : "s"}${f.truncated ? ", cut short" : ""}</span></div><ol class="steps" id="steps">${rows}</ol>`;
+  v.innerHTML = `<div class="flow-head">${FLOWS.length > 30 ? `<input id="flow-find" type="search" placeholder="Filter ${FLOWS.length.toLocaleString()} flows" aria-label="Filter flows" value="${esc(S.flowFilter || "")}">` : ""}<select id="flow-pick" aria-label="Flow">${opts}</select>${matched > shown ? `<span>first ${shown} of ${matched.toLocaleString()} listed; filter to narrow</span>` : ""}<span>${f.steps.length} steps across ${mods.length} module${mods.length === 1 ? "" : "s"}${f.truncated ? ", cut short" : ""}</span></div><ol class="steps" id="steps">${rows}</ol>`;
   $("flow-pick").onchange = (e) => { S.flow = +e.target.value; S.sel = null; drawFlow(); side(); v.scrollTop = 0; };
+  if ($("flow-find")) $("flow-find").oninput = (e) => { S.flowFilter = e.target.value; const at = e.target.selectionStart; drawFlow(); const box = $("flow-find"); box.focus(); box.setSelectionRange(at, at); };
   for (const b of v.querySelectorAll("[data-step]")) b.onclick = () => { S.sel = { node: +b.dataset.step }; for (const o of v.querySelectorAll("[aria-current]")) o.removeAttribute("aria-current"); b.setAttribute("aria-current", "true"); side(); };
   $("steps").onkeydown = (e) => { if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return; const bs = [...v.querySelectorAll("[data-step]")], at = bs.indexOf(document.activeElement); const n = bs[at + (e.key === "ArrowDown" ? 1 : -1)]; if (n) { e.preventDefault(); n.focus(); n.click(); } };
 }

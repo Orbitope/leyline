@@ -53,6 +53,7 @@ class CallSite:
     col: int = 0
     args: tuple = ()  # per argument: a lambda's parameter count (int), a known type name (str), or None
     targs: int = 0  # explicit type arguments on the call: M<int>() has 1
+    chain: Optional["CallSite"] = None  # the call whose result this one is made on: a.Make().Run()
 
 
 @dataclass
