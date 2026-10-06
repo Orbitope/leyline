@@ -8,7 +8,7 @@ from typing import Optional
 import tree_sitter_c_sharp
 from tree_sitter import Language, Parser
 
-from ..model import FieldUse, CallSite, Edge, EventUse, FileResult, ImportRef, Node, TypeRef
+from ..model import FieldUse, CallSite, Edge, Endpoint, EventUse, FileResult, ImportRef, Node, TypeRef
 
 NAME = "tree-sitter-c-sharp"
 VERSION = "0.1"
@@ -37,6 +37,41 @@ LAMBDAS = ("lambda_expression", "anonymous_method_expression")
 LITERALS = {"integer_literal": "int", "real_literal": "double", "boolean_literal": "bool", "character_literal": "char",
             "string_literal": "string", "verbatim_string_literal": "string", "raw_string_literal": "string",
             "interpolated_string_expression": "string"}
+
+
+HTTP_CLIENT = {"GetAsync": "GET", "GetStringAsync": "GET", "GetFromJsonAsync": "GET", "GetStreamAsync": "GET",
+               "GetByteArrayAsync": "GET", "PostAsync": "POST", "PostAsJsonAsync": "POST", "PutAsync": "PUT",
+               "PutAsJsonAsync": "PUT", "DeleteAsync": "DELETE", "PatchAsync": "PATCH"}
+HTTP_MAP = {"MapGet": "GET", "MapPost": "POST", "MapPut": "PUT", "MapDelete": "DELETE", "MapPatch": "PATCH"}
+HTTP_ATTR = re.compile(r"\[\s*(Http(Get|Post|Put|Delete|Patch)|Route)\s*\(\s*\"([^\"]*)\"")
+FILE_CALL = re.compile(r"(?:^|\.)(File|Directory|FileAccess)\.(\w+)$")
+
+
+def _cs_strings(node) -> list[str]:
+    """String literals under a node. An interpolated hole becomes {}."""
+    out, stack = [], [node]
+    while stack:
+        n = stack.pop()
+        if n.type == "interpolated_string_expression":
+            parts = []
+            for c in n.children:
+                if c.type == "interpolation":
+                    parts.append("{}")
+                elif c.is_named:
+                    parts.append(_text(c))
+            out.append("".join(parts))
+        elif n.type in ("string_literal", "verbatim_string_literal", "raw_string_literal"):
+            body = "".join(_text(c) for c in n.children if c.type == "string_literal_content" or c.type.endswith("content"))
+            out.append(body or _text(n).lstrip("@").strip('"'))
+        else:
+            stack.extend(reversed(n.children))
+    return [x for x in out if x]
+
+
+def pathlike(s: str) -> bool:
+    if not s or len(s) > 120 or any(ch.isspace() for ch in s) or s.startswith(("http:", "https:")):
+        return False
+    return bool(re.fullmatch(r"(\{\}|\*)?(\.[A-Za-z0-9_]{1,10}){1,2}", s)) or "/" in s.strip("/")
 
 
 def _identifiers(node) -> list[str]:
@@ -424,6 +459,9 @@ class _Walker:
             if names:
                 self.res.type_refs.append(TypeRef(cid, names, "return", ret.start_point[0] + 1))
         attrs_text = " ".join(_text(a) for a in node.children if a.type == "attribute_list")
+        for m in HTTP_ATTR.finditer(attrs_text):
+            self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + m.group(3).lstrip("/"), node.start_point[0] + 1,
+                                               m.group(2).upper() if m.group(2) else None))
         found = set(re.findall(r"[A-Za-z_]+", attrs_text)) & TEST_ATTRIBUTES
         if found:
             self.res.nodes[-1].attrs["is_test"] = True
@@ -500,6 +538,10 @@ class _Walker:
                 scope["#" + ident] = "1"
         if t in ("identifier", "member_access_expression"):
             self._use(node, cid, type_id, scope)
+        elif t in STRINGS:
+            for text in _cs_strings(node):
+                if pathlike(text):
+                    self.res.path_strings.setdefault(cid, []).append(text)
         if t == "assignment_expression" and any(_text(c) == "+=" for c in node.children if not c.is_named):
             left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
             if left is not None and right is not None and right.type in LAMBDAS + ("identifier", "member_access_expression"):
@@ -522,6 +564,9 @@ class _Walker:
             argc = len([a for a in args.children if a.type == "argument"]) if args is not None else 0
             if names:
                 self.res.type_refs.append(TypeRef(cid, names, "instantiate", node.start_point[0] + 1))
+                if names[0] in ("StreamWriter", "StreamReader"):
+                    self.res.endpoints.append(Endpoint("file", "write" if names[0] == "StreamWriter" else "read", cid, "",
+                                                       node.start_point[0] + 1, None, _cs_strings(args) if args is not None else []))
                 ctor_args = [a.named_children[-1] for a in args.children
                              if a.type == "argument" and a.named_children] if args is not None else []
                 self.res.calls.append(CallSite(cid, ".ctor", names[0], names[0], argc,
@@ -641,6 +686,31 @@ class _Walker:
                     return self.field_types.get(type_id or "", {}).get(name)
         return None
 
+    def _endpoint(self, full: str, name: str, args, arg_nodes, cid: str, line: int) -> None:
+        """Is this call one end of an HTTP or file channel?"""
+        first = arg_nodes[0] if arg_nodes else None
+        if first is not None and first.type in STRINGS and name in HTTP_CLIENT | HTTP_MAP:
+            path = (_cs_strings(first) or [""])[0]
+            if path.startswith(("/", "http://", "https://")) or name in HTTP_MAP:
+                role, method = ("serve", HTTP_MAP[name]) if name in HTTP_MAP else ("call", HTTP_CLIENT[name])
+                self.res.endpoints.append(Endpoint("http", role, cid, path if path.startswith(("/", "http")) else "/" + path, line, method))
+                return
+        m = FILE_CALL.search(full.replace("?", ""))
+        if m:
+            owner, op = m.group(1), m.group(2)
+            text = _text(args) if args is not None else ""
+            if owner == "FileAccess":
+                role = "write" if "Write" in text else "read" if op == "Open" else None
+            elif owner == "Directory":
+                role = "read" if op in ("GetFiles", "EnumerateFiles", "GetDirectories") else None
+            else:
+                role = ("write" if op.startswith(("Write", "Append", "Create", "OpenWrite", "Copy", "Move")) else
+                        "read" if op.startswith(("Read", "OpenRead", "OpenText")) else None)
+            if role:
+                self.res.endpoints.append(Endpoint("file", role, cid, "", line, None, _cs_strings(args) if args is not None else []))
+        if full.endswith(("Path.Combine", "Path.Join")) and args is not None:
+            self.res.path_strings.setdefault(cid, []).extend(_cs_strings(args))
+
     def _call_in(self, declarator):
         """The call a variable is initialised from, looking through `await` and parentheses."""
         cur = declarator.named_children[-1] if declarator.named_child_count > 1 else None
@@ -711,6 +781,7 @@ class _Walker:
                 span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
                 attrs={"framework": "inline runner", "runner": name}))
             self.redirect[(lam.start_byte, lam.end_byte)] = tid
+        self._endpoint(_text(fn), name, args, arg_nodes, cid, line)
         site = CallSite(cid, name, receiver, rtype, argc, line, type_id, node.start_point[1],
                         tuple(_arg_hint(a, scope) for a in arg_nodes) if len(arg_nodes) == argc else (),
                         targs, chain)

@@ -8,7 +8,7 @@ from typing import Optional
 import tree_sitter_python
 from tree_sitter import Language, Parser
 
-from ..model import CallSite, FieldUse, Edge, FileResult, ImportRef, Node, Spawn, TypeRef
+from ..model import CallSite, Endpoint, FieldUse, Edge, FileResult, ImportRef, Node, Spawn, TypeRef
 
 NAME = "tree-sitter-python"
 VERSION = "0.1"
@@ -18,6 +18,21 @@ EXTENSIONS = (".py",)
 _parser = Parser(Language(tree_sitter_python.language()))
 LAUNCHERS = {"subprocess.Popen", "subprocess.run", "subprocess.check_output", "subprocess.check_call",
              "subprocess.call", "os.system", "os.popen", "Popen", "check_output", "check_call"}
+
+
+HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "options"}
+ROUTE = re.compile(r"\.(route|get|post|put|delete|patch|websocket)\(\s*[rfbu]*['\"]([^'\"]*)['\"]")
+FILE_WRITE = {"torch.save", "np.save", "np.savez", "np.savez_compressed", "numpy.save", "pickle.dump", "joblib.dump", "plt.savefig"}
+FILE_READ = {"torch.load", "np.load", "numpy.load", "pickle.load", "joblib.load", "pd.read_csv", "np.loadtxt", "glob.glob",
+             "os.listdir", "np.fromfile"}
+PATH_BUILDERS = {"os.path.join", "Path", "pathlib.Path", "join", "glob.glob"}
+
+
+def pathlike(s: str) -> bool:
+    """A literal that looks like part of a file path: `.bin`, `runs/out.json`, `*.parity.json`."""
+    if not s or len(s) > 120 or any(ch.isspace() for ch in s) or s.startswith(("http:", "https:")):
+        return False
+    return bool(re.fullmatch(r"\*?(\.[A-Za-z0-9_]{1,10}){1,2}", s)) or ("/" in s.strip("/") and "<" not in s)
 
 
 def _strings(node) -> list[str]:
@@ -242,6 +257,11 @@ class _Walker:
                    "body_line": body.start_point[0] + 1 if body is not None else None,
                    "is_fixture": any(re.search(r"\bfixture\b", d) for d in decorators) or None})
         self.res.nodes.append(fn_node)
+        for d in decorators:
+            m = ROUTE.search(d)
+            if m and m.group(2).startswith("/"):
+                self.res.endpoints.append(Endpoint("http", "serve", cid, m.group(2), outer.start_point[0] + 1,
+                                                   None if m.group(1) in ("route", "websocket") else m.group(1).upper()))
         if body is not None:
             self._body(body, cid, class_id if is_method else None, scope, qual=f"{qual}.{name}")
             if returns is None:
@@ -382,8 +402,39 @@ class _Walker:
                 site = CallSite(cid, name, "?", None, argc, line, class_id, col)
         if site is not None:
             self.res.calls.append(site)
+            self._endpoint(node, fn, args, cid, line)
         self.done_calls[key] = site
         return site
+
+    def _endpoint(self, node, fn, args, cid, line) -> None:
+        """Is this call one end of an HTTP or file channel?"""
+        full = _text(fn)
+        last = full.rsplit(".", 1)[-1]
+        first = args.named_children[0] if args is not None and args.named_children else None
+        if fn.type == "attribute" and last in HTTP_VERBS | {"open"} and first is not None and first.type == "string":
+            path = "".join(_text(c) for c in first.children if c.type == "string_content")
+            if path.startswith(("/", "http://", "https://")):
+                self.res.endpoints.append(Endpoint("http", "call", cid, path, line, None if last == "open" else last.upper()))
+                return
+        role = None
+        if full == "open" or full.endswith((".open",)) and last == "open" and fn.type == "attribute" and _text(fn.child_by_field_name("object")) in ("io", "codecs", "gzip"):
+            mode = ""
+            if args is not None:
+                named = args.named_children
+                if len(named) > 1 and named[1].type == "string":
+                    mode = "".join(_text(c) for c in named[1].children if c.type == "string_content")
+                for a in named:
+                    if a.type == "keyword_argument" and _text(a.child_by_field_name("name")) == "mode":
+                        mode = _text(a.child_by_field_name("value")).strip("'\"")
+            role = "write" if any(ch in mode for ch in "wax+") else "read"
+        elif full in FILE_WRITE or last in ("write_text", "write_bytes", "to_csv", "savefig", "to_json", "to_parquet"):
+            role = "write"
+        elif full in FILE_READ or last in ("read_text", "read_bytes", "read_csv", "read_json", "read_parquet"):
+            role = "read"
+        if role:
+            self.res.endpoints.append(Endpoint("file", role, cid, "", line, None, _strings(args) if args is not None else []))
+        if full in PATH_BUILDERS and args is not None:
+            self.res.path_strings.setdefault(cid, []).extend(_strings(args))
 
     # -- bodies --------------------------------------------------------------
     def _body(self, node, cid, class_id, scope, qual=None) -> None:
@@ -392,7 +443,8 @@ class _Walker:
             if cid is not None and qual is not None and t != "class_definition":
                 target = node.child_by_field_name("definition") if t == "decorated_definition" else node
                 if target is not None and target.type == "function_definition":
-                    self._function(target, node, cid, qual, None, [], scope)
+                    nested = [_squash(_text(d)) for d in node.children if d.type == "decorator"] if t == "decorated_definition" else []
+                    self._function(target, node, cid, qual, None, nested, scope)
             return
         if t == "assignment":
             left = node.child_by_field_name("left")
@@ -437,6 +489,10 @@ class _Walker:
                 self._site(node, cid, class_id, scope)
         elif t == "attribute" and cid is not None:
             self._use(node, cid, class_id, scope)
+        elif t == "string" and cid is not None:
+            text = "".join(_text(c) for c in node.children if c.type == "string_content")
+            if pathlike(text):
+                self.res.path_strings.setdefault(cid, []).append(text)
         elif t == "as_pattern" and cid is not None and node.named_child_count >= 2:
             # `with app.test_client() as c:` binds c to what the call returns.
             value, alias = node.named_children[0], node.named_children[-1]

@@ -90,7 +90,7 @@ def test_overview_rolls_up_to_modules(con):
     assert edge["calls"] >= 3 and edge["imports"] >= 1
     status = {c["extractor"]: c["status"] for c in o["coverage"]}
     assert status["communicates:event"] == "ok" and status["communicates:process"] == "ok"
-    assert status["communicates:http"] == "not_analyzed"
+    assert status["communicates:http"] == "ok" and status["communicates:queue"] == "not_analyzed"
 
 
 def test_expand_and_search(con):
@@ -614,3 +614,19 @@ def test_measured_coverage_is_set_against_static_paths(tmp_path):
       <line number="{line('return Engine("made")')}" hits="0"/></lines></class></classes></package></packages></coverage>""")
     r = coverage.import_file(c, xml, run="xml")
     assert r["format"] == "cobertura" and r["functions_ran"] == 1 and not r["per_test"]
+
+
+def test_http_and_file_channels(con2):
+    import json
+
+    links = {(r[0].split(":")[-1].split(".")[-1], r[1].split(":")[-1].split(".")[-1].split("(")[0], json.loads(r[3])["channel"]):
+             (r[2], json.loads(r[3])["address"]) for r in con2.execute(
+                 "SELECT src_id, dst_id, precision, attrs FROM edges WHERE kind = 'communicates'")}
+    assert links[("fetch", "show", "http")] == ("heuristic", "GET /items/<int:item_id>")        # the request finds its route
+    assert not any(k[0] == "other" for k in links)                                              # no route, no link
+    assert links[("save", "Load", "file")] == ("guess", "reports/*.parity.json")                # Python writes what C# reads
+    stats = {r[0]: json.loads(r[1]) for r in con2.execute(
+        "SELECT extractor, stats FROM extractor_coverage WHERE extractor LIKE 'communicates:%' AND status = 'ok'")}
+    assert stats["communicates:http"]["routes"] == 1 and stats["communicates:http"]["requests"] == 2
+    # A file link is data, not control: no flow walks from the writer into the reader.
+    assert not con2.execute("SELECT 1 FROM flow_steps WHERE via = 'file'").fetchone()

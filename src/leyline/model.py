@@ -85,6 +85,19 @@ class FieldUse:
 
 
 @dataclass
+class Endpoint:
+    """One end of a channel that is not a call: an HTTP route or request, a file read or written."""
+
+    channel: str  # http | file
+    role: str  # serve | call | write | read
+    src_id: str
+    address: str  # the route or request path; empty for files
+    line: int
+    method: Optional[str] = None
+    literals: list[str] = field(default_factory=list)  # string literals in the call
+
+
+@dataclass
 class Spawn:
     """A place where another program is launched."""
 
@@ -113,6 +126,8 @@ class FileResult:
     imports: list[ImportRef] = field(default_factory=list)
     events: list[EventUse] = field(default_factory=list)
     field_uses: list[FieldUse] = field(default_factory=list)
+    endpoints: list[Endpoint] = field(default_factory=list)
+    path_strings: dict[str, list[str]] = field(default_factory=dict)  # function -> path-like literals in its body
     spawns: list[Spawn] = field(default_factory=list)
     # Namespaces (C#) or module paths (Python) this file declares.
     declares: list[str] = field(default_factory=list)

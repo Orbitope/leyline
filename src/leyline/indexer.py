@@ -165,6 +165,7 @@ class Indexer:
         self._resolve_fields()
         self._apply_exact()
         self._resolve_spawns()
+        self._resolve_endpoints()
         self._build_flows()
         self._write(con)
         return {k: dict(v) for k, v in self.stats.items()}
@@ -904,6 +905,97 @@ class Indexer:
         st["events_declared"] = sum(1 for n in self.nodes.values()
                                     if n.kind == "field" and n.attrs.get("native_kind") == "event")
 
+    GENERIC_DIRS = {"data", "temp", "file", "files", "json", "path", "output", "outputs", "input", "home", "user", "users",
+                    "test", "tests", "docs", "static", "assets", "resources", "config", "build", "dist", "local"}
+
+    def _resolve_endpoints(self) -> None:
+        """Link the two ends of channels that are not calls: an HTTP request to its route, and code that
+        writes a file to code that reads it."""
+        http, files = self.channel_stats["http"], self.channel_stats["file"]
+
+        def root_of(i):  # the outermost function a nested function or inline test sits in
+            cur = i
+            while self.nodes[cur].parent_id in self.nodes and self.nodes[self.nodes[cur].parent_id].kind in ("callable", "test"):
+                cur = self.nodes[cur].parent_id
+            return cur
+
+        def segments(path):
+            path = re.sub(r"^[a-z]+://[^/]+", "", path).split("?", 1)[0].split("#", 1)[0]
+            return [x for x in path.split("/") if x]
+        routes, requests, io = [], [], []
+        for res in self.results.values():
+            for e in res.endpoints:
+                if e.src_id not in self.nodes:
+                    continue
+                (routes if (e.channel, e.role) == ("http", "serve") else requests if e.channel == "http" else io).append((e, res))
+        http["routes"], http["requests"] = len(routes), len(requests)
+
+        def fits(route, request):
+            a, b = segments(route.address), segments(request.address)
+            if len(a) != len(b) or (route.method and request.method and route.method != request.method):
+                return False
+            return all(x == y or x.startswith(("<", "{", ":")) for x, y in zip(a, b))
+        seen = set()
+        for req, _ in requests:
+            cands = [r for r, _ in routes if fits(r, req)]
+            near = [r for r in cands if root_of(r.src_id) == root_of(req.src_id)]   # a route declared inside the same test
+            chosen = near or (cands if len({r.src_id for r in cands}) == 1 else [])
+            if cands and not chosen:
+                http["ambiguous"] += 1
+            for r in chosen:
+                key = (req.src_id, r.src_id)
+                if key not in seen and req.src_id != r.src_id:
+                    seen.add(key)
+                    http["links"] += 1
+                    self.edges.append(Edge("communicates", req.src_id, r.src_id, "heuristic",
+                                           {"channel": "http", "address": f"{req.method or r.method or 'ANY'} {r.address}", "line": req.line}))
+
+        # Files: a writer and a reader are linked when the path fragments written in each agree.
+        def tokens(strings):
+            dirs, exts, names = set(), set(), set()
+            for s in strings:
+                s = s.replace("\\", "/")
+                if len(s) > 160 or any(ch.isspace() for ch in s):
+                    continue
+                parts = [x for x in s.split("/") if x not in ("", ".", "..")]
+                for i, seg in enumerate(parts):
+                    clean = re.sub(r"\{[^}]*\}|\*", "", seg)
+                    if i == len(parts) - 1 and "." in seg:
+                        stem, _, ext = clean.partition(".")
+                        if re.fullmatch(r"[A-Za-z0-9_]{1,10}(\.[A-Za-z0-9_]{1,10})?", ext or ""):
+                            exts.add("." + ext.lower())
+                            if stem and clean == seg and len(stem) > 2:
+                                names.add(seg.lower())
+                    elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_\-]{3,}", seg) and seg.lower() not in self.GENERIC_DIRS:
+                        dirs.add(seg.lower())
+            return dirs, exts, names
+        by_fn: dict[tuple, list] = defaultdict(list)
+        for e, res in io:
+            by_fn[(e.src_id, e.role)].extend(e.literals + res.path_strings.get(e.src_id, []) + res.path_strings.get(root_of(e.src_id), []))
+        files["read_sites"] = sum(1 for e, _ in io if e.role == "read")
+        files["write_sites"] = sum(1 for e, _ in io if e.role == "write")
+        toks = {k: tokens(v) for k, v in by_fn.items()}
+        pairs = []
+        for (w, wr), (wd, we, wn) in toks.items():
+            if wr != "write":
+                continue
+            for (r, rr), (rd, re_, rn) in toks.items():
+                if rr != "read" or root_of(r) == root_of(w):
+                    continue
+                shared_name = wn & rn
+                shared = (wd & rd, we & re_)
+                if shared_name:
+                    pairs.append((w, r, sorted(shared_name)[0]))
+                elif shared[0] and shared[1]:
+                    pairs.append((w, r, f"{sorted(shared[0], key=lambda x: (-len(x), x))[0]}/*{sorted(shared[1], key=lambda x: (-len(x), x))[0]}"))
+        fan = Counter(p[2] for p in pairs)
+        for w, r, address in pairs:
+            if fan[address] > 8:
+                files["too_common_to_link"] += 1
+                continue   # a fragment this common says nothing about who reads whose file
+            files["links"] += 1
+            self.edges.append(Edge("communicates", w, r, "guess", {"channel": "file", "address": address}))
+
     def _resolve_spawns(self) -> None:
         """Link code that launches a program to that program's entry point, when it is in the workspace."""
         st = self.channel_stats["process"]
@@ -972,7 +1064,9 @@ class Indexer:
         for e in self.edges:
             if e.kind == "communicates":
                 a = e.attrs or {}
-                out[e.src_id].append((a.get("launched_at") or 10 ** 9, e.dst_id, a.get("channel", "channel"),
+                if a.get("channel") == "file":
+                    continue  # writing a file does not run whoever reads it later
+                out[e.src_id].append((a.get("launched_at") or a.get("line") or 10 ** 9, e.dst_id, a.get("channel", "channel"),
                                       a.get("subscriber")))
         # A call to an interface or base method may land in any implementation.
         for base, impls in self.implementers.items():
@@ -1083,7 +1177,7 @@ class Indexer:
                 status = "ok" if st.get("files") else "no_files"
                 store.write_coverage(con, self.repo, a.NAME, a.VERSION, status, self.commit, st)
             for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
-                ran = channel in ("event", "process")
+                ran = channel in ("event", "process", "http", "file")
                 store.write_coverage(con, self.repo, f"communicates:{channel}", "0.1" if ran else "-",
                                      "ok" if ran else "not_analyzed", self.commit,
                                      dict(self.channel_stats.get(channel, {})))
