@@ -44,6 +44,40 @@ read and write it, and none of them runs unless you start it.
 Annotations, proposals and views are not facts, so re-indexing keeps them. An annotation is flagged
 stale when the code behind its evidence changes.
 
+### The spec loop
+
+The intended way to change a mapped codebase: the person drives the design, an agent writes the
+code, and one page says what will be written, what it affects and how you will know it was done.
+
+A change is an [OpenSpec](https://openspec.dev) change folder. Leyline reads it and writes
+`leyline.md` back into it.
+
+```
+leyline spec brief  openspec/changes/<id>     # before any code: the one-page brief, and the gaps in the spec
+leyline spec facts  openspec/changes/<id>     # what the graph says, as questions for reviewers
+leyline spec verify openspec/changes/<id> --before before --after after   # after: was it done as agreed
+```
+
+The brief ties each task to code and each scenario to a test, by three conventions and no markup:
+
+- Code named in backticks in `tasks.md` is looked up on the map (`` `Vehicle.Speed` ``). A name not on
+  the map is new code; `` `Owner.NewName` `` says where it goes.
+- A task that starts with add, remove, rename or "change the signature" is read that way. Anything
+  else is a change in behavior.
+- A scenario is proven by a test with the same name.
+
+It then lists what the change reaches that no task covers, the shared state and patterns it sits in,
+and the gaps that block implementation. Reviewers (the `leyline-adversarial-review` skill, one run
+for logic and one for performance) file findings with node ids as evidence; only the person
+resolves them (`leyline spec resolve <finding> accepted|rejected|deferred "why"`).
+
+After implementation and a re-index, `verify` marks each task from the graph diff and each scenario
+from its test's recorded result, lists edits outside the spec, new links between modules and rules
+newly broken, and appends the result to `leyline.md`. It exits 0 only when the change was done as
+agreed.
+
+`skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.
+
 ### Assessing a change
 
 1. You describe a change to an agent that has the Leyline MCP server connected.
@@ -221,6 +255,8 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
+| `spec_brief(change_dir)`, `spec_verify(change_dir, before_run?, after_run?)` | The spec loop: brief before, verify after |
+| `spec_review_facts(change_dir)`, `spec_finding(...)`, `spec_findings(change_id)`, `spec_resolve(...)` | Adversarial review of a spec |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
 | `patterns(pattern?, node_id?)` | Design patterns found by shape, with roles, rationale and confidence |

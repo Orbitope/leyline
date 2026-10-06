@@ -14,8 +14,43 @@ from .indexer import index
 DEFAULT_DB = ".leyline/leyline.db"
 
 
+def _spec(con, args) -> int:
+    from . import spec
+    if args.action == "brief":
+        r = spec.brief(con, args.target)
+        if "error" in r:
+            _print(r)
+            return 1
+        print(spec.brief_text(r))
+        print(f"written to {r['written']}")
+        return 0 if r["ready"] else 1
+    if args.action == "verify":
+        r = spec.verify(con, args.target, args.before, args.after)
+        if "error" in r:
+            _print(r)
+            return 1
+        print(spec.verify_text(r))
+        return 0 if r["done_as_agreed"] else 1
+    if args.action == "facts":
+        _print(spec.review_facts(con, args.target))
+    elif args.action == "findings":
+        cid = "spec-" + Path(args.target).name
+        for f in spec.findings(con, cid)["findings"]:
+            print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+    elif args.action == "resolve":
+        _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
+    return 0
+
+
 def _print(obj) -> None:
-    json.dump(obj, sys.stdout, indent=2)
+    try:
+        json.dump(obj, sys.stdout, indent=2)
+    except BrokenPipeError:  # the reader (head, a closed pager) went away; that is not an error
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        return
     sys.stdout.write("\n")
 
 
@@ -83,6 +118,13 @@ def main(argv=None) -> int:
     p = sub.add_parser("patterns", help="design patterns found by their shape")
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
+    p = sub.add_parser("spec", help="a change stated as an OpenSpec folder: brief it, review it, verify it")
+    p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve"])
+    p.add_argument("target", help="the change folder (openspec/changes/<id>), or a finding id for resolve")
+    p.add_argument("status", nargs="?", choices=["accepted", "rejected", "deferred", "open"], help="for resolve")
+    p.add_argument("reason", nargs="?", help="for resolve: why")
+    p.add_argument("--before", help="verify: label of the test run recorded before the change")
+    p.add_argument("--after", help="verify: label of the test run recorded after it")
     p = sub.add_parser("coverage", help="import a coverage file, or show what was measured")
     p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage) or a Cobertura XML report")
     p.add_argument("--run", default="default", help="a name for this import")
@@ -97,7 +139,9 @@ def main(argv=None) -> int:
     if args.cmd == "index":
         db = args.db if args.db != DEFAULT_DB else str(Path(args.path) / DEFAULT_DB)
         stats = index(args.path, db, args.repo, args.exact, args.scip)
-        print(f"indexed into {db}")
+        t = stats.get("timing", {})
+        print(f"indexed into {db}: {t.get('files', 0):,} files, {t.get('lines', 0):,} lines in {t.get('total_seconds', 0)} s"
+              f" ({t.get('lines_per_second', 0):,} lines/s)")
         _print(stats)
         return 0
     if args.cmd == "serve":
@@ -147,6 +191,8 @@ def main(argv=None) -> int:
         print(", ".join(f"{k} {v}" for k, v in sorted(r["by_pattern"].items())) or "no patterns found")
         for x in r["patterns"]:
             print(f"\n[{x['pattern']}  {x['confidence']:.2f}{'  stale' if x['stale'] else ''}] {x['rationale']}")
+    elif args.cmd == "spec":
+        return _spec(con, args)
     elif args.cmd == "coverage":
         from . import coverage
         if args.file:

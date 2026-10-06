@@ -630,3 +630,67 @@ def test_http_and_file_channels(con2):
     assert stats["communicates:http"]["routes"] == 1 and stats["communicates:http"]["requests"] == 2
     # A file link is data, not control: no flow walks from the writer into the reader.
     assert not con2.execute("SELECT 1 FROM flow_steps WHERE via = 'file'").fetchone()
+
+
+def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
+    import shutil
+
+    from leyline import diff, spec
+
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE2, work)
+    ch = work / "openspec" / "changes" / "loud-engine"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: Loud engine\n\n## Why\nNames are hard to read in logs.\n\n"
+                                    "## What Changes\n- `Engine.start` returns the name in upper case\n- A new `Engine.shout`\n")
+    (ch / "tasks.md").write_text("## 1. Engine\n- [ ] 1.1 Change `Engine.start` to return the name in upper case\n"
+                                 "- [ ] 1.2 Add `Engine.shout`, the name with an exclamation mark\n- [ ] 1.3 Tidy things up\n")
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        "## ADDED Requirements\n### Requirement: Loud names\nThe engine SHALL report its name loudly.\n\n"
+        "#### Scenario: Start\n- **WHEN** an engine starts\n- **THEN** it returns its name\n\n"
+        "#### Scenario: Shout\n- **WHEN** an engine shouts\n- **THEN** the name ends with an exclamation mark\n")
+    db = tmp_path / "s.db"
+    index(work, db, "f2")
+    c = store.connect(db)
+
+    b = spec.brief(c, ch)
+    tasks = {t["key"]: t for t in b["tasks"]}
+    assert tasks["1.1"]["labels"] == ["Engine.start"] and tasks["1.1"]["action"] == "behavior"
+    assert tasks["1.2"]["new"] == [{"name": "shout", "parent": "f2:python:py.src.pkg.core.Engine"}]
+    assert {s["name"]: s["test_exists"] for s in b["scenarios"]} == {"Start": True, "Shout": False}
+    assert any("names no code" in g for g in b["gaps"]) and any("Shout" in g for g in b["gaps"]) and not b["ready"]
+    page = (ch / "leyline.md").read_text()
+    assert "## 1. What code will be written" in page and "## 3. How you will know it was done" in page and "Engine.start" in page
+    assert (tmp_path / "snapshots" / "spec-loud-engine.db").exists()
+
+    facts = spec.review_facts(c, ch)
+    assert facts["logic"]["scenarios_with_no_test"] == ["Shout"]
+    assert facts["performance"]["changed_functions_by_how_much_runs_through_them"][0]["name"] == "Engine.start"
+    assert "error" in spec.add_finding(c, b["change_id"], "logic", "high", "No evidence", [])
+    f = spec.add_finding(c, b["change_id"], "logic", "high", "Engine.child copies the name and will not be upper case.",
+                         ["f2:python:py.src.pkg.core.Engine.child"], "Add a scenario for child.")
+    assert spec.findings(c, b["change_id"])["open"] == 1 and "open, high" in spec.brief_text(spec.brief(c, ch))
+    spec.resolve_finding(c, f["id"], "rejected", "child is out of scope")
+    assert spec.findings(c, b["change_id"])["open"] == 0
+
+    # Implement: both tasks, a test for the new scenario, and one edit nobody asked for.
+    core = work / "py/src/pkg/core.py"
+    text = core.read_text().replace("        return self.name\n", "        return self.name.upper()\n\n    def shout(self):\n        return self.name + \"!\"\n", 1)
+    core.write_text(text.replace("        return Engine(self.name)", "        return Engine(self.name + \"-child\")"))
+    tests = work / "py/tests/test_engine.py"
+    tests.write_text(tests.read_text() + "\n\ndef test_shout(engine):\n    assert engine.shout().endswith(\"!\")\n")
+    (ch / "tasks.md").write_text((ch / "tasks.md").read_text().replace("- [ ] 1.1", "- [x] 1.1"))
+    index(work, db, "f2")
+    c = store.connect(db)
+    diff.record_tests(c, "after", [{"name": "test_start", "status": "pass"}, {"name": "test_shout", "status": "pass"}])
+
+    v = spec.verify(c, ch, after_run="after")
+    done = {t["key"]: t["state"] for t in v["tasks"]}
+    assert done["1.1"] == "done" and done["1.2"] == "done" and done["1.3"] == "cannot be checked"
+    assert {s["name"]: s["state"] for s in v["scenarios"]} == {"Start": "passes", "Shout": "passes"}
+    assert all(s["reaches_the_change"] for s in v["scenarios"])
+    assert [n["name"] for n in v["drift"]] == ["Engine.child"]                       # the edit outside the spec
+    assert not v["done_as_agreed"] and any("outside the spec" in w for w in v["why_not"])
+    page = (ch / "leyline.md").read_text()
+    assert "## 4. Was it done as agreed" in page and page.count("## 1. What code will be written") == 1
+    assert "Engine.child" in page.split("## 4.")[1]

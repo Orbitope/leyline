@@ -301,12 +301,13 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
 
 
 def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, depth: int = 4,
-            source: str = "mcp") -> dict:
-    """Assess a change, store it as a draft proposal, and save a view of its blast radius."""
+            source: str = "mcp", change_id: Optional[str] = None) -> dict:
+    """Assess a change, store it as a draft proposal, and save a view of its blast radius.
+    `change_id` keeps one id across revisions (a spec folder's name); without it the id follows the content."""
     report = assess(con, intent, targets, depth)
     if "error" in report:
         return report
-    cid = "chg-" + hashlib.sha1((intent + json.dumps(targets, sort_keys=True)).encode()).hexdigest()[:8]
+    cid = change_id or "chg-" + hashlib.sha1((intent + json.dumps(targets, sort_keys=True)).encode()).hexdigest()[:8]
     commit = con.execute("SELECT commit_sha FROM nodes WHERE kind = 'repo' LIMIT 1").fetchone()
     title = title or (intent if len(intent) <= 70 else intent[:67] + "...")
     with con:

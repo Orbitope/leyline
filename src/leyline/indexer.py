@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -118,7 +119,14 @@ class Indexer:
             self.exact_stats["exact:scip"] = info
 
     # -- public --------------------------------------------------------------
+    def _timed(self, name: str, fn, *args) -> None:
+        start = time.perf_counter()
+        fn(*args)
+        self.timing[name] = round(self.timing.get(name, 0) + time.perf_counter() - start, 3)
+
     def run(self, con) -> dict:
+        self.timing: dict[str, float] = {}
+        started = time.perf_counter()
         files = list_files(self.root)
         module_dirs = _module_dirs(files)
         self._add(Node(id=self.repo, kind="repo", name=self.repo, path="",
@@ -155,19 +163,26 @@ class Indexer:
                     n.content_hash = hashlib.sha1(body).hexdigest()[:16]
                 self._add(n)
             self.edges.extend(res.edges)
-        self._projects(files)
-        self._build_indexes()
-        self._resolve_imports()
-        self._resolve_types()
-        self._resolve_overrides()
-        self._resolve_calls()
-        self._resolve_events()
-        self._resolve_fields()
-        self._apply_exact()
-        self._resolve_spawns()
-        self._resolve_endpoints()
-        self._build_flows()
-        self._write(con)
+        self.timing["parse"] = round(time.perf_counter() - started, 3)
+
+        def resolve():
+            self._projects(files)
+            self._build_indexes()
+            self._resolve_imports()
+            self._resolve_types()
+            self._resolve_overrides()
+            self._resolve_calls()
+            self._resolve_events()
+            self._resolve_fields()
+        self._timed("resolve", resolve)
+        self._timed("compiler", self._apply_exact)
+
+        def channels():
+            self._resolve_spawns()
+            self._resolve_endpoints()
+        self._timed("channels", channels)
+        self._timed("flows", self._build_flows)
+        self._timed("write", self._write, con)
         return {k: dict(v) for k, v in self.stats.items()}
 
     # -- structure -----------------------------------------------------------
@@ -1218,14 +1233,28 @@ def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, 
     try:
         ix = Indexer(root, repo_id)
         ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
+        began = time.perf_counter()
         stats = ix.run(con)
         stats.update(ix.exact_stats)
+        mark = time.perf_counter()
         stats["systems"] = cluster.propose(con, ix.repo)
         with con:
             store.rebuild_derived(con)
+        ix.timing["systems"] = round(time.perf_counter() - mark, 3)
+        mark = time.perf_counter()
         stats["patterns"] = patterns.run(con, ix.repo)
         stats["tour"] = tours.generate(con, ix.repo)
+        ix.timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
         stats["stale_annotations"] = store.refresh_stale(con)
+        files = sum(v.get("files", 0) for k, v in stats.items() if k.startswith("tree-sitter"))
+        lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (ix.repo,)).fetchone()[0]
+        total = round(time.perf_counter() - began, 3)
+        stats["timing"] = {"total_seconds": total, **ix.timing, "files": files, "lines": lines,
+                           "lines_per_second": round(lines / total) if total else 0}
+        with con:  # kept in the store so a later reader can see what the map cost to build
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{ix.repo}", json.dumps(stats["timing"])))
+            con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
+                        (ix.repo, "timing", "-", "ok", None, json.dumps(stats["timing"])))
         return stats
     finally:
         con.close()

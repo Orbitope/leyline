@@ -129,3 +129,13 @@ CREATE TABLE IF NOT EXISTS covered (
 );
 CREATE INDEX IF NOT EXISTS covered_node ON covered (node_id);
 CREATE INDEX IF NOT EXISTS covered_test ON covered (test_id);
+
+-- A change stated as a spec: its tasks and scenarios tied to the map, and what reviewers found.
+CREATE TABLE IF NOT EXISTS spec_items (
+  change_id TEXT, kind TEXT, key TEXT, text TEXT, action TEXT, nodes TEXT, attrs TEXT,
+  PRIMARY KEY (change_id, kind, key)
+);
+CREATE TABLE IF NOT EXISTS findings (
+  id TEXT PRIMARY KEY, change_id TEXT, reviewer TEXT, severity TEXT, claim TEXT, evidence TEXT,
+  proposal TEXT, status TEXT, resolution TEXT, created TEXT
+);

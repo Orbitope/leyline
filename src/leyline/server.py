@@ -12,7 +12,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import change, coverage as measured, diff, patterns as pattern_labels, query, rules, store, tours as tour_store
+from . import change, coverage as measured, diff, spec as spec_loop, patterns as pattern_labels, query, rules, store, tours as tour_store
 
 mcp = FastMCP(
     "leyline",
@@ -220,6 +220,52 @@ def coverage(node_id: Optional[str] = None, flow_id: Optional[str] = None, impor
     if node_id:
         return {**out, "node": node_id, "tests": measured.tests_for(_db(), node_id)}
     return {**out, **measured.summary(_db())}
+
+
+@mcp.tool()
+def spec_brief(change_dir: str) -> dict:
+    """Assess a change written as an OpenSpec folder (proposal.md, tasks.md, specs/) before it is
+    implemented. Ties each task to code named in backticks and each scenario to a test of the same name,
+    computes the blast radius, and writes `leyline.md` into the folder: what will be written, what it
+    affects, how the person will know it was done. Returns the same, with `gaps` to fix in the spec.
+    Run it again after every edit to the spec."""
+    return spec_loop.brief(_db(), change_dir)
+
+
+@mcp.tool()
+def spec_review_facts(change_dir: str) -> dict:
+    """What the graph says about a spec, arranged as the questions a logic reviewer and a performance
+    reviewer must answer. Read it, read the code behind anything suspicious, then file findings."""
+    return spec_loop.review_facts(_db(), change_dir)
+
+
+@mcp.tool()
+def spec_finding(change_id: str, reviewer: str, severity: str, claim: str, evidence: list[str], proposal: str = "") -> dict:
+    """File a review finding against a spec: `reviewer` is logic or performance, `severity` high, medium
+    or low, `claim` one sentence a person can check, `evidence` the node ids that show it, `proposal` the
+    change to the spec. A finding with no node behind it is refused. Only the person resolves findings."""
+    return spec_loop.add_finding(_db(), change_id, reviewer, severity, claim, evidence, proposal)
+
+
+@mcp.tool()
+def spec_findings(change_id: str) -> dict:
+    """The findings filed against a spec, and whether the person accepted, rejected or deferred each."""
+    return spec_loop.findings(_db(), change_id)
+
+
+@mcp.tool()
+def spec_resolve(finding_id: str, status: str, resolution: str = "") -> dict:
+    """Record the person's decision on a finding: accepted, rejected or deferred, with their reason.
+    Call this only with a decision the person stated. Never resolve a finding on your own judgment."""
+    return spec_loop.resolve_finding(_db(), finding_id, status, resolution)
+
+
+@mcp.tool()
+def spec_verify(change_dir: str, before_run: Optional[str] = None, after_run: Optional[str] = None) -> dict:
+    """After the spec is implemented and the repository re-indexed: was it done as agreed? Marks each
+    task done or not from the graph diff, each scenario from its test's result, lists edits outside the
+    spec, new links between modules and rules newly broken, and appends the result to `leyline.md`."""
+    return spec_loop.verify(_db(), change_dir, before_run, after_run)
 
 
 @mcp.tool()
