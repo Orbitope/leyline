@@ -413,3 +413,22 @@ def roots(con) -> dict:
             path = here.parent.parent.resolve()
         out[repo] = path
     return out
+
+
+def test_places(con) -> tuple[set, set]:
+    """Where the tests are: the files that hold a test (a test node, or the entry of a test flow), and the modules
+    that are mostly such files (a test project). A module that holds a few test files beside its product code (a
+    TypeScript package with its *.test.ts next to the source) is not a test module: its other files are product."""
+    files_of = {}
+    for r in con.execute("SELECT n.id, n.path, a.module_id FROM nodes n LEFT JOIN ancestry a ON a.node_id = n.id"
+                         " WHERE n.kind = 'file' AND n.layer = 'fact'"):
+        files_of[r[1]] = r[2]
+    tests = {r[0] for r in con.execute("SELECT path FROM nodes WHERE kind = 'test' AND path IS NOT NULL")}
+    tests |= {r[0] for r in con.execute("SELECT n.path FROM flows f JOIN nodes n ON n.id = f.entry_id"
+                                        " WHERE json_extract(f.attrs, '$.kind') = 'test' AND n.path IS NOT NULL")}
+    per = {}
+    for path, mod in files_of.items():
+        t, n = per.get(mod, (0, 0))
+        per[mod] = (t + (path in tests), n + 1)
+    modules = {m for m, (t, n) in per.items() if m and n and t * 2 >= n}
+    return tests, modules

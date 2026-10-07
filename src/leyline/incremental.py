@@ -187,7 +187,10 @@ class Run:
             con.execute("DELETE FROM meta WHERE key = 'generation'")
         self.cache.con.execute("BEGIN")
         self.rows: dict = {}
-        if not self.full:
+        # Parse output depends only on a file's content and module, not on where the checkout is or on the rest of
+        # the store: a full run that was not asked for (a moved checkout, a store copied to map another commit)
+        # still takes it, when the same Leyline made it.
+        if not self.full or (not full and self.cache.get("code") == code_version()):
             for r in self.cache.con.execute("SELECT id, sha, module, loc, blob, err, toks FROM files"):
                 self.rows[r[0]] = r
         self.toks: dict[str, bytes] = {}
@@ -212,7 +215,7 @@ class Run:
     # -- parse cache ---------------------------------------------------------------------------------------
     def lookup(self, repo: str, root: Path, work: list) -> dict:
         """path -> the parse output kept for it, for the files whose content and module are unchanged."""
-        if self.full:
+        if not self.rows:
             return {}
         out = {}
         from .indexer import read_source
@@ -672,6 +675,7 @@ class Run:
             c.executemany("DELETE FROM resolved WHERE id = ?", [(f,) for f in self.removed])
         c.executemany("INSERT OR REPLACE INTO resolved VALUES (?,?,?)", [(f, *r) for f, r in self.resolved_rows.items()])
         c.execute("INSERT OR REPLACE INTO meta VALUES ('key', ?)", (self.key,))
+        c.execute("INSERT OR REPLACE INTO meta VALUES ('code', ?)", (code_version(),))
         c.execute("INSERT OR REPLACE INTO meta VALUES ('state', ?)", (pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL),))
         with con:
             con.execute("INSERT OR REPLACE INTO meta VALUES ('generation', ?)", (token,))

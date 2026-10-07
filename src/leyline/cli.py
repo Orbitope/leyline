@@ -18,6 +18,8 @@ DEFAULT_DB = ".leyline/leyline.db"
 
 def _spec(con, args) -> int:
     from . import loop, spec
+    if args.action != "resolve" and args.target.startswith("pr-") and not Path(args.target).is_dir():
+        return _pr_spec(con, args)   # a pull request reviewed with `leyline pr`: no folder behind it
     if args.action != "resolve":   # a change folder or its id, as plan and check take it
         folder = loop.find_change(args.target, args.db)
         if folder is None and args.action in ("brief", "verify", "facts"):
@@ -59,6 +61,64 @@ def _spec(con, args) -> int:
         print(f"Deleted the baseline of {cid}." if diff.drop_snapshot(con, cid) else f"No baseline is kept for {cid}.")
     elif args.action == "resolve":
         _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
+    return 0
+
+
+def _pr_spec(con, args) -> int:
+    """The spec steps that make sense for a pull request: its reviewers' facts, their findings, and forgetting it."""
+    from . import diff, pr, spec
+    cid = args.target
+    if args.action == "facts":
+        r = pr.review_facts(con, cid, args.reviewer)
+        _print(r)
+        return 1 if "error" in r else 0
+    if args.action == "findings":
+        for f in spec.findings(con, cid)["findings"]:
+            print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+        return 0
+    if args.action in ("finding", "file"):
+        r = spec.add_finding(con, cid, args.reviewer or "", args.severity or "", args.claim or "", args.evidence, args.proposal)
+        _print(r)
+        return 1 if "error" in r else 0
+    if args.action == "forget":
+        gone = diff.drop_snapshot(con, cid)
+        diff.snapshot_path(con, cid).with_suffix(".base").unlink(missing_ok=True)
+        print(f"Deleted the map of {cid}'s base." if gone else f"No base is kept for {cid}.")
+        return 0
+    print(f"leyline: {args.action} is for a spec folder; a pull request has `leyline pr`, then facts, finding, findings,"
+          " resolve and forget", file=sys.stderr)
+    return 2
+
+
+def _pr(args) -> int:
+    from . import pr
+    about = args.about or ""
+    if about == "-":
+        about = sys.stdin.read()
+    elif args.about_file:
+        about = Path(args.about_file).read_text(encoding="utf-8", errors="replace")
+    root = Path(args.path)
+    try:
+        top = pr.git_root(root.resolve())
+    except pr.GitError as e:
+        print(f"leyline: {args.path} is not inside a git repository ({e})", file=sys.stderr)
+        return 2
+    db = args.db or str(top / DEFAULT_DB)
+    try:
+        r = pr.review(db, top, args.base, about, args.github, args.id)
+    except pr.GitError as e:
+        print(f"leyline: {e}", file=sys.stderr)
+        return 2
+    if "error" in r:
+        print(f"leyline: {r['error']}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print({k: v for k, v in r.items()})
+        return 0
+    print(pr.text(r))
+    print(f"written to {r['page']}")
+    print(f"Next: have it reviewed (`leyline spec facts {r['change_id']} --reviewer logic`, then `performance`;"
+          " the leyline-adversarial-review skill runs both).")
     return 0
 
 
@@ -152,7 +212,9 @@ that it was done as agreed. The usual path is three commands:
   leyline check <change> --tests FILE   after the change: re-map, read the test output, and say whether
                                         it was done as agreed
 
-Each command ends with the next step."""
+Each command ends with the next step. To review a change someone else wrote, with no spec:
+
+  leyline pr [base]                     what the checkout's change reaches and did not change, for review"""
 
 ADVANCED = """advanced commands (leyline <command> -h for each):
   index         index without the summary; prints the full statistics
@@ -312,6 +374,17 @@ def _main(argv=None) -> int:
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
     p.add_argument("--tests", metavar="FILE", help="test runner output from after the change (- for stdin); one PASS or"
                                                   " FAIL line per test, as pytest -rA prints")
+    p = sub.add_parser("pr", description="Review a branch or pull request someone else wrote: map the commit it left"
+                                         " its base at, compare it with the checkout, and print what the change reaches"
+                                         " and did not change, with no spec needed. Findings are filed against pr-<id>.")
+    p.add_argument("base", nargs="?", help="the branch it will merge into (default: origin's default branch, or main)")
+    p.add_argument("--about", help="what the change says it does (its title and description); - reads stdin")
+    p.add_argument("--about-file", metavar="FILE", help="the same, from a file")
+    p.add_argument("--github", metavar="NUMBER", help="take the base, title and description from this GitHub pull request"
+                                                     " (needs gh; check the pull request out first)")
+    p.add_argument("--id", help="name the review pr-<id> (default: the PR number, else the branch name)")
+    p.add_argument("--path", default=".", help="the checkout (default: here)")
+    p.add_argument("--json", action="store_true")
     # Advanced commands: no help= keeps them out of the list at the top of --help; ADVANCED lists them.
     p = sub.add_parser("grade", description="measure the call links found against a compiler's (a SCIP index, or roslyn for C#)")
     p.add_argument("root", help="the repository")
@@ -392,6 +465,8 @@ def _main(argv=None) -> int:
 
     if args.cmd in ("map", "plan", "check"):
         return _loop(args)
+    if args.cmd == "pr":
+        return _pr(args)
     explicit, args.db = args.db is not None, args.db or DEFAULT_DB
     if args.cmd == "index":
         if len(args.path) > 1 and args.repo:

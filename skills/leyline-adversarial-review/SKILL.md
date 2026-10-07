@@ -1,11 +1,13 @@
 ---
 name: leyline-adversarial-review
-description: Attack a spec before it is implemented, as a logic reviewer or a performance reviewer, using a Leyline map as evidence. Use after a change brief exists and before any code is written, or when asked to review, challenge or stress-test a proposed change.
+description: Attack a change as a logic reviewer or a performance reviewer, using a Leyline map as evidence. Use on a spec after its brief exists and before any code is written, or on a pull request or branch someone else wrote (no spec needed), or when asked to review, challenge or stress-test a change.
 ---
 
-# Review a spec adversarially with Leyline
+# Review a change adversarially with Leyline
 
-Your job is to find what is wrong with a change before it costs anything. You are not the author
+Two kinds of change can be reviewed: a **spec** (an OpenSpec folder, before any code is written) and a **pull
+request** (code someone already wrote, with no spec; see the section below). Your job is to find what is
+wrong with a change before it costs anything. You are not the author
 and you are not trying to help it pass. Run as a fresh agent that has not seen the spec being
 written. If you cannot start one, do the review as a separate pass: put aside what you know of how
 the spec was written, re-read only the change folder and `leyline.md`, and say in your report that
@@ -20,7 +22,8 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
 
 ## Steps
 
-1. Read the change folder: `proposal.md`, the spec deltas, `tasks.md`, `leyline.md`.
+1. Read the change folder: `proposal.md`, the spec deltas, `tasks.md`, `leyline.md`. For a pull request,
+   read its page (`.leyline/reviews/pr-<id>.md`) and the diff.
 2. Call `spec_review_facts` with the folder and `reviewer` (logic or performance). It returns what
    the graph knows, arranged as the questions below, and records that your review ran, so a review
    that files nothing still shows on the plan.
@@ -30,9 +33,28 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
    ids that show it, and the change to the spec you propose. No node, no finding.
 5. Report the count by severity and the one finding you would fix first. Stop there.
 
+## A pull request: set it up first
+
+1. Check the branch out (`gh pr checkout <number>`), then call `review_pr` with `base` (the branch it merges
+   into) and `about` (its title and description), or `github` with the number; without the server,
+   `leyline pr <base> --about "..."` or `leyline pr --github <number>`. It returns the review's id,
+   `pr-<id>`, and a page: what changed, what it reaches and did not change, its tests.
+2. Use `pr-<id>` wherever the steps below say the change folder: `spec_review_facts` with it gives the facts
+   (`leyline spec facts pr-<id> --reviewer logic`), and `spec_finding` files against it. Read the files under
+   `house_rules_to_read_first` before anything else: a pull request breaks the repository's own rules more
+   often than it breaks the code.
+3. In the questions below, read "the spec" as "the description". The first logic question for a pull request
+   is whether the code does what the description says, all of it and nothing else: name each edit the
+   description does not explain, and each thing it promises that no edit does. `proposal` in a finding is the
+   change to the code (or the description) you propose.
+4. A finding whose evidence is not on the change's blast radius comes back with a warning. Either add the node
+   that links it to the change, or ask yourself whether you wandered.
+
 ## Logic reviewer: answer each of these
 
-- Which callers, implementers or overriders must change and have no task?
+- Which callers, implementers or overriders must change and have no task? (A pull request:
+  `signature_changed_callers_not_edited` and `removed_but_still_called`. Each is a likely break; confirm it
+  in the code.)
 - Which channel does the change cross (process, HTTP, file, event), and does the spec say what the
   other end must do? `other_ends_of_those_channels_no_task_names` lists the other launchers, callers or
   readers of the same end: does each one need the change too?
@@ -68,7 +90,8 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
 
 ## Rules
 
-- Do not rewrite the spec. Propose the change in the finding and let the person decide.
+- Do not rewrite the spec, or push to someone else's branch. Propose the change in the finding and let the
+  person decide.
 - Do not file style or naming preferences.
 - If the facts are empty and you found nothing after reading the code, say so in one line. A review
   that finds nothing is a valid result.

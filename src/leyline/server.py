@@ -744,10 +744,47 @@ def spec_review_facts(change: ChangeArg,
     """Review step, after `plan` and before code is written: what the map says about the change, arranged as the
     questions a logic reviewer and a performance reviewer must answer. Read the code behind anything suspicious
     (`source`, `expand`), then file each real problem with `spec_finding`."""
+    if change.startswith("pr-") and not Path(change).is_dir():   # a pull request reviewed with review_pr
+        from . import pr
+        return pr.review_facts(_db(), change, reviewer)
     folder, err = _change(change)
     if err:
         return {"error": err}
     return spec_loop.review_facts(_db(), folder, reviewer)
+
+
+@_tool(needs_store=False, items=20, keep=("next",),
+       more="Lists were cut to keep this answer short; `page` has the whole review page and `spec_review_facts` the facts.")
+def review_pr(base: Annotated[Optional[str], Field(description="The branch the change will merge into, or a commit."
+                                                             " Default: origin's default branch, else main.")] = None,
+              about: Annotated[Optional[str], Field(description="What the change says it does: its title and"
+                                                              " description. Default: its commit messages.")] = None,
+              github: Annotated[Optional[str], Field(description="A GitHub pull request number: base, title and"
+                                                               " description come from it (needs gh, and the pull"
+                                                               " request checked out).")] = None,
+              review_id: Annotated[Optional[str], Field(description="Name it pr-<review_id>. Default: the pull request"
+                                                                  " number, else the branch name.")] = None,
+              path: Annotated[str, Field(description="The checkout, absolute or relative to the server's directory.")] = ".") -> dict:
+    """Review a change someone else wrote, with no spec: a branch or a pull request, checked out here. Maps the commit
+    it left its base at, compares it with the checkout, and returns a page saying what changed, what it reaches and
+    did not change (callers of a changed signature, the other ends of channels its edits touch, removed code still
+    called), and which tests run it. Then run the adversarial review on the returned `change_id` with
+    `spec_review_facts` and `spec_finding`, as for a spec."""
+    from . import pr
+    try:
+        with _lock:
+            try:
+                r = pr.review(_path(), Path(path), base, about or "", github, review_id)
+            finally:
+                _generation[0] += 1
+    except pr.GitError as e:
+        return {"error": str(e)}
+    if "error" in r:
+        return r
+    return {"change_id": r["change_id"], "page": pr.text(r), "written": r["page"], "size": r["size"],
+            "reaches": r["reaches"], "tests": r["tests"], "other_files": r["other_files"], "house_rules": r["house_rules"],
+            "next": [f"Run the leyline-adversarial-review skill on {r['change_id']}: spec_review_facts with reviewer logic,"
+                     " then performance; file findings with spec_finding. Show the person the page."]}
 
 
 @_tool

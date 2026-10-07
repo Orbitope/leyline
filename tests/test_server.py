@@ -367,6 +367,37 @@ def test_a_workspace_of_two_repositories(tmp_path):
     serve(ws, script)
 
 
+def test_a_pull_request_is_reviewed_over_mcp(tmp_path):
+    """review_pr on a checked-out branch, then the reviewers' facts and a finding on the id it returns."""
+    from test_pr import FILES, git
+    root = tmp_path / "repo"
+    for f, text in FILES.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    (root / "app/store.py").write_text("def load(path, encoding):\n    with open(path, encoding=encoding) as f:\n"
+                                       "        return f.read()\n\n\ndef helper(x):\n    return x * 2\n")
+    git(root, "commit", "-qam", "Add an encoding")
+
+    async def script(a: Agent, tools, init):
+        LISTED.update(tools)
+        r = await a.call("review_pr", base="main", about="Read files with an encoding")
+        assert r["change_id"] == "pr-feature" and "Signature: `load`" in r["page"]
+        assert {m["name"] for m in r["reaches"]["signature_changed_callers_not_edited"]} == {"use.py.first", "use.py.count"}
+        f = await a.call("spec_review_facts", change="pr-feature", reviewer="logic")
+        assert f["what_it_says_it_does"] == "Read files with an encoding"
+        ev = f["logic"]["signature_changed_callers_not_edited"][0]["id"]
+        filed = await a.call("spec_finding", change="pr-feature", reviewer="logic", severity="high",
+                             claim="first and count still pass one argument", evidence=[ev])
+        assert filed["change_id"] == "pr-feature"
+        assert (await a.call("spec_findings", change="pr-feature"))["open"] == 1
+        assert await a.fail("review_pr", base="main", github="1")   # no gh, no sign-in, or no such pull request
+    serve(root, script)
+
+
 def test_long_answers_are_cut_to_fit_and_say_so():
     """Answers stay under the limit however large the map; what was cut is named, with how to see the rest."""
     from leyline import server

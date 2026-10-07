@@ -72,8 +72,7 @@ class _Graph:
         for c in con.execute("SELECT DISTINCT src_id, dst_id FROM calls"):
             self.calls[c["src_id"]].add(c["dst_id"])
         self.module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
-        tests = {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'test'")}
-        self.test_modules = {self.module.get(t) for t in tests}
+        self.test_files, self.test_modules = store.test_places(con)
 
     def kind(self, i):
         return self.nodes[i]["kind"] if i in self.nodes else None
@@ -124,7 +123,8 @@ class _Graph:
         """Test code, and code beside the product: samples, benchmarks, docs."""
         path = (self.nodes[i]["path"] or "") if i in self.nodes else ""
         parts = [p.lower() for p in path.split("/")[:-1]]
-        return self.module.get(i) in self.test_modules or any(p.startswith("test") or p in SIDE_DIRS for p in parts)
+        return (self.module.get(i) in self.test_modules or path in self.test_files
+                or any(p.startswith("test") or p in SIDE_DIRS for p in parts))
 
 
 def _held(g: _Graph, abstraction: str):

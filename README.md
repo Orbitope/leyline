@@ -23,6 +23,9 @@ A change is an [OpenSpec](https://openspec.dev) folder, `openspec/changes/<id>/`
 requirements with scenarios, and a task list. You describe the change in words and your agent writes the
 folder; `skills/leyline-spec/SKILL.md` tells it how. `<change>` is the folder or just its id.
 
+A change someone else already wrote (a branch, a pull request) has no spec. Check it out and run
+`leyline pr [base]` instead: see [Reviewing a pull request](#reviewing-a-pull-request).
+
 ### A worked example
 
 The repository `tests/fixture2` has a small Python package with an `Engine` class and its tests.
@@ -283,6 +286,39 @@ change is checked done as agreed, so `check` can run again after a later edit, a
 `skills/leyline-change-impact/SKILL.md` tells an agent how to do steps 2 and 3 well. The same
 `save_view` tool lets an agent save any other slice of the code as a view.
 
+### Reviewing a pull request
+
+A spec says what a change will do before it is written. A pull request comes the other way round: the code
+exists, and what it was meant to do is a title and a paragraph. `leyline pr` reads the change from the code:
+
+```
+gh pr checkout 123
+leyline pr main --about "what the pull request says it does"    # or: leyline pr --github 123
+```
+
+It maps the commit the branch left `main` at (from `git archive` into a temporary folder, so the repository
+and its worktrees are not touched; files that did not change keep their parse output, so this costs a few
+seconds), compares it with the checkout, uncommitted edits included, and writes
+`.leyline/reviews/pr-<id>.md`:
+
+- **What changed**: functions edited, added and removed, a changed parameter list as it was and as it is,
+  and the files the map does not read (docs, styles, data), so you know where its view stops.
+- **What it reaches and did not change**: callers of a changed signature that were not edited, removed code
+  that is still called, and each channel the edit touches (an edited line within a few lines of the route,
+  table, event or program it names) with every other end that must agree. A channel the changed function
+  sits on but the edit does not touch is left out.
+- **Shares a caller, a field or data with the change**: weaker leads, for a reviewer to read.
+- **Tests**: whether it edits any, which changed code no test reaches, and which tests run it.
+- New dependencies between modules, rules that now fail, and the repository's own rules for reviewers
+  (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` ...) to review against.
+
+With no `--about`, the commits' messages stand for the description. The review is stored as `pr-<id>` (the
+pull request's number, else the branch name), and everything that takes a change id takes it: `leyline spec
+facts pr-123 --reviewer logic` gives the adversarial reviewers their facts, `leyline spec finding pr-123 ...`
+files one, and the page lists them. A finding whose evidence is nowhere near the change (not on its blast
+radius, nor one call from it) is kept but marked, so the person questions it first. `leyline spec forget
+pr-123` deletes the base's map.
+
 ### Reviewing a change after it is made
 
 The first `propose_change` of a change keeps a baseline in `.leyline/snapshots/<change id>.db` (what the
@@ -454,7 +490,8 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label, for `review_change` |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
-| `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change |
+| `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
+| `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |

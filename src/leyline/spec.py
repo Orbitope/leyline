@@ -29,7 +29,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-from . import change, diff, rules
+from . import change, diff, rules, store
 
 TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(\d+(?:\.\d+)*)?\.?\s*(.+?)\s*$")
 CODE = re.compile(r"`([^`\n]+)`")
@@ -150,10 +150,13 @@ class _Names:
             if r["kind"] == "file":
                 self.by_stem[re.sub(r"\.[^./]+$", "", r["name"])].append(r)
         self.module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
-        tests = {r[0] for r in con.execute("SELECT entry_id FROM flows WHERE json_extract(attrs, '$.kind') = 'test'")}
-        self.test_modules = {self.module.get(t) for t in tests}
-        from . import store
+        self.test_files, self.test_modules = store.test_places(con)
         self.roots = list(store.roots(con).values())
+
+    def in_tests(self, i: str) -> bool:
+        """Test code: a test, anything in a file that holds tests, or in a module that is mostly such files."""
+        n = self.by_id.get(i)
+        return bool(n) and (n["kind"] == "test" or n["path"] in self.test_files or self.module.get(i) in self.test_modules)
 
     def file(self, written: str) -> list:
         """File or module nodes a written path names: the whole path, or its end."""
@@ -218,7 +221,7 @@ class _Names:
             if not IDENT.fullmatch(leaf):
                 return {"skip": True}
             return {"new": name, "parent": None}
-        product = [r for r in cands if self.module.get(r["id"]) not in self.test_modules] or cands
+        product = [r for r in cands if not self.in_tests(r["id"])] or cands
         owners = {(r["parent_id"], r["kind"]) for r in product}
         if len(owners) == 1:
             return {"ids": sorted(r["id"] for r in product)}      # overloads of one method are one target
@@ -591,13 +594,14 @@ def _crossings(con, names: _Names, links: list[dict]) -> tuple[list[dict], list[
         hub, spoke = (r["src_id"], r["dst_id"]) if data else (r["dst_id"], r["src_id"])
         hub_end = unit(hub, False) if ch == "process" else hub
         spoke_end = unit(spoke, True) if ch == "process" else spoke
-        groups[(ch, hub_end)].append({"hub": hub, "spoke": spoke, "end": spoke_end, "address": a.get("address") or "",
+        # One registrar of many routes (or a writer of many tables) is many channels: one per address.
+        groups[(ch, hub_end, "" if ch == "process" else a.get("address") or "")].append({"hub": hub, "spoke": spoke, "end": spoke_end, "address": a.get("address") or "",
                                       "guessed": r["precision"] == "guess"})
     crossings, agree, seen = [], [], set()
 
     def label(i):   # `Owner.name`, or `file.name` at the top of a file
         return change._label(names.by_id, i)
-    for (ch, hub_end), members in groups.items():
+    for (ch, hub_end, _), members in groups.items():
         there = at(hub_end)
         moved = [m for m in members if at(m["end"])]
         if not there and not moved:
@@ -741,7 +745,7 @@ def _left_alone(con, names: _Names, links: list[dict], cid: str = "") -> dict:
     inside = set(fns)
 
     def product(i):
-        return i in names.by_id and names.by_id[i]["kind"] != "test" and names.module.get(i) not in names.test_modules
+        return i in names.by_id and names.by_id[i]["kind"] != "test" and not names.in_tests(i)
     def owner(i):
         return names.by_id[i]["parent_id"] if i in names.by_id else None
 
@@ -1001,7 +1005,9 @@ def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list
     opened = sorted((f for f in found if f["status"] == "open"), key=lambda f: order.get(f["severity"], 3))
     if opened:
         L += ["", "Open:"] + [f"- **{f['severity']}** ({f['reviewer']}, {f['id']}): {f['claim']}"
-                              + (f" Proposed: {f['proposal']}" if f["proposal"] else "") for f in opened]
+                              + (f" Proposed: {f['proposal']}" if f["proposal"] else "")
+                              + (" (Its evidence is not near the change: question it first.)" if f.get("evidence_far_from_change") else "")
+                              for f in opened]
     closed = sorted((f for f in found if f["status"] != "open"), key=lambda f: order.get(f["severity"], 3))
     if closed:   # a settled finding is one line: the full text stays in `leyline spec findings`
         L += ["", "Settled (full text: `leyline spec findings`):"]
@@ -1133,7 +1139,12 @@ def add_finding(con, change_id: str, reviewer: str, severity: str, claim: str, e
                     "(SELECT resolution FROM findings WHERE id = ?),?)",
                     (fid, change_id, reviewer, severity, claim.strip(), json.dumps(kept), proposal.strip(), fid, fid,
                      datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")))
-    return {"id": fid, "status": "open"}
+    out = {"id": fid, "status": "open"}
+    if near_change(con, change_id, kept) is False:
+        out["warning"] = ("None of the evidence is on the change's blast radius (what it changes, what must change with"
+                          " it, the other ends of its channels, or one call from those). Kept, and marked so the person"
+                          " questions it first; if the link is real, add evidence that shows it.")
+    return out
 
 
 def resolve_finding(con, finding_id: str, status: str, resolution: str = "") -> dict:
@@ -1145,12 +1156,34 @@ def resolve_finding(con, finding_id: str, status: str, resolution: str = "") -> 
     return {"id": finding_id, "status": status} if n else {"error": f"no finding {finding_id!r}"}
 
 
+def near_change(con, change_id: str, evidence: list[str]) -> Optional[bool]:
+    """Whether any of a finding's evidence lies on the change's blast radius: a node the change's view marks (changed,
+    must edit, the other end of a channel, a caller...), something nested in one or holding one, or a node one call
+    from one. A finding whose evidence is elsewhere is not wrong for that, but it is the first a person should
+    question: the reviewer may have wandered. None when the change has no view to judge by."""
+    row = con.execute("SELECT spec FROM views WHERE id = ?", ("view-" + change_id,)).fetchone()
+    marks = {m["id"] for m in json.loads(row[0] or "{}").get("marks", [])} if row else set()
+    if not marks:
+        return None
+    for e in evidence:
+        if e in marks or any(e.startswith(m + ".") or m.startswith(e + ".") for m in marks):
+            return True
+        for r in con.execute("SELECT src_id, dst_id FROM calls WHERE src_id = ? OR dst_id = ?", (e, e)):
+            if r[0] in marks or r[1] in marks:
+                return True
+    return False
+
+
 def findings(con, change_id: str) -> dict:
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
-    out = [{"id": r["id"], "reviewer": r["reviewer"], "severity": r["severity"], "claim": r["claim"], "proposal": r["proposal"],
-            "status": r["status"], "resolution": r["resolution"] or "",
-            "evidence": [{"id": e, "name": names.get(e, e)} for e in json.loads(r["evidence"] or "[]")]}
-           for r in con.execute("SELECT * FROM findings WHERE change_id = ? ORDER BY created", (change_id,))]
+    out = []
+    for r in con.execute("SELECT * FROM findings WHERE change_id = ? ORDER BY created", (change_id,)):
+        ev = json.loads(r["evidence"] or "[]")
+        near = near_change(con, change_id, ev)
+        out.append({"id": r["id"], "reviewer": r["reviewer"], "severity": r["severity"], "claim": r["claim"],
+                    "proposal": r["proposal"], "status": r["status"], "resolution": r["resolution"] or "",
+                    "evidence": [{"id": e, "name": names.get(e, e)} for e in ev],
+                    **({"evidence_far_from_change": True} if near is False else {})})
     return {"change_id": change_id, "open": sum(1 for f in out if f["status"] == "open"), "findings": out}
 
 
@@ -1460,6 +1493,22 @@ def _speed_tests(con, changed: set, self_tests: Optional[dict] = None) -> list[d
     return out
 
 
+def hot_functions(con, names, fns: list[str]) -> list[dict]:
+    """Changed functions by how much runs through them: flows that pass through, program entries (not tests) that
+    reach them, and call sites. A function most flows pass through is on a hot path."""
+    n_flows = con.execute("SELECT COUNT(*) FROM flows").fetchone()[0] or 1
+    hot = []
+    for i in dict.fromkeys(fns):
+        through = con.execute("SELECT COUNT(DISTINCT flow_id) FROM flow_steps WHERE callable_id = ?", (i,)).fetchone()[0]
+        entry = con.execute("SELECT COUNT(DISTINCT s.flow_id) FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
+                            " WHERE s.callable_id = ? AND json_extract(f.attrs, '$.kind') != 'test'", (i,)).fetchone()[0]
+        sites = con.execute("SELECT COUNT(*) FROM calls WHERE dst_id = ?", (i,)).fetchone()[0]
+        hot.append({"id": i, "name": _label(names, i), "flows_through": through, "share_of_flows": round(through / n_flows, 2),
+                    "program_entries_that_reach_it": entry, "call_sites": sites})
+    hot.sort(key=lambda h: (-h["flows_through"], -h["call_sites"]))
+    return hot
+
+
 def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) -> dict:
     """What the graph says about a change, arranged as the questions each reviewer must answer.
     A reviewer reads this, reads the code behind anything suspicious, and files findings. Naming the
@@ -1475,16 +1524,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
     for i in tasked:   # a named type stands for its functions
         if names.by_id[i]["kind"] == "type":
             fns += [r["id"] for r in names.rows if r["parent_id"] == i and r["kind"] == "callable"]
-    n_flows = con.execute("SELECT COUNT(*) FROM flows").fetchone()[0] or 1
-    hot = []
-    for i in dict.fromkeys(fns):
-        through = con.execute("SELECT COUNT(DISTINCT flow_id) FROM flow_steps WHERE callable_id = ?", (i,)).fetchone()[0]
-        entry = con.execute("SELECT COUNT(DISTINCT s.flow_id) FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
-                            " WHERE s.callable_id = ? AND json_extract(f.attrs, '$.kind') != 'test'", (i,)).fetchone()[0]
-        sites = con.execute("SELECT COUNT(*) FROM calls WHERE dst_id = ?", (i,)).fetchone()[0]
-        hot.append({"id": i, "name": _label(names, i), "flows_through": through, "share_of_flows": round(through / n_flows, 2),
-                    "program_entries_that_reach_it": entry, "call_sites": sites})
-    hot.sort(key=lambda h: (-h["flows_through"], -h["call_sites"]))
+    hot = hot_functions(con, names, fns)
     perf_tests = _speed_tests(con, set(fns), b.get("self_tests"))
     la = b["left_alone"]
     imp = b["impact"] if "error" not in b["impact"] else {}
