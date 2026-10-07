@@ -183,11 +183,12 @@ def _focus(con, nodes: _Nodes, ids: list[str]) -> list[str]:
 
 
 def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages: int = 25, max_focus: int = 4,
-             max_hops_in: int = 3, max_channels_in: int = 3) -> dict:
+             max_hops_in: int = 3, max_channels_in: int = 3, marked: str = "changed") -> dict:
     """A Mermaid sequence diagram of how execution reaches the functions in `focus_ids` (types stand for their
     methods) and what they call. Participants are the types around the functions, or the file for a function at the
     top of a file. Returns {"mermaid", "arrows", "participants", "focus", "focus_left_out", "left_out", ...}; "arrows"
-    lists each drawn arrow with the edge behind it, so the drawing can be checked against the map (`unbacked`)."""
+    lists each drawn arrow with the edge behind it, so the drawing can be checked against the map (`unbacked`).
+    `marked` is the word on the note over each focus function ("changed" on a change's pages)."""
     nodes = _Nodes(con)
     every = _focus(con, nodes, focus_ids)
     focus = every[:max_focus]
@@ -293,7 +294,7 @@ def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages:
         """The changed function's run, shaded: the arrow into it (if any), a note, and what it calls."""
         lines.append(f"    rect {SHADE}")
         draw_in()
-        lines.append(f"    Note over {part(nodes.unit(node))}: changed: {_text(nodes.label(node))}")
+        lines.append(f"    Note over {part(nodes.unit(node))}: {marked}: {_text(nodes.label(node))}")
         emit(node)
         lines.append("    end")
 
