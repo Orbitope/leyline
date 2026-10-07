@@ -398,6 +398,10 @@ def check_text(v: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if v.get("written"):
         L.append(f"Written to {_show(v['written'])}")
+    if (v.get("anchors") or {}).get("count"):
+        a = v["anchors"]
+        L.append(f"Recorded what the spec's {spec._n(a['count'], 'code name')} mean now"
+                 + (f" in {_show(a['file'])} (commit it)" if a.get("file") else "") + ", so `leyline drift` can tell when the code moves on.")
     if v.get("page"):
         L.append(f"Map page: {_show(v['page'])} (opens on this change)")
     L += ["", *next_after_check(v, name)]

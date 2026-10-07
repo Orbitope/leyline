@@ -274,6 +274,41 @@ change is checked done as agreed, so `check` can run again after a later edit, a
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.
 
+### Spec drift
+
+Specs name code in backticks, and the code moves on without them: a function is renamed, a method gets
+a parameter, a class moves to another file. `leyline drift` reads every backticked name in the living
+specs (`openspec/specs/<capability>/spec.md`) and in finished changes (`openspec/changes/archive/<date>-<id>/`),
+compares each with the map, and prints one page, spec by spec:
+
+```
+## openspec/specs/engine/spec.md
+
+- `Engine.start` has changed signature since the spec was written: was `def start(self)`, now `def start(self, loud=True)`.
+- `core.make_engine` is gone: py/src/pkg/core.py has no `make_engine` now.
+- `Journal.note` has moved: it is now in py/src/pkg/journal.py (was in py/src/pkg/core.py).
+```
+
+A name is *gone*, *moved* (another file or owner), *signature changed*, *ambiguous* (it now names several
+things) or *changed inside* (same signature; worth a read, not drift by itself). It exits 1 when something
+is gone or changed signature. Names that are not code (`true`, `GET`) are counted and left alone, and so is
+code a task removes or renames.
+
+To see a changed signature, Leyline must know what a name meant when it was right. When `check` finds a change
+done as agreed, it records an *anchor* for each code name in the change's tasks and spec deltas: the node,
+its kind and file, and fingerprints of its declaration (a function's signature line, a type's declaration and
+member names, a field's type) and of its body. Anchors are kept in the store (table `spec_anchors`) and in
+`openspec/leyline-anchors.json`: canonical JSON, sorted keys, keyed by change id (or `specs/<capability>`),
+with node ids written without the repository's id so another clone reads them. Commit it with the specs; it
+survives a fresh map, and wins over the store. A living spec's name is read against its own anchors, or those
+of the change that wrote it. A name with no anchor is checked by name only. When the specs and the code agree,
+`leyline drift --accept` records the code as it is now; code that is gone stays reported until the spec stops
+naming it.
+
+`leyline plan` reads the same anchors: a new change whose tasks touch drifted code lists, under "Specs that no
+longer match code this change touches", lines such as "The living spec engine/spec.md names `Engine.start`,
+which has changed signature since it was written."
+
 ### Assessing a change
 
 1. You describe a change to an agent that has the Leyline MCP server connected.
@@ -493,6 +528,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
+| `drift(path?, accept?)` | Code the living specs and finished changes name that is gone, moved, changed signature or ambiguous; `fails`, the page, `next` |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
 | `patterns(pattern?, node_id?, limit?)` | Design patterns found by shape, with roles, rationale and confidence |

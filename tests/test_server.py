@@ -170,6 +170,14 @@ def test_the_loop_over_mcp(repo):
                              " and the diff. The baseline is kept, so `check` can run again after later edits."]
         assert "**State: done as agreed.**" in (ch / "leyline.md").read_text()
 
+        # The check recorded what the spec names; drift stays quiet until the code moves on.
+        d = await a.call("drift")
+        assert d["fails"] is False and d["page"].startswith("# Spec drift")
+        core = repo / "py/src/pkg/core.py"
+        core.write_text(core.read_text().replace("    def start(self):", "    def start(self, loud):"))
+        d = await a.call("drift")
+        assert d["fails"] is True and "has changed signature" in d["page"] and "accept=true" in d["next"][0]
+
     serve(repo, script)
 
 
