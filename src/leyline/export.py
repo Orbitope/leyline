@@ -209,6 +209,35 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
     out = {"version": 3, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list, "access": access, "state": state, "measured": measured,
            "coverage": coverage, "changes": changes(con, index, roots), "sources": sources}
     out["layout"] = layout(out, memory)
+    out["parts"] = parts(con, index, nodes)
+    return out
+
+
+def parts(con, index: dict, nodes: list) -> list:
+    """Large modules drawn as their parts, as `leyline outline` splits them (two levels): each part is added to `nodes`
+    as a node of kind "part" (after the layout, which does not draw them), and listed with the files it holds."""
+    from . import outline
+    try:
+        found = outline.map_parts(con)
+    except Exception:   # the page is still worth having without them
+        return []
+    out = []
+
+    def add(x, parent):
+        k = len(nodes)
+        extra = {key: x[key] for key in ("kind", "files", "functions", "lines", "summary", "stale", "named")
+                 if x.get(key) not in (None, "", False)}
+        extra["files"] = len(x["files"])
+        if x["label"] != x["name"]:
+            extra["label"] = x["label"]
+        nodes.append({"i": "part:" + x["id"], "k": "part", "n": x["name"], "p": parent, "x": extra})
+        out.append({"i": k, "id": x["id"], "files": [index[f] for f in x["files"] if f in index]})
+        for s in x.get("parts", ()):
+            add(s, k)
+    for mp in found:
+        if mp["module"] in index:
+            for x in mp["parts"]:
+                add(x, index[mp["module"]])
     return out
 
 

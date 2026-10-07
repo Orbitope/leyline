@@ -424,6 +424,23 @@ const sysOf = new Map(), unitsOf = new Map();
 for (const [k, s, d] of D.edges) if (k === "groups") { sysOf.set(d, s); (unitsOf.get(s) || unitsOf.set(s, []).get(s)).push(d); }
 N.forEach((n, i) => { if (n.k === "system" && NOTES[i] && NOTES[i].name) { n.proposed = n.n; n.n = NOTES[i].name.v; } });
 const grp = (u) => (sysOf.has(u) ? sysOf.get(u) : u);
+// Parts: a large module drawn as `leyline outline` splits it, two levels deep. Each part is a node of kind "part"
+// whose parent is its module or the part it was split from; a level's parts hold every file of what was split.
+const PARTS = new Map(), topPart = new Map(), subPart = new Map(); // part -> its files; file -> its part at each level
+for (const p of D.parts || []) { const files = new Set(p.files), top = N[N[p.i].p].k === "module"; PARTS.set(p.i, files); for (const f of files) (top ? topPart : subPart).set(f, p.i); }
+const PARTED = new Set([...PARTS.keys()].filter((p) => N[N[p].p].k === "module").map((p) => N[p].p));
+const subsOf = (p) => kids[p].filter((c) => N[c].k === "part");
+// The box a node is drawn in when the map shows the parts of `focus` (a part), or of its module when focus is null.
+function partFor(i, focus) {
+  const f = fileOf[i], t = f == null ? null : topPart.get(f);
+  if (t == null) return null;
+  if (focus == null) return t;
+  const ftop = N[N[focus].p].k === "module" ? focus : N[focus].p, s = subPart.get(f);
+  if (t !== ftop) return t;
+  if (focus === ftop) return s != null ? s : unitOf[i];
+  return s != null && s !== focus ? s : unitOf[i];
+}
+const deepestPart = (i) => (fileOf[i] == null ? null : subPart.get(fileOf[i]) ?? topPart.get(fileOf[i]) ?? null);
 // Interface and base methods, and the methods that implement them.
 const implsOf = new Map(), basesOf = new Map();
 for (const [k, s, d] of D.edges) if (k === "overrides") { (implsOf.get(d) || implsOf.set(d, []).get(d)).push(s); (basesOf.get(s) || basesOf.set(s, []).get(s)).push(d); }
@@ -513,10 +530,11 @@ const S = { level: WS ? "ws" : "repo", focus: WS ? null : repoIdx, sel: null, ho
              repo: { calls: true, types: true, inherit: true, imports: true, channels: true },
              module: { calls: true, types: false, inherit: true, imports: false, channels: true },
              system: { calls: true, types: false, inherit: true, imports: false, channels: true },
+             part: { calls: true, types: false, inherit: true, imports: false, channels: true },
              unit: { calls: true, types: false, inherit: true, imports: false, channels: true },
              view: { calls: true, types: false, inherit: true, imports: false, channels: true } },
   flow: 0, viewIdx: 0, prev: null,
-  outside: { repo: true, module: false, system: true, unit: true, view: true } };
+  outside: { repo: true, module: false, system: true, part: true, unit: true, view: true } };
 const cam = { x: 0, y: 0, k: 1 };
 
 /* ---------- build the graph for the current level ---------- */
@@ -545,7 +563,8 @@ function rep(i) {
   }
   if (n.k === "external") return null;
   if (n.k === "system") return null;
-  if (S.level === "module") return moduleOf[i] === S.focus ? (unitOf[i] == null ? null : grp(unitOf[i])) : (n.k === "module" ? i : moduleOf[i]);
+  if (S.level === "module") return moduleOf[i] === S.focus ? (unitOf[i] == null ? null : PARTED.has(S.focus) ? partFor(i, null) ?? grp(unitOf[i]) : grp(unitOf[i])) : (n.k === "module" ? i : moduleOf[i]);
+  if (S.level === "part") { if (unitOf[i] == null) return n.k === "module" ? i : null; return moduleOf[i] === moduleOf[S.focus] ? partFor(i, S.focus) ?? unitOf[i] : moduleOf[i]; }
   if (S.level === "system") { const u = unitOf[i]; if (u == null) return n.k === "module" ? i : null; return sysOf.get(u) === S.focus ? u : moduleOf[i] === moduleOf[S.focus] ? grp(u) : moduleOf[i]; }
   const u = unitOf[i];
   if (u === S.focus) { const m = memberOf(i); return m != null && N[m].k !== "field" && N[m].k !== "entry_point" ? m : null; }
@@ -555,7 +574,9 @@ function inside(i) {
   if (S.level === "view") return VW.boxes.has(i);
   if (S.level === "ws") return N[i].k === "repo";
   if (S.level === "repo") return (N[i].k === "module" || N[i].k === "external") && repoOf[i] === S.focus;
+  if (S.level === "module" && PARTED.has(S.focus)) return N[i].k === "part" && N[i].p === S.focus;
   if (S.level === "module") return N[i].k === "system" ? N[i].p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i);
+  if (S.level === "part") return subsOf(S.focus).length ? N[i].k === "part" && N[i].p === S.focus : unitOf[i] === i && PARTS.get(S.focus).has(fileOf[i]);
   if (S.level === "system") return unitOf[i] === i && sysOf.get(i) === S.focus;
   return unitOf[i] === S.focus && memberOf(i) === i;
 }
@@ -583,6 +604,12 @@ function buildView() {
   if (S.level === "view") { for (const b of VW.boxes.keys()) nodes.push(b); }
   else if (S.level === "ws") { for (const r of REPOS) nodes.push(r); }
   else if (S.level === "repo") { N.forEach((n, i) => { if (repoOf[i] === S.focus && (n.k === "module" || (S.externals && n.k === "external" && used.has(i)))) nodes.push(i); }); }
+  else if (S.level === "module" && PARTED.has(S.focus)) { for (const c of subsOf(S.focus)) nodes.push(c); }
+  else if (S.level === "part") {
+    const subs = subsOf(S.focus), fs = PARTS.get(S.focus);
+    if (subs.length) nodes.push(...subs);
+    else N.forEach((n, i) => { if (unitOf[i] === i && fs.has(fileOf[i]) && (n.k === "type" || kids[i].some((c) => N[c].k === "callable"))) nodes.push(i); });
+  }
   else if (S.level === "module") { N.forEach((n, i) => { if (n.k === "system" ? n.p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i) && (n.k === "type" || kids[i].some((c) => N[c].k === "callable"))) nodes.push(i); }); }
   else if (S.level === "system") { for (const u of unitsOf.get(S.focus) || []) nodes.push(u); }
   else { for (const c of kids[S.focus]) if (N[c].k === "callable" || N[c].k === "type") nodes.push(c); }
@@ -604,7 +631,7 @@ function measure(text, font) { meter.font = font; return meter.measureText(text)
 const levelKey = () => (S.level === "ws" ? "ws" : S.level === "repo" ? "repo:" + N[S.focus].i : S.level === "module" ? "module:" + N[S.focus].i : null);
 const MONO = '500 12.5px "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace', SANS = '11px "IBM Plex Sans", "Segoe UI", system-ui, sans-serif';
 function layout(view) {
-  const two = S.level === "ws" || S.level === "repo" || S.level === "view" || (S.level === "module" && view.nodes.some((i) => N[i].k === "system"));
+  const two = S.level === "ws" || S.level === "repo" || S.level === "view" || ((S.level === "module" || S.level === "part") && view.nodes.some((i) => N[i].k === "system" || N[i].k === "part"));
   const boxes = new Map();
   const homeMod = S.level === "module" ? S.focus : S.level === "repo" || S.level === "view" || S.level === "ws" ? null : moduleOf[S.focus];
   const homeRepo = S.level === "repo" ? S.focus : homeMod;
@@ -733,6 +760,7 @@ function metaLine(i) {
   if (S.level === "view") { const ms = VW.marksIn.get(i) || []; const where = n.k === "module" ? "module" : N[moduleOf[i]] ? N[moduleOf[i]].n : ""; return `${where}${ms.length > 1 ? " · " + ms.length + " marked" : ""}`; }
   if (n.k === "external") return (n.x && (n.x.category || n.x.ecosystem)) || "external";
   if (n.k === "system") { const us = unitsOf.get(i) || []; return `${us.length} types and files · ${us.reduce((t, u) => t + count(u, "callable"), 0)} functions`; }
+  if (n.k === "part") { const x = n.x || {}; return `${x.files || 0} file${x.files === 1 ? "" : "s"} · ${(x.functions || 0).toLocaleString()} functions · ${big(x.lines || 0)} lines${x.stale ? " · name may be stale" : ""}`; }
   if (n.k !== "module") return kindName(i);
   const f = kids[i].filter((c) => N[c].k === "file").length;
   return `${f} file${f === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines`;
@@ -876,6 +904,7 @@ function open(i) {
   if (n.k === "repo") return setLevel("repo", i);
   if (n.k === "module") return setLevel("module", i);
   if (n.k === "system") return setLevel("system", i);
+  if (n.k === "part") return setLevel("part", i);
   if (n.k === "external") return;
   const u = unitOf[i];
   if (u === i) return setLevel("unit", i);
@@ -892,7 +921,9 @@ function goTo(i) {
   if (n.k === "external") { S.externals = true; return setLevel("repo", repoOf[i], { node: i }); }
   if (n.k === "entry_point") { const t = D.edges.find((e) => e[0] === "exposes" && e[1] === i); if (t) return goTo(t[2]); }
   if (n.k === "system") return setLevel("module", n.p, { node: i });
+  if (n.k === "part") return setLevel(N[n.p].k === "module" ? "module" : "part", n.p, { node: i });
   const u = unitOf[i];
+  if (u === i && PARTED.has(moduleOf[i]) && deepestPart(i) != null) return setLevel("part", deepestPart(i), { node: i });
   if (u === i) return sysOf.has(i) ? setLevel("system", sysOf.get(i), { node: i }) : setLevel("module", moduleOf[i], { node: i });
   return setLevel("unit", u, { node: i });
 }
@@ -908,7 +939,9 @@ function crumbs() {
   const r = S.level === "ws" ? null : S.level === "repo" ? S.focus : repoOf[S.focus];
   if (r != null) parts.push([N[r].n, () => setLevel("repo", r)]);
   if (S.level !== "repo" && S.level !== "ws") { const m = S.level === "module" ? S.focus : moduleOf[S.focus]; parts.push([N[m].n, () => setLevel("module", m)]); }
-  const sy = S.level === "system" ? S.focus : S.level === "unit" ? sysOf.get(S.focus) : null;
+  const pc = S.level === "part" ? S.focus : S.level === "unit" && PARTED.has(moduleOf[S.focus]) ? deepestPart(S.focus) : null;
+  if (pc != null) { const chain = []; for (let c = pc; c != null && N[c].k === "part"; c = N[c].p) chain.unshift(c); for (const c of chain) parts.push([N[c].n, () => setLevel("part", c)]); }
+  const sy = pc != null ? null : S.level === "system" ? S.focus : S.level === "unit" ? sysOf.get(S.focus) : null;
   if (sy != null) parts.push([N[sy].n, () => setLevel("system", sy)]);
   if (S.level === "unit") parts.push([N[S.focus].n, () => setLevel("unit", S.focus)]);
   const c = $("crumbs"); c.textContent = "";
@@ -947,13 +980,13 @@ function tools() {
   }
   if (S.level === "repo" && WS) chip("Other repositories", S.outside.repo, () => { S.outside.repo = !S.outside.repo; render(true); });
   if (S.level === "repo") chip("Outside packages", S.externals, () => { S.externals = !S.externals; render(true); });
-  else if (S.level !== "ws") chip(S.level === "module" ? "Other modules" : S.level === "system" ? "Neighbouring systems" : "Outside callers", S.outside[S.level], () => { S.outside[S.level] = !S.outside[S.level]; render(true); });
+  else if (S.level !== "ws") chip(S.level === "module" ? "Other modules" : S.level === "system" ? "Neighbouring systems" : S.level === "part" ? "Neighbouring parts" : "Outside callers", S.outside[S.level], () => { S.outside[S.level] = !S.outside[S.level]; render(true); });
   if (S.mode === "map") zoom();
 }
 
 /* ---------- inspector ---------- */
 const LANG = { csharp: "C#", python: "Python", typescript: "TypeScript", javascript: "JavaScript", go: "Go", rust: "Rust", java: "Java", bash: "shell" };
-const KIND = { system: "System", module: "Module", file: "File", type: "Type", callable: "Function", field: "Field", external: "Outside package", repo: "Repository" };
+const KIND = { part: "Part", system: "System", module: "Module", file: "File", type: "Type", callable: "Function", field: "Field", external: "Outside package", repo: "Repository" };
 function kindName(i) { const n = N[i], x = n.x || {}; if (n.k === "test") return "test"; if (n.k === "type") return x.native_kind || "type"; if (n.k === "callable") return x.native_kind === "constructor" ? "constructor" : x.native_kind === "local_function" ? "local function" : x.native_kind || "function"; if (n.k === "field") return x.native_kind || "field"; return KIND[n.k] || n.k; }
 function where(i) { const n = N[i]; if (!n.f && n.k !== "module") return ""; return n.k === "module" ? (n.f || ".") + "/" : n.a && n.k !== "file" ? `${n.f}:${n.a}–${n.b}` : n.f; }
 function qual(i) { const n = N[i]; const u = unitOf[i]; if (isBody(i)) return N[fileOf[i]].n; if (n.k === "module" || u == null) return n.n; if (u === i) return n.n; const parts = []; for (let c = i; c != null && c !== N[u].p; c = N[c].p) parts.unshift(short(c)); return parts.join("."); }
@@ -970,7 +1003,7 @@ function listHtml(title, rows, total, empty) {
 }
 // Links touching a node (or anything inside it), grouped by the other end at a chosen grain.
 function around(i, dir, grain) {
-  const insideI = N[i].k === "system" ? (j) => unitOf[j] != null && sysOf.get(unitOf[j]) === i : (j) => { for (let c = j; c != null; c = N[c].p) if (c === i) return true; return false; };
+  const insideI = N[i].k === "part" ? (j) => fileOf[j] != null && PARTS.get(i).has(fileOf[j]) : N[i].k === "system" ? (j) => unitOf[j] != null && sysOf.get(unitOf[j]) === i : (j) => { for (let c = j; c != null; c = N[c].p) if (c === i) return true; return false; };
   const acc = new Map();
   for (const Lk of LINKS) {
     if (GROUPS[Lk[0]] === "imports" && N[i].k !== "module" && N[i].k !== "file") continue;
@@ -989,10 +1022,13 @@ function around(i, dir, grain) {
     return { go: r.go, name: grainName(r.go, i), sub, ct: r.n };
   });
 }
-const grainName = (g, from) => { const n = N[g]; if (n.k === "system") return n.n; if (isBody(g)) return N[fileOf[g]].n + " (script body)"; if (n.k === "module" || n.k === "external" || unitOf[g] === g) return n.n; return (unitOf[g] !== unitOf[from] ? N[unitOf[g]].n + "." : "") + short(g); };
+const grainName = (g, from) => { const n = N[g]; if (n.k === "system" || n.k === "part") return n.n; if (isBody(g)) return N[fileOf[g]].n + " (script body)"; if (n.k === "module" || n.k === "external" || unitOf[g] === g) return n.n; return (unitOf[g] !== unitOf[from] ? N[unitOf[g]].n + "." : "") + short(g); };
 const byModule = (j) => (N[j].k === "external" ? j : N[j].k === "module" ? j : moduleOf[j]);
 const byUnit = (j) => (N[j].k === "external" ? null : unitOf[j]);
 const bySystem = (home) => (j) => (N[j].k === "external" || unitOf[j] == null ? null : moduleOf[j] === home ? grp(unitOf[j]) : moduleOf[j]);
+// The other end of a part's links: a part of the same level (or of the level above), or another module.
+const byPart = (p) => { const lvl = N[N[p].p].k === "part" ? N[p].p : null; return (j) => (N[j].k === "external" || unitOf[j] == null ? null : moduleOf[j] === moduleOf[p] ? partFor(j, lvl) ?? unitOf[j] : moduleOf[j]); };
+const PART_KIND = { folder: "folder", files: "loose files of a folder", system: "group of files that work together", other: "files no group took", file: "file", more: "the rest of the level", module: "module" };
 function notesHtml(i) {
   const ns = NOTES[i]; if (!ns) return "";
   return Object.entries(ns).filter(([k]) => k !== "name").map(([k, a]) => `<p class="note"><span class="tag${a.layer === "inferred" ? " heur" : ""}">${a.layer === "inferred" ? "inferred" : "yours"}${a.c != null ? " · " + Math.round(a.c * 100) + "%" : ""}</span>${a.stale ? ` <span class="tag entry">stale: the code changed</span>` : ""} ${esc(a.v)}</p>`).join("");
@@ -1076,6 +1112,20 @@ function nodeHtml(i, isFocus) {
     h += listHtml("Depends on", dep.slice(0, 12), dep.length) + listHtml("Used by", usedBy.slice(0, 12), usedBy.length);
     return h;
   }
+  if (n.k === "part") {
+    const subs = subsOf(i), fs = [...(PARTS.get(i) || [])].sort((a, b) => (N[b].b || 0) - (N[a].b || 0));
+    h = `<div class="eyebrow">Part <span class="tag heur">${esc(PART_KIND[x.kind] || x.kind || "part")}</span>${x.stale ? ` <span class="tag entry">its name may be stale</span>` : ""}</div><h2>${esc(n.n)}</h2><div class="where">${esc((x.label && x.label !== n.n ? x.label + " · " : "") + "in " + N[moduleOf[i]].n)}</div>`;
+    if (x.summary) h += `<p class="note">${esc(x.summary)}</p>`;
+    h += `<div class="facts"><div><b>${x.files || 0}</b><span>files</span></div><div><b>${(x.functions || 0).toLocaleString()}</b><span>functions</span></div><div><b>${big(x.lines || 0)}</b><span>lines</span></div></div>`;
+    if (!isFocus) h += `<button class="open" data-open="${i}">Open part</button>`;
+    if (!x.named) h += `<p class="note">This part has no name yet: it is called after its folder or its most linked file. An agent names parts after reading them (the leyline-explore-module skill, or <code>leyline name-part</code>).</p>`;
+    if (x.stale) h += `<p class="note">Its files have changed a lot since it was named (${esc(x.stale.replace(/^may be stale: /, ""))}).</p>`;
+    const dep = around(i, "out", byPart(i)), usedBy = around(i, "in", byPart(i));
+    h += listHtml("Parts", subs.map((c) => ({ go: c, name: N[c].n, sub: (N[c].x || {}).summary || "", ct: ((N[c].x || {}).files || 0) + " files" })), subs.length);
+    h += listHtml("Depends on", dep.slice(0, 12), dep.length) + listHtml("Used by", usedBy.slice(0, 12), usedBy.length);
+    h += listHtml("Files", fs.slice(0, 40).map((f) => ({ go: f, name: N[f].f || N[f].n, ct: (N[f].b || 0) + " lines" })), fs.length);
+    return h;
+  }
   if (n.k === "external") return h + `<p class="note">Code from outside this repository${x.version ? `, version ${esc(x.version)}` : ""}.</p>` + listHtml("Used by", around(i, "in", byModule), around(i, "in", byModule).length);
   if (n.k === "module") {
     const types = []; const st = [...kids[i]]; while (st.length) { const c = st.pop(); if (N[c].k === "type" && unitOf[c] === c) types.push(c); else if (N[c].k === "file") st.push(...kids[c]); }
@@ -1088,6 +1138,7 @@ function nodeHtml(i, isFocus) {
     h += listHtml("Used by", usedBy.slice(0, 12), usedBy.length, "Nothing in this repository.");
     const eps = [...entryTargets].filter((t) => moduleOf[t] === i).map((t) => ({ go: t, name: qual(t), sub: N[t].f, ct: (N[entryOf.get(t)].x || {}).trigger }));
     const syss = N.map((m, k) => k).filter((k) => N[k].k === "system" && N[k].p === i);
+    if (PARTED.has(i)) h += listHtml("Parts", subsOf(i).map((c) => ({ go: c, name: N[c].n, sub: (N[c].x || {}).summary || (N[c].x || {}).label || "", ct: ((N[c].x || {}).files || 0) + " files" })), subsOf(i).length);
     h += listHtml("Systems", syss.map((k) => ({ go: k, name: N[k].n, sub: NOTES[k] && NOTES[k].responsibility ? NOTES[k].responsibility.v : "", ct: (unitsOf.get(k) || []).length + " types" })), syss.length);
     h += listHtml("Entry points", eps.slice(0, 10), eps.length);
     h += listHtml("Public types", pub.slice(0, 40).map((t) => ({ go: t, name: N[t].n, ct: (N[t].x || {}).native_kind })), pub.length);
@@ -1100,6 +1151,7 @@ function nodeHtml(i, isFocus) {
     const fns = kids[i].filter((c) => N[c].k === "callable"), fields = kids[i].filter((c) => N[c].k === "field"), nested = kids[i].filter((c) => N[c].k === "type");
     if (isUnit && !isFocus) h += `<button class="open" data-open="${i}">Open ${n.k === "file" ? "file" : "type"}</button>`;
     if (sysOf.has(i)) h += listHtml("Part of", [{ go: sysOf.get(i), name: N[sysOf.get(i)].n, ct: "system" }], 1);
+    else if (PARTED.has(moduleOf[i]) && deepestPart(i) != null) h += listHtml("Part of", [{ go: deepestPart(i), name: N[deepestPart(i)].n, ct: "part" }], 1);
     const bases = LINKS.filter((l) => l[1] === i && GROUPS[l[0]] === "inherit").map((l) => ({ go: l[2], name: N[l[2]].n, ct: LABEL[l[0]] }));
     const subs = LINKS.filter((l) => l[2] === i && GROUPS[l[0]] === "inherit").map((l) => ({ go: l[1], name: N[l[1]].n, ct: l[0] === "implements" ? "implements this" : "extends this" }));
     h += listHtml("Built on", bases, bases.length) + listHtml("Built on by", subs.slice(0, 20), subs.length);
@@ -1537,8 +1589,8 @@ function wsHtml() {
 }
 
 /* ---------- search ---------- */
-const searchable = N.filter((n) => ["system", "module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
-const rank = { system: 0, module: 0, type: 1, file: 2, callable: 3, field: 4, test: 5 };
+const searchable = N.filter((n) => ["part", "system", "module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
+const rank = { part: 0, system: 0, module: 0, type: 1, file: 2, callable: 3, field: 4, test: 5 };
 $("q").addEventListener("input", () => {
   const q = $("q").value.trim().toLowerCase(), box = $("results");
   if (q.length < 2) { box.hidden = true; return; }

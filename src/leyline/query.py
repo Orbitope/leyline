@@ -128,8 +128,17 @@ def overview(con) -> dict:
                 for r in con.execute("SELECT * FROM extractor_coverage ORDER BY repo_id, status, extractor")]
     systems = systems_list(con)
     ws = con.execute("SELECT value FROM meta WHERE key = 'workspace'").fetchone()
+    from .outline import named_parts   # names given to modules and their parts (module_outline, name_part)
+    named = named_parts(con)
+    for r in repos:
+        for m in r["modules"]:
+            if m["id"] in named:
+                m["title"] = named[m["id"]]["name"]
+                if named[m["id"]]["summary"]:
+                    m["summary"] = named[m["id"]]["summary"]
     return {
         "repos": repos,
+        **({"named_parts": [x for k, x in named.items() if x["kind"] != "module"]} if named else {}),
         # Repositories indexed together: names resolve across them, and these are the links between them.
         **({"workspace": {"repos": json.loads(ws[0]), "links": cross_repo(con)["pairs"]}} if ws else {}),
         "systems": systems,
