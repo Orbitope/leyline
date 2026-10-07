@@ -12,7 +12,7 @@ from typing import Optional
 
 KEEP_ATTRS = ("framework", "runner", "native_kind", "visibility", "signature", "declared_type", "trigger", "is_static",
               "is_abstract", "marker", "ecosystem", "category", "also_in", "namespace", "version",
-              "target_framework", "url")
+              "target_framework", "url", "is_test")
 
 # The role that names a pattern instance: a strategy is named after its abstraction, not its context.
 PRIMARY_ROLE = {"strategy": "strategy", "decorator": "decorator", "composite": "composite", "template method": "template",
@@ -178,7 +178,8 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
     repos = [{"id": r["id"], "commit": r["commit_sha"], **(json.loads(r["attrs"]) if r["attrs"] else {})}
              for r in rows if r["kind"] == "repo"]
     sources = {}
-    roots = {k.split(":", 1)[1]: v for k, v in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%'")}
+    from . import store
+    roots = {k: str(v) for k, v in store.roots(con).items()}
     if with_sources:
         from .indexer import source_lines
         # Keyed by path; in a workspace by repo/path, since two repositories can hold the same path.

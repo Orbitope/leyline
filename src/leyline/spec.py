@@ -150,7 +150,8 @@ class _Names:
         self.module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
         tests = {r[0] for r in con.execute("SELECT entry_id FROM flows WHERE json_extract(attrs, '$.kind') = 'test'")}
         self.test_modules = {self.module.get(t) for t in tests}
-        self.roots = [Path(r[0]) for r in con.execute("SELECT value FROM meta WHERE key LIKE 'root:%'")]
+        from . import store
+        self.roots = list(store.roots(con).values())
 
     def file(self, written: str) -> list:
         """File or module nodes a written path names: the whole path, or its end."""
@@ -482,6 +483,23 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
 
     def is_ctor(i):
         return names.by_id[i]["name"] in (".ctor", "__init__", "constructor")
+
+    counted: dict = {}
+
+    def fields_of(t):
+        if t not in counted:
+            counted[t] = con.execute("SELECT COUNT(*) FROM nodes WHERE parent_id = ? AND kind = 'field'", (t,)).fetchone()[0]
+        return counted[t]
+    reads: dict = {}
+
+    def walker(fn, t):
+        """A function that uses most of a type's fields (at least five): it walks them all, not one in particular."""
+        if (fn, t) not in reads:
+            reads[(fn, t)] = con.execute(
+                "SELECT COUNT(DISTINCT e.dst_id) FROM edges e JOIN nodes n ON n.id = e.dst_id WHERE e.kind IN ('reads', 'writes')"
+                " AND e.src_id = ? AND n.parent_id = ?", (fn, t)).fetchone()[0]
+        n = fields_of(t) if t else 0
+        return n >= 5 and reads[(fn, t)] * 2 >= n
     callers, state, seen = [], [], set()
     for i in fns:
         who = sorted({r[0] for r in con.execute("SELECT DISTINCT src_id FROM calls WHERE dst_id = ?", (i,))
@@ -490,6 +508,7 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
             callers.append({"id": i, "changed": _label(names, i), "callers": [_label(names, w) for w in who], "caller_ids": who,
                             "far": len({names.module.get(w) for w in who} - {names.module.get(i)}),
                             "other_types": len({owner(w) for w in who} - {owner(i)})})
+        about = _task_words(names, links, i)
         for f in con.execute("SELECT dst_id, MAX(kind = 'writes') FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?"
                              " GROUP BY dst_id ORDER BY 2 DESC", (i,)):
             if f[0] in seen or f[0] not in names.by_id:
@@ -498,14 +517,29 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
             users = sorted({r[0] for r in con.execute(
                 "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f[0],))
                 if r[0] not in inside and product(r[0]) and not is_ctor(r[0])})
-            if 0 < len(users) <= 8:       # a field half the program uses says nothing about this change
-                seen.add(f[0])
-                state.append({"field": _label(names, f[0]), "used_by_changed": _label(names, i),
-                              "also_used_by_unchanged": [_label(names, u) for u in users], "user_ids": users,
-                              # State the changed type owns is where a parallel edit gets forgotten; a field of
-                              # some other type that the change only reads rarely is.
-                              "own": owner(f[0]) == owner(i), "changed_writes_it": bool(f[1]),
-                              "other_types": len({owner(u) for u in users} - {owner(f[0])})})
+            if not 0 < len(users) <= 8:   # a field half the program uses says nothing about this change
+                continue
+            # A reader that walks every field of its type (a serializer, a copy, a dump) reads this one too
+            # whatever it holds, so a field only such readers share is not shared in any way that matters.
+            plain = [u for u in users if not walker(u, owner(f[0]))]
+            if not plain:
+                continue
+            seen.add(f[0])
+            close = bool(about & _field_words(names.by_id[f[0]]["name"]))
+            quiet = "" if close else (
+                f"{_label(names, i)} reads most fields of its type, so using this one says little" if walker(i, owner(f[0]))
+                else f"{names.by_id[owner(f[0])]['name']} has {fields_of(owner(f[0]))} fields and this one's name shares"
+                     " no word with the tasks" if fields_of(owner(f[0])) > BIG_TYPE else "")
+            state.append({"field": _label(names, f[0]), "used_by_changed": _label(names, i),
+                          "also_used_by_unchanged": [_label(names, u) for u in users], "user_ids": users,
+                          # State the changed type owns is where a parallel edit gets forgotten; a field of
+                          # some other type that the change only reads rarely is. The page lists only these
+                          # (`own`), and of them only the ones the change is close to: on a large type, sharing
+                          # a field the tasks never mention is common and mostly unrelated.
+                          "own": owner(f[0]) == owner(i) and not quiet, "close": close,
+                          **({"quiet": quiet} if quiet and owner(f[0]) == owner(i) else {}),
+                          "changed_writes_it": bool(f[1]),
+                          "other_types": len({owner(u) for u in users} - {owner(f[0])})})
     # A new member named like one its type already has (EmergencyQueues beside EntryQueues) is usually a second
     # one of the same thing, and whoever uses the first is a candidate to need the second.
     beside = []
@@ -527,8 +561,40 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
                 beside.append({"new": _label(names, parent) + "." + name, "existing": _label(names, r["id"]),
                                "existing_used_by_unchanged": [_label(names, u) for u in users], "user_ids": users})
     callers.sort(key=lambda c: (-c["far"], -c["other_types"], len(c["callers"])))
-    state.sort(key=lambda x: (not x["own"], not x["changed_writes_it"], -x["other_types"], len(x["also_used_by_unchanged"])))
-    return {"beside": beside, "callers": callers, "state": state}
+    # Closest first: a field the tasks' words name, then state of the changed type, then the rest. The page shows
+    # the first few and counts the others; `spec facts` lists them all.
+    state.sort(key=lambda x: (not x["close"], not x["own"], not x["changed_writes_it"], -x["other_types"],
+                              len(x["also_used_by_unchanged"])))
+    quiet = [x for x in state if x.get("quiet")]
+    return {"beside": beside, "callers": callers, "state": state,
+            # What the page leaves off as weak, for it to count: "and 3 more ...".
+            "left_out": {"count": len(quiet), "fields": [x["field"] for x in quiet],
+                         "why": "they share only a large type, or a reader of every field, with the change"}}
+
+
+BIG_TYPE = 12   # fields; on a type this large, two methods sharing one is weak evidence that they change together
+_PLAIN = set("the a an and or not for with where when then each same its it is are be to of in on at by as from into "
+             "that this than any all one two three new add change make use set get call run test case cases code "
+             "remove rename write read return value values number true false none null so".split())
+
+
+def _field_words(name: str) -> set:
+    return {w.rstrip("s") for w in _words(name) if len(w) > 2} - _PLAIN
+
+
+def _task_words(names: _Names, links: list[dict], fn: str) -> set:
+    """What the tasks that change a function are about, as words: the text of each task naming it (all tasks when
+    none names it directly), less the words of the function's own name and its type's, which every such task has."""
+    texts = [l["text"] for l in links if fn in l["nodes"]] or [l["text"] for l in links]
+    own = set(_words(names.by_id[fn]["name"]))
+    parent = names.by_id.get(names.by_id[fn]["parent_id"])
+    if parent is not None:
+        own |= set(_words(parent["name"]))
+    words = set()
+    for t in texts:
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9_]*", t):
+            words |= _field_words(tok)
+    return words - {w.rstrip("s") for w in own}
 
 
 def _patterns_touched(con, tasked: set) -> list[dict]:
@@ -718,16 +784,20 @@ def brief_text(b: dict) -> str:
     # One page: new members that double an existing one, callers outside the changed function's own type,
     # and state the changed type owns.
     cal = [c for c in la["callers"] if c.get("other_types", 1)]
-    own = [x for x in la["state"] if x.get("own", True)]
+    own = [x for x in la["state"] if x.get("own", True) and not x.get("quiet")]
     rows = [f"- {x['new']} (new) sits beside {x['existing']}, which is used by {_some(x['existing_used_by_unchanged'], 6)}" for x in la["beside"][:3]]
     rows += [f"- {c['changed']} is also called by {_some(c['callers'])}" for c in cal[:max(2, 5 - len(rows))]]
     rows += [f"- {x['field']} (used by {x['used_by_changed']}) is also used by {_some(x['also_used_by_unchanged'])}" for x in own[:max(2, 8 - len(rows))]]
-    more = len(la["beside"]) + len(la["callers"]) + len(la["state"]) - len(rows)
+    quiet = (la.get("left_out") or {}).get("count", 0)
+    more = len(la["beside"]) + len(la["callers"]) + len(la["state"]) - quiet - len(rows)
     if rows:
         L += ["", "**Shares a caller or a field with the change, and no task names it.** Each line is either right to leave "
                   "alone or a missing task:"] + rows
         if more > 0:
             L.append(f"- and {more} more: `leyline spec facts`")
+    if quiet:   # said, so a short list is not read as the whole list
+        L += ["", f"{quiet} more field{'s' if quiet != 1 else ''} shared with the change left off this page: "
+                  f"{(la.get('left_out') or {}).get('why', 'weak links')}. `leyline spec facts` lists them."]
     if b["patterns"]:
         L += ["", "**Design patterns the change sits in** (found from the shape of the code):"] + [
             f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]

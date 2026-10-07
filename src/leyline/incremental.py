@@ -62,13 +62,18 @@ def mentions(res, decls) -> bytes:
     here. Collisions only make a file look affected when it is not."""
     strings: set = set()
     stack = [res, decls]
+    seen: set = set()   # a record reachable twice (a call shared as the receiver of the next in a.b().c()) is read once
     while stack:
         o = stack.pop()
         if o is None or isinstance(o, (int, float, bool)):
             continue
         if isinstance(o, str):
             strings.add(o)
-        elif isinstance(o, dict):
+            continue
+        if id(o) in seen:
+            continue
+        seen.add(id(o))
+        if isinstance(o, dict):
             stack.extend(o.keys())
             stack.extend(o.values())
         elif isinstance(o, (list, tuple, set, frozenset)):
@@ -565,7 +570,7 @@ class Run:
             for repo in ix.repos:
                 commit = ix.commits[repo]
                 store.write_nodes(con, [ix.nodes[r[0]] for r in new_nodes if r[4] == repo], repo, ix_source(), commit)
-                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{repo}", str(ix.repos[repo])))
+                store.set_root(con, repo, ix.repos[repo])
                 store.insert_edges(con, [(None, k, s, d, p, "fact", ix_source(), commit, json.dumps(a) if a else None)
                                          for k, s, d, p, a in new_edges if ix._owner(s) == repo])
                 store.write_calls(con, [c for c in new_calls if ix._owner(c[0]) == repo], commit)

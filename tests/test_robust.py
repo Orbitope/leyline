@@ -339,3 +339,32 @@ def test_layout_of_a_huge_level_stays_bounded(monkeypatch):
 def test_a_full_disk_gets_a_message(capsys):
     assert "free disk space" in cli._store_problem(sqlite3.OperationalError("database or disk is full"))
     assert "another leyline run" in cli._store_problem(sqlite3.OperationalError("database is locked"))
+
+
+def test_a_moved_or_copied_checkout_maps_its_own_code(tmp_path):
+    """The store records where the code is relative to itself, so a checkout that is copied or renamed, with its
+    .leyline/ inside, re-maps and reads the copy, not the folder it was first indexed in."""
+    import shutil
+    from leyline import store
+    from leyline.indexer import index
+    src = tmp_path / "first"
+    shutil.copytree(Path(__file__).parent / "fixture2" / "py", src)
+    index(src, src / ".leyline" / "leyline.db", "app")
+    moved = tmp_path / "second"
+    shutil.copytree(src, moved)
+    (moved / "src" / "pkg" / "core.py").write_text((moved / "src" / "pkg" / "core.py").read_text() + "\n\ndef only_here():\n    return 1\n")
+    con = store.connect(moved / ".leyline" / "leyline.db")
+    assert store.roots(con) == {"app": moved.resolve()}
+    con.close()
+    index(moved, moved / ".leyline" / "leyline.db", "app")
+    con = store.connect(moved / ".leyline" / "leyline.db")
+    assert con.execute("SELECT COUNT(*) FROM nodes WHERE name = 'only_here'").fetchone()[0] == 1
+    con.close()
+    # A store from before relative paths were kept: it belongs to the folder its .leyline/ is in.
+    old = tmp_path / "third"
+    shutil.copytree(src, old)
+    con = store.connect(old / ".leyline" / "leyline.db")
+    con.execute("DELETE FROM meta WHERE key LIKE 'rel:%'")
+    con.commit()
+    assert store.roots(con) == {"app": old.resolve()}
+    con.close()

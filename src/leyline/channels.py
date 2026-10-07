@@ -1006,9 +1006,15 @@ class _TypeScript:
 
     def run(self) -> None:
         nodes, stack = [], [self.tree.root_node]
+        # Each node's parent, noted on the way down: tree-sitter finds a parent by walking down from the root, so
+        # asking for it at every link of a long a.b().c()... chain was quadratic.
+        self.up: dict = {}
         while stack:
             n = stack.pop()
             nodes.append(n)
+            if n.type in ("call_expression", "member_expression"):
+                for c in n.children:
+                    self.up[c.id] = n
             if n.type == "method_definition" and _t(n.child_by_field_name("name")) == "constructor":
                 self._ctor_fields(n)
             elif n.type in ("public_field_definition", "field_definition"):
@@ -1124,7 +1130,9 @@ class _TypeScript:
             name, obj, recv = _t(fn), None, ""
         elif fn.type == "member_expression":
             name, obj = _t(fn.child_by_field_name("property")), _ts_unwrap(fn.child_by_field_name("object"))
-            recv = _t(obj)
+            # A receiver this long is a builder chain or an inline expression, not a named client or collection;
+            # reading its text at every link of a.b().c().d()... made a long chain quadratic.
+            recv = _t(obj) if obj is not None and obj.end_byte - obj.start_byte <= 512 else ""
         else:
             return
 
@@ -1195,8 +1203,9 @@ class _TypeScript:
             return
 
         # Databases: only the outermost call of a chain is read.
-        p = n.parent
-        if p is not None and p.type == "member_expression" and p.parent is not None and p.parent.type == "call_expression":
+        p = self.up.get(n.id)
+        if p is not None and p.type == "member_expression" and self.up.get(p.id) is not None \
+                and self.up[p.id].type == "call_expression":
             return
         self._db(n, fn, name, obj, recv, args, cid, line)
 

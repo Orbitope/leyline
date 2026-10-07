@@ -32,7 +32,8 @@ def _names(items, limit=4) -> str:
 
 
 def _readme(con, repo_id: str) -> Optional[str]:
-    row = con.execute("SELECT value FROM meta WHERE key = ?", (f"root:{repo_id}",)).fetchone()
+    here = store.roots(con).get(repo_id)
+    row = (str(here),) if here is not None else None
     if not row:
         return None
     for name in ("README.md", "README.rst", "README.txt", "README"):

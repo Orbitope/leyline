@@ -373,3 +373,43 @@ def _searchable(node_id: str) -> str:
     for ch in ".()/,<>:_":
         tail = tail.replace(ch, " ")
     return tail
+
+
+def store_file(con) -> Optional[Path]:
+    """The file this connection's store lives in, or None for an in-memory store."""
+    row = con.execute("PRAGMA database_list").fetchone()
+    return Path(row[2]).resolve() if row and row[2] else None
+
+
+def set_root(con, repo: str, root) -> None:
+    """Record where a repository is: as given, and relative to the store, so a store that moves with its
+    repository (a copied or renamed checkout, a store kept in .leyline/) still finds the code."""
+    root = Path(root).resolve()
+    con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{repo}", str(root)))
+    here = store_file(con)
+    if here is not None:
+        import os
+        try:
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"rel:{repo}", os.path.relpath(root, here.parent)))
+        except ValueError:   # another drive on Windows: no relative path exists
+            pass
+
+
+def roots(con) -> dict:
+    """{repo id: the directory its code is in now}. The path relative to the store wins when it leads to a
+    directory; a store written before that was recorded, sitting in X/.leyline/ for a single repository,
+    belongs to X. Otherwise the path recorded when it was indexed."""
+    here = store_file(con)
+    meta = {r[0]: r[1] for r in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%' OR key LIKE 'rel:%'")}
+    out = {}
+    repos = [k.split(":", 1)[1] for k in meta if k.startswith("root:")]
+    for repo in repos:
+        path = Path(meta[f"root:{repo}"])
+        rel = meta.get(f"rel:{repo}")
+        if here is not None and rel is not None and (here.parent / rel).is_dir():
+            path = (here.parent / rel).resolve()
+        elif here is not None and rel is None and len(repos) == 1 and here.parent.name == ".leyline" \
+                and here.parent.parent.is_dir() and here.parent.parent.resolve() != path:
+            path = here.parent.parent.resolve()
+        out[repo] = path
+    return out

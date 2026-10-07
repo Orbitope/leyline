@@ -31,7 +31,7 @@ def find_change(target: str | Path, db: Optional[str | Path] = None) -> Optional
     if db and Path(db).exists():
         con = store.connect(db)
         try:
-            places += [Path(r[0]) for r in con.execute("SELECT value FROM meta WHERE key LIKE 'root:%'")]
+            places += list(store.roots(con).values())
         finally:
             con.close()
     for d in places:
@@ -59,7 +59,7 @@ def _show(path: str | Path) -> str:
 
 
 def _roots(con) -> dict[str, Path]:
-    return {r[0].split(":", 1)[1]: Path(r[1]) for r in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%'")}
+    return store.roots(con)
 
 
 def changed_files(db: str | Path) -> list[str]:
@@ -123,6 +123,15 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
     from .indexer import index
 
     began = time.perf_counter()
+    if paths and len(paths) == 1 and not repo_id and Path(db).exists():
+        # Mapping again a repository the store holds under another id (it was mapped with --repo) keeps that id,
+        # rather than adding the same files a second time as a new repository.
+        con = store.connect(db)
+        try:
+            held = {str(p.resolve()): r for r, p in _roots(con).items()}
+        finally:
+            con.close()
+        repo_id = held.get(str(Path(paths[0]).resolve()))
     if paths:
         stats = index(paths if len(paths) > 1 else paths[0], db, repo_id, exact, scip or [], full=full)
     else:   # map again what the store already holds, the way it was mapped

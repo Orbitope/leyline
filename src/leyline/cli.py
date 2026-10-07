@@ -41,7 +41,7 @@ def _spec(con, args) -> int:
         cid = "spec-" + Path(args.target).name
         for f in spec.findings(con, cid)["findings"]:
             print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
-    elif args.action == "file":
+    elif args.action in ("finding", "file"):   # `file` is the older name
         r = spec.add_finding(con, "spec-" + Path(args.target).name, args.reviewer or "", args.severity or "", args.claim or "",
                              args.evidence, args.proposal)
         _print(r)
@@ -52,6 +52,45 @@ def _spec(con, args) -> int:
         print(f"Deleted the baseline of {cid}." if diff.drop_snapshot(con, cid) else f"No baseline is kept for {cid}.")
     elif args.action == "resolve":
         _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
+    return 0
+
+
+def _short(con, i: str) -> str:
+    """A node as a person reads it: its name, after its owner's when it has one that is not a file."""
+    n = query._node(con, i)
+    if n is None:
+        return i
+    up = query._node(con, n["parent_id"]) if n["parent_id"] else None
+    return f"{up['name']}.{n['name']}" if up is not None and up["kind"] in ("type", "callable") else n["name"]
+
+
+def _impact(con, args) -> int:
+    """`leyline impact <name or id>`: the CLI side of the MCP `impact` tool."""
+    found = query.resolve(con, args.node)
+    if "error" in found:
+        print(f"leyline: {found['error']}", file=sys.stderr)
+        for c in found.get("candidates", [])[:15]:
+            print(f"  {c['id']}  ({c['kind']}{', ' + c['path'] if c.get('path') else ''})", file=sys.stderr)
+        return 1
+    r = query.impact(con, found["id"], args.depth)
+    if args.json:
+        _print(r)
+        return 0
+    print(f"{found['id']}\nreached by {r['reached_by']} places within {r['depth_limit']} calls"
+          + (", across modules" if r["crosses_module_boundary"] else "")
+          + (", across repositories" if r["crosses_repo_boundary"] else ""))
+    for m in r["by_module"]:
+        near = [_short(con, d) for d in m["direct"]]
+        print(f"  {m['module']:<28} {m['count']:>5}"
+              + (f"   called directly by {', '.join(near[:5])}{' ...' if len(near) > 5 else ''}" if near else ""))
+    t = r["flows_through"]
+    if t["total"]:
+        print(f"flows through it: {t['total']}")
+        for f in t["items"][:10]:
+            print(f"  {f['name']}")
+        if t["total"] > 10:
+            print(f"  and {t['total'] - 10} more (--json lists 40)")
+    print(r["note"])
     return 0
 
 
@@ -109,13 +148,14 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   search        find nodes by name
   expand        one node in detail
   neighbors     edges around a node
+  impact        what can reach a function, a type or a field: its callers near and far, and the flows through it
   source        source text of a node
   state         fields assigned from outside the type that declares them
   patterns      design patterns found by their shape
   tour          a guided walk through the repository
   coverage      import measured test coverage, or show it
   rules         check the architecture rules
-  spec          the spec loop step by step: brief, facts, file, findings, resolve, verify
+  spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
   record-tests  store a test run under a label
   review        compare an implemented change with a proposal made through MCP
   view          serve the map on localhost
@@ -132,12 +172,25 @@ def _tests_arg(value: Optional[str]) -> Optional[list[dict]]:
     return diff.parse_test_output(sys.stdin.read() if value == "-" else Path(value).read_text(encoding="utf-8", errors="replace"))
 
 
+def _not_dirs(paths: list[str]) -> bool:
+    """Say so, and return True, when a path to map is not a directory: mapping it would add it to the store as a
+    repository with nothing in it (a typo), or with one file."""
+    bad = [p for p in paths if not Path(p).is_dir()]
+    for p in bad:
+        what = "is a file" if Path(p).is_file() else "does not exist"
+        print(f"leyline: {p} {what}. Name the repository's directory (relative paths are from {Path.cwd()}).",
+              file=sys.stderr)
+    return bool(bad)
+
+
 def _loop(args) -> int:
     """map, plan and check: the short path."""
     from . import loop
     if args.cmd == "map":
         if len(args.path) > 1 and args.repo:
             print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
+            return 2
+        if _not_dirs(args.path):
             return 2
         db = args.db or (str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB)
         print(loop.map_text(loop.map_repos(args.path, db, args.repo, args.exact, args.scip, full=args.full)))
@@ -190,6 +243,12 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         print("\nleyline: stopped", file=sys.stderr)
         return 130
+    except BrokenPipeError:   # the reader (head, a closed pager) went away; that is not an error
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        return 0
     except sqlite3.DatabaseError as e:
         print(f"leyline: {_store_problem(e)}", file=sys.stderr)
         return 2
@@ -268,6 +327,11 @@ def _main(argv=None) -> int:
     p.add_argument("node_id")
     p.add_argument("--direction", default="both", choices=["in", "out", "both"])
     p.add_argument("--kinds", nargs="*")
+    p = sub.add_parser("impact", description="what can reach a node through calls and channels, grouped by module,"
+                                             " and the flows that pass through it")
+    p.add_argument("node", help="a node id, or a name such as Owner.method or a file path")
+    p.add_argument("--depth", type=int, default=6, help="how many calls back to follow (default 6)")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("source", description="source text of a node")
     p.add_argument("node_id")
     sub.add_parser("serve", description="serve the store over MCP (stdio)")
@@ -289,14 +353,15 @@ def _main(argv=None) -> int:
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
     p = sub.add_parser("spec", description="a change stated as an OpenSpec folder: brief it, review it, verify it")
-    p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve", "file", "forget"])
+    p.add_argument("action", choices=["brief", "verify", "facts", "finding", "file", "findings", "resolve", "forget"],
+                   help="finding files one review finding (file is the same); forget deletes a change's baseline")
     p.add_argument("--new-baseline", action="store_true",
                    help="brief: compare from the code as it is now, forgetting the picture kept from the first brief")
-    p.add_argument("--reviewer", help="file, facts: logic or performance")
-    p.add_argument("--severity", choices=["high", "medium", "low"], help="file")
-    p.add_argument("--claim", help="file: one sentence a person can check")
-    p.add_argument("--evidence", nargs="*", default=[], help="file: node ids that show it")
-    p.add_argument("--proposal", default="", help="file: the change to the spec")
+    p.add_argument("--reviewer", help="finding, facts: logic or performance")
+    p.add_argument("--severity", choices=["high", "medium", "low"], help="finding")
+    p.add_argument("--claim", help="finding: one sentence a person can check")
+    p.add_argument("--evidence", nargs="*", default=[], help="finding: node ids that show it")
+    p.add_argument("--proposal", default="", help="finding: the change to the spec")
     p.add_argument("target", help="the change folder (openspec/changes/<id>), or a finding id for resolve")
     p.add_argument("status", nargs="?", choices=["accepted", "rejected", "deferred", "open"], help="for resolve")
     p.add_argument("reason", nargs="?", help="for resolve: why")
@@ -319,6 +384,8 @@ def _main(argv=None) -> int:
     if args.cmd == "index":
         if len(args.path) > 1 and args.repo:
             print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
+            return 2
+        if _not_dirs(args.path):
             return 2
         # One repository keeps its store inside it; a workspace's store is in the current directory.
         db = args.db if explicit else str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB
@@ -441,6 +508,8 @@ def _main(argv=None) -> int:
         _print(query.expand(con, args.node_id, args.limit))
     elif args.cmd == "search":
         _print(query.search(con, args.text, args.kind, args.limit))
+    elif args.cmd == "impact":
+        return _impact(con, args)
     elif args.cmd == "neighbors":
         _print(query.neighbors(con, args.node_id, args.direction, args.kinds))
     elif args.cmd == "source":

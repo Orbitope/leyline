@@ -102,7 +102,7 @@ def import_file(con, path: str | Path, run: str = "default") -> dict:
     if not path.is_file():
         return {"error": f"no file at {path}"}
     head = path.read_bytes()[:64]
-    roots = {r[0].split(":", 1)[1]: r[1] for r in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%'")}
+    roots = {k: str(v) for k, v in store.roots(con).items()}
     funcs = _functions(con)
     known = set(funcs)
     rows: list[tuple] = []

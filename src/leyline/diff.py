@@ -79,7 +79,8 @@ def _unpack(blob: bytes) -> list[int]:
 
 
 def roots(con) -> dict[str, Path]:
-    return {r[0].split(":", 1)[1]: Path(r[1]) for r in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%'")}
+    from . import store
+    return store.roots(con)
 
 
 def source(con, repo: str, path: str, root_of: Optional[dict] = None) -> Optional[bytes]:

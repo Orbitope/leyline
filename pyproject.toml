@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leyline-code"
-version = "0.4.0"
+version = "0.5.0"
 description = "Map a codebase so a person can plan a change, have an agent write the code, and check that it was done as agreed."
 readme = "README.md"
 requires-python = ">=3.10"

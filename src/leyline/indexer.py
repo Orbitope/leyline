@@ -316,6 +316,22 @@ def skipped_summary(skipped: list, failed: list) -> dict:
     return out
 
 
+# The placeholders a table-driven test's title is filled in from (it.each, test.each, pytest ids): printf-style
+# %s %d %j ..., $name and ${name} from a table, and Jest's %# for the row number.
+_TITLE_SLOT = re.compile(r"%[sdifjoOpc#]|\$\{?[A-Za-z_][\w.]*\}?")
+
+
+def _test_title(n) -> str:
+    """A test's name as a flow shows it. A title that is a template (`%s/%s` from it.each) says little on its own,
+    so it is shown after its suite, with each placeholder as an ellipsis."""
+    title = n.name
+    if not _TITLE_SLOT.search(title):
+        return title
+    shown = _TITLE_SLOT.sub("…", title.replace("%%", "%")).strip()
+    suite = _TITLE_SLOT.sub("…", str(n.attrs.get("suite") or "")).strip()
+    return f"{suite} > {shown}" if suite else shown
+
+
 def read_source(path: Path) -> bytes:
     """A source file's bytes as the parsers take them: UTF-8. A UTF-16 file (it starts with a byte order mark,
     as some Windows editors write C#) is converted; lines stay where they were."""
@@ -1096,6 +1112,10 @@ class Indexer:
                             self.edges.append(Edge("imports", fid, xid, "exact"))
                 else:
                     target = self._find_module(fid, imp.target)
+                    on_path = False
+                    if not target and lang == "python" and imp.target.split(".")[0] not in stdlib:
+                        target = self._py_on_path(fid, imp.target)
+                        on_path = bool(target)
                     if target:
                         if imp.symbols:
                             for s in imp.symbols:
@@ -1110,7 +1130,8 @@ class Indexer:
                         self.import_targets[fid].add(target)
                         if (fid, target) not in seen and target != fid:
                             seen.add((fid, target))
-                            self.edges.append(Edge("imports", fid, target, "exact", {"symbols": imp.symbols}))
+                            self.edges.append(Edge("imports", fid, target, "heuristic" if on_path else "exact",
+                                                   {"symbols": imp.symbols, **({"found_by": "sys.path"} if on_path else {})}))
                     elif lang == "python":
                         top = imp.target.split(".")[0] or imp.target
                         xid = self._external("python", top,
@@ -1295,6 +1316,42 @@ class Indexer:
             return mods[sibling]
         hit = self.py_importable.get(target)   # a package of another repository in the workspace
         return hit if hit and _repo_of(hit) != repo else None
+
+    def _py_on_path(self, fid: str, target: str) -> Optional[str]:
+        """`sys.path.insert(0, <dir>)` then `import validate`: a script or a test that puts a directory on the path
+        imports a file there by its bare name. When the importing file, or a conftest.py above it, changes sys.path,
+        an import nothing else resolves is taken to be the repository's one module of that name (or the one in a
+        directory above the importer, when there are several). A heuristic: which directory is added is not worked
+        out, so the import edge says so."""
+        if target.startswith(".") or not self._edits_sys_path(fid):
+            return None
+        repo = _repo_of(fid)
+        tail = "." + target
+        cands = sorted({f for m, f in self.py_modules[repo].items() if (m == target or m.endswith(tail)) and f != fid})
+        if len(cands) > 1:
+            here = self.nodes[fid].path.rpartition("/")[0]
+            cands = [f for f in cands if (here + "/").startswith(self.nodes[f].path.rpartition("/")[0].rstrip("/") + "/")
+                     or "/" not in self.nodes[f].path]
+        return cands[0] if len(cands) == 1 else None
+
+    def _edits_sys_path(self, fid: str) -> bool:
+        cache = self.__dict__.setdefault("_sys_path_files", {})
+        if fid not in cache:
+            repo, path = _repo_of(fid), self.nodes[fid].path
+            parts = path.split("/")
+            files = [path] + ["/".join(parts[:i] + ["conftest.py"]) for i in range(len(parts) - 1, -1, -1)]
+            hit = False
+            for p in dict.fromkeys(files):
+                if p != path and module_path(p) not in self.py_modules[repo]:
+                    continue
+                try:
+                    hit = b"sys.path" in read_source(self.repos[repo] / p)
+                except OSError:
+                    hit = False
+                if hit:
+                    break
+            cache[fid] = hit
+        return cache[fid]
 
     def _modpath(self, fid: str) -> str:
         return BY_LANGUAGE[self.file_lang[fid]].module_path(self.nodes[fid].path)
@@ -2872,7 +2929,7 @@ class Indexer:
                     walk(dst, depth + 1, seq, self.file_of.get(dst, home) if via == "process" else home)
             walk(start, 0, 0, entry_file)
             n = self.nodes[start]
-            name = n.name if n.kind == "test" else start.split(":", 2)[-1].split("::")[-1]
+            name = _test_title(n) if n.kind == "test" else start.split(":", 2)[-1].split("::")[-1]
             mods = {self.nodes[self.file_of[s[2]]].parent_id for s in steps if s[2] in self.file_of}
             self.flows.append((fid, name, "static", start, 0.0, None, "fact", SOURCE, {
                 "kind": kind, "detail": detail, "steps": len(steps), "truncated": truncated,
@@ -2954,7 +3011,7 @@ class Indexer:
             for repo, root in self.repos.items():
                 store.clear_facts(con, repo)
                 store.write_nodes(con, [n for n in self.nodes.values() if owner(n.id) == repo], repo, SOURCE, self.commits[repo])
-                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{repo}", str(root)))
+                store.set_root(con, repo, root)
             edges, calls = self._final()
             for repo in self.repos:   # each row carries the commit of the repository its source is in
                 store.write_edges(con, [e for e in edges if owner(e.src_id) == repo], SOURCE, self.commits[repo])
@@ -3015,7 +3072,8 @@ def workspace(con, roots: list[str | Path], repo_id: Optional[str] = None) -> li
         return given
     out = list(given)
     for rid in stored:
-        root = con.execute("SELECT value FROM meta WHERE key = ?", (f"root:{rid}",)).fetchone()
+        here = store.roots(con).get(rid)
+        root = (str(here),) if here is not None else None
         if any(rid == g[1] or (root and Path(root[0]) == g[0]) for g in given):
             continue
         if root and Path(root[0]).is_dir():

@@ -46,6 +46,19 @@ def _label(nodes, i: str) -> str:
     return n["name"]
 
 
+def enclosing(nodes, i: str) -> list[str]:
+    """The functions a nested function, closure or lambda is defined in, innermost first. Whoever calls one
+    of them can run the nested code, so a change inside it reaches their callers too. `nodes` maps an id
+    to a row with `kind` and `parent_id`."""
+    out = []
+    cur = nodes[i]["parent_id"] if i in nodes else None
+    while cur in nodes and nodes[cur]["kind"] not in ("file", "module", "repo"):
+        if nodes[cur]["kind"] in ("callable", "test"):
+            out.append(cur)
+        cur = nodes[cur]["parent_id"]
+    return out
+
+
 def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
     """Work out what a change reaches. Each target is {id, action, note?}; for action `add` it is
     {action: "add", name, parent, uses?: [ids], used_by?: [ids], note?}."""
@@ -166,11 +179,27 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                 for impl in impls.get(i, []):
                     mark(impl, "must_edit", f"implements {_label(nodes, i)}", 1)
 
-    # Walk callers outward from everything touched.
+    # Walk callers outward from everything touched. A function defined inside another runs only when its
+    # enclosing function does, so the encloser joins the walk at the same distance: the hops between a
+    # closure and the function around it are inside one body and do not use up the depth.
     dist: dict[str, int] = {t: 0 for t in touched}
     guessed_links = 0
     channel_links = []
     frontier = list(touched)
+
+    def lift(found: list[str], d: int) -> list[str]:
+        more = []
+        for i in found:
+            for e in enclosing(nodes, i):
+                if e in dist:
+                    break
+                dist[e] = d
+                more.append(e)
+                if d == 0:
+                    mark(e, "direct", f"defines {nodes[i]['name']}, so whoever calls it runs the change", 1)
+        return more
+
+    frontier += lift(frontier, 0)
     for d in range(1, depth + 1):
         nxt = []
         for cur in frontier:
@@ -195,6 +224,12 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                          + (" (link is a guess)" if guess else ""), 1)
                 else:
                     mark(src, "indirect", f"{d} calls away", d)
+        for e in lift(nxt, d):
+            nxt.append(e)
+            if d == 1:
+                mark(e, "direct", "defines a function that calls it", 1)
+            else:
+                mark(e, "indirect", f"{d} calls away, through a function defined inside it", d)
         frontier = nxt
 
     # Flows and tests.
