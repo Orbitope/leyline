@@ -230,6 +230,7 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   coverage      import measured test coverage, or show it
   rules         check the architecture rules
   spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
+  learnings     past decisions on review findings, which later reviews read first; retire one
   record-tests  store a test run under a label
   review        compare an implemented change with a proposal made through MCP
   view          serve the map on localhost
@@ -460,6 +461,12 @@ def _main(argv=None) -> int:
     p.add_argument("reason", nargs="?", help="for resolve: why")
     p.add_argument("--before", help="verify: label of the test run recorded before the change")
     p.add_argument("--after", help="verify: label of the test run recorded after it")
+    p = sub.add_parser("learnings", description="past decisions on review findings: each finding a person rejected,"
+                                                " with the reason. Later reviews read them first.")
+    p.add_argument("action", nargs="?", choices=["list", "retire"], default="list", help="retire: it no longer holds")
+    p.add_argument("id", nargs="?", help="retire: the learning's id")
+    p.add_argument("why", nargs="?", help="retire: why it no longer holds")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")
     p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage) or a Cobertura XML report")
     p.add_argument("--run", default="default", help="a name for this import")
@@ -545,6 +552,9 @@ def _main(argv=None) -> int:
             print(f"\n[{x['pattern']}  {x['confidence']:.2f}{'  stale' if x['stale'] else ''}] {x['rationale']}")
     elif args.cmd == "spec":
         return _spec(con, args)
+    elif args.cmd == "learnings":
+        from . import learnings
+        return learnings.cli(con, args)
     elif args.cmd == "coverage":
         from . import coverage
         if args.file:

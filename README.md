@@ -319,6 +319,35 @@ files one, and the page lists them. A finding whose evidence is nowhere near the
 radius, nor one call from it) is kept but marked, so the person questions it first. `leyline spec forget
 pr-123` deletes the base's map.
 
+### Learning from rejected findings
+
+Many review findings that people reject are correct about the code but miss a choice made on purpose. So
+when you reject a finding and say why (`leyline spec resolve <finding> rejected "why"`), Leyline keeps a
+learning: your reason in your words, the finding's claim, its kind of review, and the code it is about (the
+evidence nodes, and the type, file and module each is in). A rejection with no reason keeps nothing.
+
+Learnings go in a file in the repository, so you commit them, the team shares them, and a fresh map keeps
+them: `openspec/leyline-learnings.json` when the repository has an `openspec` folder, else
+`.leyline-learnings.json` at its root. A file stays where it was first made. It is JSON with sorted keys
+and a two-space indent, one entry per learning: `id`, `status` (active or retired), `reviewer`, `claim`,
+`reason`, `scope`, `source` (the change and finding it came from), `created`, `hits`, `dismissals`,
+`accepted`, and `findings` (the later findings it matched, with what people decided). Node ids in it leave
+out the repository's id, so a clone in a folder of another name reads them.
+
+- **Reviewers read them first.** The facts for a spec or a pull request (`leyline spec facts`, or
+  `spec_review_facts`) start with `learnings_that_apply`: active learnings about code the change touches or
+  reaches, closest first.
+- **A repeat is marked, not dropped.** A new finding of the same kind of review, on the same node, type or
+  file, whose claim shares at least 40% of its words with a learning's claim (60% when only the module is
+  shared), comes back with `learned`, naming the learning and its reason. The page shows it as "Matches a
+  past decision: ..." and the person still decides it. Words are compared loosely: lower case, code names
+  split, common words dropped, endings cut.
+- **A wrong learning retires itself.** Each later decision on a finding it matched is counted. Once people
+  have accepted at least two of them, and more than they rejected, the learning is retired and the file
+  says why. It is also retired if the finding it came from is later marked anything but rejected.
+
+`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand.
+
 ### Reviewing a change after it is made
 
 The first `propose_change` of a change keeps a baseline in `.leyline/snapshots/<change id>.db` (what the
@@ -492,6 +521,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `check_rules()` | Evaluate every rule against the graph |
 | `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
+| `learnings(retire?, why?)` | Past decisions on review findings, kept from rejections with a reason; `retire` one the person says no longer holds |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
