@@ -180,13 +180,19 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
     sources = {}
     roots = {k.split(":", 1)[1]: v for k, v in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%'")}
     if with_sources:
+        from .indexer import source_lines
         # Keyed by path; in a workspace by repo/path, since two repositories can hold the same path.
         several = len(repos) > 1
         for r in rows:
             if r["kind"] == "file" and r["repo_id"] in roots:
                 p = Path(roots[r["repo_id"]]) / r["path"]
-                if p.is_file():
-                    sources[f"{r['repo_id']}/{r['path']}" if several else r["path"]] = p.read_text(errors="replace")
+                try:
+                    # numbered as the parsers number lines, so a span points at the same text in the page
+                    text = "\n".join(source_lines(p)) if p.is_file() else None
+                except OSError:
+                    text = None
+                if text is not None:
+                    sources[f"{r['repo_id']}/{r['path']}" if several else r["path"]] = text
     out = {"version": 3, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list, "access": access, "state": state, "measured": measured,
            "coverage": coverage, "changes": changes(con, index, roots), "sources": sources}
     out["layout"] = layout(out, memory)
@@ -227,7 +233,7 @@ def changes(con, index: dict, roots: dict) -> list[dict]:
         for root in roots.values():   # the change folder sits in one of the mapped repositories
             folder = Path(root) / "openspec" / "changes" / name
             if (folder / "leyline.md").is_file():
-                c["page"] = (folder / "leyline.md").read_text(errors="replace")
+                c["page"] = (folder / "leyline.md").read_text(encoding="utf-8", errors="replace")
                 c["folder"] = f"openspec/changes/{name}/"
                 break
         try:
@@ -330,6 +336,13 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
     inner = {"calls", "inherit", "channels"}   # what the page shows inside a module until a person asks for more
     in_sys = {d: s for k, s, d, *_ in g["edges"] if k == "groups"}
     grp = lambda u: in_sys.get(u, u)
+    # The links inside each module, found in one pass: going over every link for every module took minutes and
+    # most of the memory on a repository of thousands of modules.
+    within: dict[int, list] = {}
+    for k, s, d, ch in links:
+        if LINK_KINDS[k] in inner and module[s] is not None and module[s] == module[d] \
+                and unit[s] is not None and unit[d] is not None:
+            within.setdefault(module[s], []).append((s, d, ch))
     for m in (i for i, n in enumerate(N) if n["k"] == "module"):
         nodes = [k for k in kids.get(m, []) if N[k]["k"] == "system"]
         stack = [k for k in kids.get(m, []) if N[k]["k"] == "file"]
@@ -342,9 +355,7 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
             continue
         own = set(nodes)
         pairs = set()
-        for k, s, d, ch in links:
-            if LINK_KINDS[k] not in inner or module[s] != m or module[d] != m or unit[s] is None or unit[d] is None:
-                continue
+        for s, d, ch in within.get(m, ()):
             a, b = grp(unit[s]), grp(unit[d])
             if a in own and b in own and a != b:
                 pairs.add((b, a) if ch == "event" else (a, b))
@@ -353,7 +364,7 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
     old = {}
     if memory and memory.is_file():
         try:
-            old = json.loads(memory.read_text()).get("levels", {})
+            old = json.loads(memory.read_text(encoding="utf-8")).get("levels", {})
         except (OSError, ValueError):
             old = {}
     width = lambda i: _box_width(N, i, kids)
@@ -366,8 +377,8 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
     if memory:
         try:
             body = json.dumps({"version": 1, "levels": keep}, separators=(",", ":"), sort_keys=True)
-            if not memory.is_file() or memory.read_text() != body:
-                memory.write_text(body)
+            if not memory.is_file() or memory.read_text(encoding="utf-8") != body:
+                memory.write_text(body, encoding="utf-8")
         except OSError:
             pass
     return out
@@ -407,6 +418,9 @@ def _box_width(N: list[dict], i: int, kids: dict) -> int:
     n = N[i]
     meta = 30 if n["k"] in ("module", "repo", "system") else 0
     return int(max(len(n["n"]) * 7.6 + 34, meta * 6.2 + 32, 70))
+
+
+WAYPOINTS = 200_000
 
 
 def _layered(nodes: list[int], pairs: list[tuple], width) -> dict[int, list]:
@@ -495,13 +509,16 @@ def _layered(nodes: list[int], pairs: list[tuple], width) -> dict[int, list]:
     def link(a, b):
         down2.setdefault(a, []).append(b)
         up2.setdefault(b, []).append(a)
+    # A waypoint per row a long edge crosses: on a level of thousands of boxes in hundreds of rows that is tens of
+    # millions of them (GBs), so past a budget long edges are ordered by their ends alone.
+    route = sum(max(0, abs(rank[a] - rank[b]) - 1) for a, b in pairs) <= WAYPOINTS
     for a, b in pairs:
         ra, rb = rank[a], rank[b]
         if ra == rb:
             continue
         top, bottom = (a, b) if ra < rb else (b, a)
         prev = top
-        for r in range(min(ra, rb) + 1, max(ra, rb)):
+        for r in range(min(ra, rb) + 1, max(ra, rb)) if route else ():
             d = ("~", a, b, r)
             ranks[r].append(d)
             rank[d] = r
@@ -549,18 +566,28 @@ def _remembered(fresh: dict, ids: dict, old: Optional[dict], pairs: set, width) 
         return fresh
     rows = [r for r, _ in at.values()]
     first, last = min(rows), max(rows)
+    ins: dict = {}
+    outs: dict = {}
+    for a, b in pairs:   # looked up per box below; scanning every pair for every new box was quadratic
+        outs.setdefault(a, []).append(b)
+        ins.setdefault(b, []).append(a)
+    in_row: dict = {}
+    for j, (r, _) in at.items():
+        in_row.setdefault(r, []).append(j)
     for nid, i in sorted(ids.items()):
         if i in at:
             continue
-        above = [at[a][0] for a, b in pairs if b == i and a in at]     # what depends on it
-        below = [at[b][0] for a, b in pairs if a == i and b in at]     # what it depends on
+        above = [at[a][0] for a in ins.get(i, ()) if a in at]     # what depends on it
+        below = [at[b][0] for b in outs.get(i, ()) if b in at]    # what it depends on
         row = max(above) + 1 if above else min(below) - 1 if below else last
-        near = [at[j][1] for a, b in pairs for j in ((a,) if b == i else (b,) if a == i else ()) if j in at]
+        near = [at[j][1] for j in ins.get(i, []) + outs.get(i, []) if j in at]
+        here = in_row.get(row, [])
         if near:
             x = sum(near) / len(near)
         else:   # at the right-hand end of its row
-            x = max([at[j][1] + width(j) / 2 for j in at if at[j][0] == row] or [0]) + GAP_X + width(i) / 2
-        at[i] = [row, round(_free(x, width(i), [(at[j][1], width(j)) for j in at if at[j][0] == row]))]
+            x = max([at[j][1] + width(j) / 2 for j in here] or [0]) + GAP_X + width(i) / 2
+        at[i] = [row, round(_free(x, width(i), [(at[j][1], width(j)) for j in here]))]
+        in_row.setdefault(row, []).append(i)
     return at
 
 
@@ -577,7 +604,7 @@ def _free(x: float, w: float, row: list[tuple]) -> float:
 def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None) -> str:
     """The viewer with data embedded, without an html/head/body wrapper. `open_change` names a change the page
     opens on; `memory` defaults to the layout file beside the store."""
-    template = resources.files("leyline").joinpath("viewer/viewer.html").read_text()
+    template = resources.files("leyline").joinpath("viewer/viewer.html").read_text(encoding="utf-8")
     g = graph(con, with_sources, memory if memory is not None else memory_path(con))
     if open_change:
         g["start"] = {"change": open_change}

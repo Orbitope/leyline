@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import exact, store
-from .indexer import Indexer
+from .indexer import Indexer, source_lines
 
 
 CTOR_NAMES = ("constructor", ".ctor", "__init__", "new", "init")
@@ -55,7 +55,10 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
         path = pre + doc.relative_path
         files.add(path)
         src = ix.root / path
-        lines = src.read_text(errors="replace").splitlines() if src.is_file() else []
+        try:
+            lines = source_lines(src) if src.is_file() else []
+        except OSError:
+            lines = []
         for occ in doc.occurrences:
             sym = occ.symbol
             if occ.symbol_roles & 1:

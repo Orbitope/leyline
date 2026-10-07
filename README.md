@@ -437,6 +437,22 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 
 ## What is indexed
 
+### Which files
+
+The files git lists: tracked ones, and untracked ones `.gitignore` does not exclude. A directory that is
+not a git repository (or one git refuses to read, such as a checkout owned by another user) is walked
+instead, with the common `.gitignore` patterns applied. Some files are left out, and `map` names them with
+the reason: other people's code (`node_modules`, a Go or Composer `vendor`), submodules and nested
+repositories, symlinks to directories or out of the repository, files git lists that are gone, and source
+files that are binary, minified, unreadable or larger than 5 MB (`LEYLINE_MAX_FILE_MB` changes that). A
+file that does not parse is kept on the map as a file, without its contents, and named too.
+
+Large repositories are parsed in worker processes (`LEYLINE_JOBS` sets how many). A worker that crashes
+or is still on one batch of files after ten minutes (`LEYLINE_PARSE_TIMEOUT`, in seconds) costs only
+the file it was on. Workers start by spawn on macOS and Windows and by fork on Linux;
+`LEYLINE_START_METHOD` picks one. The compiler step (`--exact`) gives up after half an hour
+(`LEYLINE_EXACT_TIMEOUT`) and keeps the syntax-based links.
+
 ### Languages
 
 Any language with a tree-sitter grammar is indexed by one **generic adapter** that knows no

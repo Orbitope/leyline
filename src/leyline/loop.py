@@ -65,7 +65,7 @@ def _roots(con) -> dict[str, Path]:
 def changed_files(db: str | Path) -> list[str]:
     """Source files added, edited or deleted since the store was indexed. Cheap next to indexing: it only hashes."""
     from .adapters import BY_EXTENSION
-    from .indexer import list_files
+    from .indexer import list_files, read_source
 
     con = store.connect(db)
     try:
@@ -80,10 +80,14 @@ def changed_files(db: str | Path) -> list[str]:
             continue
         now = set()
         for f in list_files(root):
-            if "." + f.rsplit(".", 1)[-1] not in BY_EXTENSION or not (root / f).is_file():
+            if "." + f.rsplit(".", 1)[-1] not in BY_EXTENSION:
                 continue
             now.add(f)
-            if known.get((repo, f)) != hashlib.sha1((root / f).read_bytes()).hexdigest():
+            try:
+                data = read_source(root / f)
+            except OSError:
+                data = None
+            if data is None or known.get((repo, f)) != hashlib.sha1(data).hexdigest():
                 out.append(f)
         out += [p for (r, p) in known if r == repo and p not in now]
     return sorted(set(out))
@@ -131,7 +135,8 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
             with con:   # so plan and check re-index the same way
                 con.execute("INSERT OR REPLACE INTO meta VALUES ('exact', ?)", (exact,))
         out = {"db": str(db), "seconds": round(time.perf_counter() - began, 1), **counts(con),
-               "timing": stats.get("timing", {}), "exact": {k: v for k, v in stats.items() if k.startswith("exact:")}}
+               "timing": stats.get("timing", {}), "exact": {k: v for k, v in stats.items() if k.startswith("exact:")},
+               "left_out": _left_out(stats.get("left_out") or {})}
         if page:
             out["page"] = str(write_page(con, db, always=True))
     finally:
@@ -147,7 +152,7 @@ def write_page(con, db: str | Path, open_change: Optional[str] = None, always: b
     path = Path(db).parent / "map.html"
     if not always and not path.is_file():
         return None
-    path.write_text(export.page(con, open_change=open_change))
+    path.write_text(export.page(con, open_change=open_change), encoding="utf-8")
     return path
 
 
@@ -171,6 +176,21 @@ def counts(con) -> dict:
     }
 
 
+# Left out as a matter of course; counted on stderr, not repeated in the summary.
+QUIET_LEFT_OUT = ("dependency directory", "deleted (git still lists it)", "symlink to another listed file (indexed there)",
+                  "symlink to a directory")
+
+
+def _left_out(left: dict) -> dict:
+    """reason -> count, over every repository (a workspace's stats hold one summary per repository)."""
+    per_repo = left and all(isinstance(v, dict) and "count" not in v for v in left.values())
+    out: dict = {}
+    for summary in (left.values() if per_repo else [left]):
+        for why, v in summary.items():
+            out[why] = out.get(why, 0) + v["count"]
+    return out
+
+
 def map_text(m: dict) -> str:
     repos = m["repos"]
     who = repos[0] if len(repos) == 1 else f"{len(repos)} repositories ({', '.join(repos)})"
@@ -180,6 +200,17 @@ def map_text(m: dict) -> str:
          f"{spec._n(m['entry_points'], 'entry point')} (where a program starts).",
          ("Largest modules: " if len(mods) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({x['files']} files)" for x in mods[:5])
          + (f" and {len(mods) - 5} more" if len(mods) > 5 else "")]
+    if not mods:
+        L.pop()
+    if not m["files"]:
+        from .adapters import ADAPTERS
+        langs = sorted({a.LANGUAGE for a in ADAPTERS})
+        L.insert(1, "No source files were found in a language Leyline reads (" + ", ".join(langs) + ").")
+    left = {k: v for k, v in m.get("left_out", {}).items() if k not in QUIET_LEFT_OUT}
+    if left:
+        n = sum(left.values())
+        L.append(f"Not mapped: {n:,} file{'s' * (n != 1)} (named above): "
+                 + ", ".join(f"{v} {k}" for k, v in sorted(left.items(), key=lambda kv: -kv[1])) + ".")
     if m["patterns"]:
         L.append("Design patterns found: " + ", ".join(f"{k} {v}" if v > 1 else k for k, v in m["patterns"].items()))
     for k, v in m.get("exact", {}).items():
