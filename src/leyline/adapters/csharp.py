@@ -99,6 +99,23 @@ def _declared_names(node) -> list[str]:
     return _identifiers(ids[-1]) if ids else []
 
 
+def _predefined(tnode) -> str:
+    """int, float, string: a parameter of one of these is matched against a literal or a variable of it."""
+    return _text(tnode) if tnode is not None and tnode.type == "predefined_type" else ""
+
+
+def _product(node, scope: dict) -> Optional[tuple]:
+    """`total * share` as an argument parses as a declaration of a pointer variable. When the "type" is a local
+    variable, it is a multiplication: the two names."""
+    if node.type != "declaration_expression":
+        return None
+    tnode, name = node.child_by_field_name("type"), node.child_by_field_name("name")
+    inner = tnode.named_children[0] if tnode is not None and tnode.type == "pointer_type" and tnode.named_children else None
+    if inner is None or name is None or inner.type != "identifier" or ("#" + _text(inner)) not in scope:
+        return None
+    return _text(inner), _text(name)
+
+
 def _arg_hint(arg, scope: dict):
     """What is known about one argument: a lambda's parameter count (int), a type name (str), or None."""
     if arg.type == "lambda_expression":
@@ -108,15 +125,38 @@ def _arg_hint(arg, scope: dict):
         if params.type in ("identifier", "implicit_parameter"):
             return 1
         return len([c for c in params.children if c.type in ("parameter", "identifier", "implicit_parameter")])
+    if arg.type == "real_literal":
+        return {"f": "float", "m": "decimal"}.get(_text(arg)[-1:].lower(), "double")   # 9f is a float, 9.0 a double
     if arg.type in LITERALS:
         return LITERALS[arg.type]
+    if arg.type == "parenthesized_expression" and arg.named_children:
+        return _arg_hint(arg.named_children[0], scope)
+    if _product(arg, scope):
+        sides = [scope.get("%" + x) for x in _product(arg, scope)]
+        return next((wide for wide in NUMERIC if wide in sides), None) if all(x in NUMERIC for x in sides) else None
+    if arg.type == "binary_expression":
+        # total * share: arithmetic on numbers has the widest operand's type; on a string, + gives a string.
+        op = arg.child_by_field_name("operator")
+        left, right = arg.child_by_field_name("left"), arg.child_by_field_name("right")
+        if op is None or left is None or right is None or _text(op) not in ("+", "-", "*", "/", "%"):
+            return None
+        sides = [_arg_hint(left, scope), _arg_hint(right, scope)]
+        if _text(op) == "+" and "string" in sides:
+            return "string"
+        for wide in NUMERIC:
+            if wide in sides:
+                return wide if all(x in NUMERIC for x in sides) else None
+        return None
     if arg.type == "object_creation_expression":
         names = _type_names(arg.child_by_field_name("type"))
         return names[0].split("`")[0] if names else None
     if arg.type == "identifier":
-        known = scope.get(_text(arg))
+        known = scope.get(_text(arg)) or scope.get("%" + _text(arg))
         return known.split("`")[0] if known else None
     return None
+
+
+NUMERIC = ("decimal", "double", "float", "ulong", "long", "uint", "int")   # widest first
 
 
 PREDEFINED = {"int", "long", "short", "byte", "uint", "ulong", "float", "double", "decimal", "bool", "string",
@@ -421,6 +461,9 @@ class _Walker:
             outer = _outer_type(ptype)
             if pname:
                 scope["#" + pname] = "1"  # a local name: never a field of the enclosing type
+                scope.pop("%" + pname, None)
+                if ptype is not None and ptype.type == "predefined_type":
+                    scope["%" + pname] = _text(ptype)   # float, int: not a receiver, but tells overloads apart
             if pname and outer:
                 scope[pname] = outer
                 elem = _elem_type(ptype)
@@ -455,7 +498,8 @@ class _Walker:
                    "type_params": [_text(_child(c, "identifier") or c) for c in tparams.children
                                    if c.type == "type_parameter"] if tparams is not None else [],
                    "is_extension": bool(plist) and any(_text(c) == "this" for c in plist[0].children) or None,
-                   "param_types": [(_type_names(p.child_by_field_name("type")) or [""])[0] for p in plist],
+                   "param_types": [(_type_names(p.child_by_field_name("type")) or [_predefined(p.child_by_field_name("type"))])[0]
+                                   for p in plist],
                    "type_id": type_id}))
         for p, ptext in zip(plist, ptypes):
             names = _type_names(p.child_by_field_name("type"))
@@ -512,7 +556,10 @@ class _Walker:
                 vt = declared or self._infer(v, scope, type_id)
                 if nm:
                     scope.pop("~" + nm, None)
+                    scope.pop("%" + nm, None)
                     scope["#" + nm] = "1"
+                    if tnode is not None and tnode.type == "predefined_type":
+                        scope["%" + nm] = _text(tnode)
                 if nm and vt:
                     scope[nm] = vt
                 elif nm:
@@ -540,9 +587,15 @@ class _Walker:
                     scope[nm] = elem
         elif t == "invocation_expression":
             self._invocation(node, cid, type_id, scope)
-        elif t in ("lambda_expression", "catch_declaration", "declaration_expression", "declaration_pattern", "from_clause"):
+        elif t in ("lambda_expression", "catch_declaration", "declaration_expression", "declaration_pattern", "from_clause") \
+                and not _product(node, scope):
+            tnode = node.child_by_field_name("type") if t != "lambda_expression" else None
+            declared = _outer_type(tnode) if tnode is not None and _text(tnode) != "var" else None
             for ident in _declared_names(node):  # names these introduce are locals
                 scope["#" + ident] = "1"
+                if declared:   # `x is Sandbox s`, `out Foo f`, `catch (IOException e)`: typed where introduced
+                    scope.pop("~" + ident, None)
+                    scope[ident] = declared
         if t in ("identifier", "member_access_expression"):
             self._use(node, cid, type_id, scope)
         elif t in STRINGS:

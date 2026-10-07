@@ -58,6 +58,7 @@ class CallSite:
     targs: int = 0  # explicit type arguments on the call: M<int>() has 1
     chain: Optional["CallSite"] = None  # the call whose result this one is made on: a.Make().Run()
     ref: bool = False  # not a call: the function is handed over by name (onClick={save}) for someone else to call
+    attr: bool = False  # not a call: an attribute read, as the receiver of one (`app.config` in app.config.load())
 
 
 @dataclass(slots=True)
@@ -135,3 +136,5 @@ class FileResult:
     spawns: list[Spawn] = field(default_factory=list)
     # Namespaces (C#) or module paths (Python) this file declares.
     declares: list[str] = field(default_factory=list)
+    # Module-level variables whose type the file states (Python: `g: Globals = ...`, `app = Flask()`).
+    var_types: dict[str, str] = field(default_factory=dict)

@@ -187,6 +187,7 @@ def _scip_name(symbol: str) -> str:
 # -- applying ----------------------------------------------------------------------------------
 class _Locator:
     def __init__(self, ix, repo: Optional[str] = None):
+        self.nodes = ix.nodes
         self.by_path = defaultdict(list)
         for n in ix.nodes.values():
             if repo is not None and not n.id.startswith(repo + ":"):
@@ -201,6 +202,23 @@ class _Locator:
             if start <= line <= end and (best is None or (end - start, -start) < (best[1] - best[0], -best[0])):
                 best = (start, end, n)
         return best[2] if best else None
+
+    def caller(self, path: str, line: int):
+        """The function that makes a call written at a line. Mostly the innermost one around it, but a Python
+        function's decorators and default values run where the function is defined, and the call that
+        registers an inline test (`T.Run("name", () => ...)`) is made by the test's parent."""
+        best = None
+        for start, end, n in self.by_path.get(path, ()):
+            if not start <= line <= end:
+                continue
+            if n.language == "python" and line < (n.attrs.get("body_line") or start):
+                continue
+            if best is None or (end - start, -start) < (best[1] - best[0], -best[0]):
+                best = (start, end, n)
+        src = best[2] if best else None
+        if src is not None and src.kind == "test" and line == src.span_start and src.parent_id in self.nodes:
+            src = self.nodes[src.parent_id]
+        return src
 
     def target(self, path: str, line: int, name: str, kinds: tuple):
         """The declaration a compiler pointed at: the innermost node of that name whose span holds the line."""
@@ -232,9 +250,7 @@ def apply(ix, records: list[dict], source: str, repo: Optional[str] = None) -> d
                 continue
         elif r["k"] != "call":
             continue
-        src = loc.enclosing(r["f"], r["l"])
-        if src is not None and src.kind == "test" and r["l"] == src.span_start and src.parent_id in ix.nodes:
-            src = ix.nodes[src.parent_id]  # the call that registers an inline test is made by its parent, not by the test
+        src = loc.caller(r["f"], r["l"])
         if src is None:
             continue
         g = groups[(src.id, r.get("tn") or r["n"])] if r["s"] in ("ok", "candidate") else groups[(src.id, r["n"])]

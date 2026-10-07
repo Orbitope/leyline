@@ -66,7 +66,7 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
             if sym.startswith("local "):
                 # A local the compiler could not tie to a declaration (often an import it failed to follow):
                 # a call through it is not judged either way.
-                src_node = loc.enclosing(path, row + 1)
+                src_node = loc.caller(path, row + 1)
                 word = lines[row][col:end].strip()
                 if src_node is not None and lines[row][end:].lstrip().startswith("("):
                     sites.setdefault((src_node.id, row + 1, word), None)
@@ -74,9 +74,11 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
             text = lines[row]
             after, before = text[end:].lstrip(), text[:col].rstrip()
             called = after.startswith("(") or after[1:].lstrip()[:1] in ("(", "[", "{") and after[:1] == "!" or (after.startswith("<") and "(" in after) or before.endswith(("<", "new"))
+            if before.endswith("def") and after.startswith("("):
+                continue    # `def f(`: an overload's implementation or a property setter names the symbol again
             word = text[col:end].strip()
             name = exact._scip_name(sym).strip("<>")
-            src_node = loc.enclosing(path, row + 1)
+            src_node = loc.caller(path, row + 1) if called else loc.enclosing(path, row + 1)
             if src_node is None:
                 continue
             dst = None
@@ -114,7 +116,7 @@ def roslyn_sites(ix) -> tuple[dict, set, set]:
             continue
         if r["k"] != "call":
             continue
-        src = loc.enclosing(r["f"], r["l"])
+        src = loc.caller(r["f"], r["l"])
         if src is None:
             continue
         name = r.get("tn") or r["n"]
@@ -161,9 +163,11 @@ def grade(root: str, scip_path: str, prefix: str = "", repo_id: Optional[str] = 
             continue
         name = ix.nodes[dst].name
         verdicts = by_line.get((src, line), {})
-        if name in CTOR_NAMES and name not in verdicts:
-            # `new Foo()` is recorded under Foo; Rust's `Foo::new()` is an ordinary call recorded under new.
-            name = ix.nodes[ix.nodes[dst].parent_id].name if ix.nodes[dst].parent_id in ix.nodes else name
+        if name in CTOR_NAMES:
+            # `new Foo()` is recorded under Foo; Rust's `Foo::new()` is an ordinary call recorded under new. Foo
+            # first: in `new Foo(new Bar { })` the compiler also records Bar's implicit constructor as .ctor.
+            owner = ix.nodes[ix.nodes[dst].parent_id].name if ix.nodes[dst].parent_id in ix.nodes else name
+            name = owner if owner in verdicts or name not in verdicts else name
         if name in verdicts:
             if verdicts[name] is None:
                 offmap += 1        # the compiler resolved it to something that is not a function on the map: not judged
