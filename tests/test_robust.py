@@ -368,3 +368,13 @@ def test_a_moved_or_copied_checkout_maps_its_own_code(tmp_path):
     con.commit()
     assert store.roots(con) == {"app": old.resolve()}
     con.close()
+
+
+def test_the_map_summary_names_files_left_out_and_a_compiler_check_together():
+    """Both lines at once used to crash the summary: the count of files left out shadowed the plural helper."""
+    from leyline import loop
+    m = {"repos": ["r"], "modules": [], "seconds": 1, "files": 3, "lines": 10, "types": 1, "functions": 2, "tests": 0,
+         "entry_points": 0, "left_out": {"too large": 2}, "patterns": {}, "db": "x",
+         "exact": {"exact:roslyn": {"status": "ok", "calls_confirmed": 5}}}
+    text = loop.map_text(m)
+    assert "Not mapped: 2 files" in text and "5 calls confirmed" in text

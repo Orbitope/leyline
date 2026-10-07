@@ -148,8 +148,10 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
         target = diff.snapshot_path(con, cid)
     finally:
         con.close()
+    from .incremental import code_version
     marker = target.with_suffix(".base")
-    if target.exists() and marker.exists() and marker.read_text().strip() == base_sha:
+    stamp = f"{base_sha} {code_version()}"   # a base mapped by another version of Leyline is mapped again
+    if target.exists() and marker.exists() and marker.read_text().strip() == stamp:
         return target
     from .incremental import cache_path
     from .indexer import index
@@ -182,7 +184,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
             con.close()
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(snap), str(target))
-        marker.write_text(base_sha + "\n")
+        marker.write_text(stamp + "\n")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return target

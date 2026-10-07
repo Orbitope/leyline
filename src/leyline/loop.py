@@ -223,8 +223,8 @@ def map_text(m: dict) -> str:
         L.insert(1, "No source files were found in a language Leyline reads (" + ", ".join(langs) + ").")
     left = {k: v for k, v in m.get("left_out", {}).items() if k not in QUIET_LEFT_OUT}
     if left:
-        n = sum(left.values())
-        L.append(f"Not mapped: {n:,} file{'s' * (n != 1)} (named above): "
+        gone = sum(left.values())
+        L.append(f"Not mapped: {gone:,} file{'s' * (gone != 1)} (named above): "
                  + ", ".join(f"{v} {k}" for k, v in sorted(left.items(), key=lambda kv: -kv[1])) + ".")
     if m["patterns"]:
         L.append("Design patterns found: " + ", ".join(f"{k} {v}" if v > 1 else k for k, v in m["patterns"].items()))

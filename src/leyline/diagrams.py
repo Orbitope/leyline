@@ -430,7 +430,11 @@ def edge_changes(before, after, changed: list[str], removed: list[str] = (), lim
     old_label = lambda i: i if b_nodes.get(i) is not None else next((o for o, n in remap.items() if n == i), i)
     return {
         "calls_added": [{**item(a_nodes, k, s, d, info_a), "guess": guessed(s, d)} for k, s, d in sorted(la - lb) if k == "calls"],
-        "calls_removed": [item(_Either(b_nodes, a_nodes, old_label), k, s, d, info_b) for k, s, d in sorted(lb - la) if k == "calls"],
+        "calls_removed": [{**item(_Either(b_nodes, a_nodes, old_label), k, s, d, info_b),
+                           # the callee is gone but the caller is not: the call is still written, and now breaks
+                           "callee_removed": d in set(removed) and a_nodes.get(s) is not None,
+                           "caller_edited": s in now or remap.get(s, s) in now}
+                          for k, s, d in sorted(lb - la) if k == "calls"],
         "channels_added": [item(a_nodes, k, s, d, info_a) for k, s, d in sorted(la - lb) if k == "channel"],
         "channels_removed": [item(_Either(b_nodes, a_nodes, old_label), k, s, d,
                                   {(remap.get(s2, s2), remap.get(d2, d2)): v for (s2, d2), v in info_b.items()})
@@ -503,7 +507,9 @@ def change_lines(c: Optional[dict]) -> list[str]:
             return "over a channel (the baseline does not keep which)"
         return "over " + (f"{x['channel']} {x['address']}".strip())
     L = _cap([f"- `{x['from']}` now calls `{x['to']}`" + (" (a link guessed by name)" if x.get("guess") else "") for x in c["calls_added"]])
-    L += _cap([f"- `{x['from']}` no longer calls `{x['to']}`" for x in c["calls_removed"]])
+    L += _cap([(f"- `{x['from']}` called `{x['to']}`, which was removed; `{x['from']}` was edited too"
+                if x.get("caller_edited") else f"- `{x['from']}` still calls `{x['to']}`, which was removed")
+               if x.get("callee_removed") else f"- `{x['from']}` no longer calls `{x['to']}`" for x in c["calls_removed"]])
     L += _cap([f"- `{x['from']}` now reaches `{x['to']}` {over(x)}" for x in c["channels_added"]], 8)
     L += _cap([f"- `{x['from']}` no longer reaches `{x['to']}` {over(x)}" for x in c["channels_removed"]], 8)
     return L or ["No call or channel link into or out of the changed code was added or removed."]
