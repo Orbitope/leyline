@@ -8,6 +8,7 @@ from typing import Optional
 import tree_sitter_python
 from tree_sitter import Language, Parser
 
+from .. import channels
 from ..model import CallSite, Endpoint, FieldUse, Edge, FileResult, ImportRef, Node, Spawn, TypeRef
 
 NAME = "tree-sitter-python"
@@ -520,4 +521,7 @@ class _Walker:
 
 
 def parse(repo: str, rel_path: str, file_id: str, src: bytes, module: str = "") -> FileResult:
-    return _Walker(repo, rel_path, file_id, src).run()
+    w = _Walker(repo, rel_path, file_id, src)
+    res = w.run()
+    channels.extract(LANGUAGE, w.tree, res, file_id, w.consts)
+    return res

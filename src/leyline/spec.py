@@ -526,7 +526,13 @@ def brief_text(b: dict) -> str:
         for r in imp.get("risks") or []:
             L.append(f"- **{r['level']} risk:** {r['what']}")
         for c in (imp.get("channels") or [])[:6]:
-            L.append(f"- Crosses a {c['channel']} boundary: {c['from_name']} to {c['to_name']}. The other side has no compile-time link to this change.")
+            at = f" ({c['address']})" if c.get("address") else ""
+            if c.get("data"):
+                L.append(f"- Crosses a {c['channel']} boundary{at}: {c['from_name']} reads what {c['to_name']} writes. "
+                         "The reader has no compile-time link to this change.")
+            else:
+                L.append(f"- Crosses a {c['channel']} boundary{at}: {c['from_name']} to {c['to_name']}. "
+                         "The other side has no compile-time link to this change.")
     if b["must_edit_uncovered"]:
         L += ["", "**Must be edited, and no task covers it:**"] + [f"- {m['name']}: {m.get('note', '')}" for m in b["must_edit_uncovered"][:20]]
     la = {"beside": [], "callers": [], "state": [], **(b.get("left_alone") or {})}
