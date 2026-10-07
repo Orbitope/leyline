@@ -26,6 +26,16 @@ TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?)(/|$)|[._-](test|spec)s?\
 TOP = ("<module>", "<top-level>")
 
 
+def cut(name: str, n: int) -> str:
+    """A long name (a test's sentence) cut at a word, marked as cut, so it does not read as a whole sentence."""
+    if len(name) <= n:
+        return name
+    head = name[:n - 1]
+    if " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip(" ,;:-") + "…"
+
+
 def _cols(con, table: str) -> set:
     try:
         return {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -70,8 +80,7 @@ class _Nodes:
         n = self.get(i) or {"name": i.rsplit(".", 1)[-1], "kind": "callable"}
         if n["name"] in TOP:
             return "top level"
-        name = n["name"]
-        return name if len(name) <= 48 else name[:45] + "..."
+        return cut(n["name"], 48)
 
     def label(self, i: str) -> str:
         """`Owner.name`, or `name` for a function at the top of a file."""
@@ -139,6 +148,16 @@ def _backing(con, nodes: _Nodes, src: str, dst: str, via: str) -> Optional[dict]
             "guess": rows[0][0] == "guess", "line": a.get("launched_at") or a.get("line")}
 
 
+SIDE_ENTRY = re.compile(r"(^|/)(scripts?|tools?|bench\w*|perf\w*|benchmarks?|examples?|tests?|__tests__)/|"
+                        r"(^|/)(bench|perf)[^/]*$")
+
+
+def _side_entry(path: str) -> bool:
+    """An entry point that is not the product: a script, a benchmark, an example or a test. A drawing starts at the
+    product's own entry point when one reaches the code."""
+    return bool(SIDE_ENTRY.search(path) or TEST_PATH.search(path))
+
+
 def _chain(con, nodes: _Nodes, fid: str) -> Optional[dict]:
     """The path a stored flow takes from its start to `fid`: from an entry point if one reaches it, else from a
     test; the one that reaches it in the fewest calls."""
@@ -147,7 +166,8 @@ def _chain(con, nodes: _Nodes, fid: str) -> Optional[dict]:
                        " WHERE s.callable_id = ?" + (" AND f.layer = 'fact'" if has_layer else ""), (fid,)).fetchall()
     if not rows:
         return None
-    best = min(rows, key=lambda r: (_attrs(r[5]).get("kind") != "entry", r[2] or 0, r[4] or "", r[0]))
+    best = min(rows, key=lambda r: (_attrs(r[5]).get("kind") != "entry", _side_entry((nodes.get(r[3]) or {}).get("path") or ""),
+                                    r[2] or 0, r[4] or "", r[0]))
     flow, seq = best[0], best[1]
     links, guard = [], 0
     while seq is not None and guard < 64:
@@ -182,21 +202,34 @@ def _focus(con, nodes: _Nodes, ids: list[str]) -> list[str]:
     return [i for i in product if (nodes.get(i) or {}).get("name") not in TOP] or product
 
 
+def _callees(con, f: str) -> list[tuple]:
+    """What a function calls, in the order its text first calls each: (callee id, line, guessed)."""
+    return [r for r in con.execute("SELECT dst_id, MIN(site_start) AS line, MIN(precision = 'guess') FROM calls"
+                                   " WHERE src_id = ? AND dst_id != src_id GROUP BY dst_id ORDER BY line, dst_id", (f,))]
+
+
 def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages: int = 25, max_focus: int = 4,
-             max_hops_in: int = 3, max_channels_in: int = 3, marked: str = "changed") -> dict:
+             max_hops_in: int = 3, max_channels_in: int = 3, marked: str = "changed",
+             rank: Optional[dict] = None, caps: Optional[dict] = None) -> dict:
     """A Mermaid sequence diagram of how execution reaches the functions in `focus_ids` (types stand for their
     methods) and what they call. Participants are the types around the functions, or the file for a function at the
     top of a file. Returns {"mermaid", "arrows", "participants", "focus", "focus_left_out", "left_out", ...}; "arrows"
     lists each drawn arrow with the edge behind it, so the drawing can be checked against the map (`unbacked`).
-    `marked` is the word on the note over each focus function ("changed" on a change's pages)."""
+    `marked` is the word on the note over each focus function ("changed" on a change's pages).
+    `rank` and `caps` let two drawings of one change (before and after) pick a focus function's callees the same
+    way: rank maps (caller label, callee label) to a place in one order shared by both, and caps a caller label to
+    how many places of that order to draw."""
     nodes = _Nodes(con)
     every = _focus(con, nodes, focus_ids)
     focus = every[:max_focus]
-    fset = set(focus)
+    # Changed code past the cap is not drawn for its own sake, but when the drawing reaches it anyway (a changed
+    # function calls it) it is shaded like the rest, and is not said to be left out.
+    fset = set(every)
     children: dict[str, list] = {}
     keys: set = set()
     roots: list[tuple] = []          # (node, note)
     must: list[str] = []
+    ranked: dict[str, list] = {}     # focus function -> (place in the shared order, callee) for each callee it has
 
     def add(src, dst, e, order):
         key = (src, dst, e["kind"])
@@ -225,6 +258,8 @@ def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages:
                 entry = (e_row["path"] if e_row and e_row["name"] in TOP and e_row["path"] else
                          nodes.label(ch["entry"]) if e_row else ch["flow"])
                 what = "the test" if ch["kind"] == "test" else "the entry point"
+                if e_row and e_row["kind"] == "test":   # a test's name is a sentence: quote it
+                    entry = f'"{entry}"'
                 note = (f"starts at {what} {entry}" if not hidden else
                         f"reached from {what} {entry} through {hidden} more call{'s' if hidden != 1 else ''}")
                 roots.append((start, note))
@@ -245,17 +280,27 @@ def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages:
             keys.add(("more-in", k, f))
         if not any(r[0] == f for r in roots) and not any(f == c[2] for cs in children.values() for c in cs):
             roots.append((f, None))
-        # What it calls, in the order its text calls it, and the channels it sends on.
-        for dst, line, guess in con.execute("SELECT dst_id, MIN(site_start) AS line, MIN(precision = 'guess') FROM calls"
-                                            " WHERE src_id = ? AND dst_id != src_id GROUP BY dst_id ORDER BY line, dst_id", (f,)):
-            if nodes.get(dst) is not None:
-                add(f, dst, {"kind": "call", "guess": bool(guess), "line": line}, line)
+        # What it calls, in the order its text calls it (or the order shared with another drawing), and the channels
+        # it sends on.
+        me = nodes.label(f)
+        shared = rank is not None and any(k[0] == me for k in rank)
+        for dst, line, guess in _callees(con, f):
+            if nodes.get(dst) is None:
+                continue
+            place = rank.get((me, nodes.label(dst))) if shared else None
+            if place is not None and caps and me in caps and place >= caps[me]:
+                keys.add(("capped", None, f, dst))   # counted as not drawn (and is no link into anything)
+                continue
+            if place is not None:
+                ranked.setdefault(f, []).append((place, dst))
+            add(f, dst, {"kind": "call", "guess": bool(guess), "line": line, "rank": place},
+                place if place is not None else (10 ** 6 + (line or 0) if shared else line))
         for dst, prec, raw in con.execute("SELECT dst_id, precision, attrs FROM edges WHERE kind = 'communicates' AND src_id = ?"
                                           " ORDER BY dst_id", (f,)):
             a = _attrs(raw)
             line = a.get("launched_at") or a.get("line")
             add(f, dst, {"kind": "channel", "channel": a.get("channel", "channel"), "address": a.get("address") or "",
-                         "guess": prec == "guess", "line": line}, line)
+                         "guess": prec == "guess", "line": line}, 10 ** 6 + (line or 0) if shared else line)
     for cs in children.values():
         cs.sort(key=lambda c: (c[0], c[1]))
     must = list(dict.fromkeys(must))
@@ -343,12 +388,17 @@ def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages:
     head = ["sequenceDiagram"] + [f"    participant {pid[u]} as {_text(labels[u])}" for u in order]
     return {"mermaid": "\n".join(head + lines) if order else "",
             "arrows": arrows, "participants": [labels[u] for u in order],
-            "focus": [nodes.label(f) for f in focus], "focus_left_out": [nodes.label(f) for f in every[max_focus:]],
+            "focus": [nodes.label(f) for f in focus + [g for g in every[max_focus:] if g in expanded]],
+            "focus_left_out": [nodes.label(f) for f in every[max_focus:] if f not in expanded],
             # no call or channel on the map leads in, and no flow starts there: nothing in the repository runs it
             "nothing_reaches": [nodes.label(f) for f in focus if not any(k[1] == f for k in keys)
                                 and con.execute("SELECT 1 FROM calls WHERE dst_id = ? LIMIT 1", (f,)).fetchone() is None
                                 and con.execute("SELECT 1 FROM flows WHERE entry_id = ? LIMIT 1", (f,)).fetchone() is None],
             "left_out": max(left, 0),
+            # how many places of the shared order each drawn focus function's callees were drawn through
+            "places": {nodes.label(f): min((p for p, dst in places if (f, dst) not in drawn), default=10 ** 6)
+                       for f, places in ranked.items() if f in expanded
+                       for drawn in [{(a["from"], a["to"]) for a in arrows if a["kind"] == "call"}]},
             "guessed": any(a["guess"] for a in arrows), "channels": any(a["kind"] == "channel" for a in arrows)}
 
 
@@ -479,11 +529,43 @@ def for_change(before, after, changed: list[str], removed: list[str] = ()) -> di
         return out
     # Drawn from the baseline alone: every node, call, step and channel link it reads is the code as it was.
     d = sequence(before, was)
+    # The two drawings pick each changed function's callees the same way, so that what differs between them is
+    # only what changed: one order over the callees of both versions, and the same number of its places drawn.
+    rank = _shared_order(before, after, was, changed)
+    if rank:
+        first_b, first_a = sequence(before, was, rank=rank), sequence(after, changed, rank=rank)
+        caps = {}
+        for src in {k[0] for k in rank}:
+            got = [x.get("places", {}).get(src) for x in (first_b, first_a)]
+            if all(g is not None for g in got) and min(got) < 10 ** 6:
+                caps[src] = min(got)
+        d = sequence(before, was, rank=rank, caps=caps)
+        out["after"] = sequence(after, changed, rank=rank, caps=caps)
     bad = unbacked(before, d)
     if bad:   # never show an arrow the baseline does not hold
         out["before_missing"], out["before_unbacked"] = "unbacked", bad
     elif d.get("mermaid"):
         out["before"] = d
+    return out
+
+
+def _shared_order(before, after, was: list[str], changed: list[str]) -> dict:
+    """One order over what each changed function calls, before and after: the order its text calls them now, with a
+    callee only the old text had placed after the one it followed then. {(caller label, callee label): place}."""
+    nb, na = _Nodes(before), _Nodes(after)
+    old = {nb.label(f): f for f in _focus(before, nb, was)}
+    new = {na.label(f): f for f in _focus(after, na, changed)}
+    out = {}
+    for lab in dict.fromkeys(list(new) + list(old)):
+        now = [na.label(d) for d, _l, _g in _callees(after, new[lab]) if na.get(d) is not None] if lab in new else []
+        then = [nb.label(d) for d, _l, _g in _callees(before, old[lab]) if nb.get(d) is not None] if lab in old else []
+        merged = list(dict.fromkeys(now))
+        for k, c in enumerate(then):
+            if c in merged:
+                continue
+            prev = next((then[j] for j in range(k - 1, -1, -1) if then[j] in merged), None)
+            merged.insert(merged.index(prev) + 1 if prev is not None else 0, c)
+        out.update({(lab, c): i for i, c in enumerate(merged)})
     return out
 
 

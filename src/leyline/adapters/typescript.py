@@ -205,6 +205,7 @@ class _Walker:
         # Names that are functions somewhere in this file, or come from an import: a bare mention of one
         # as an argument (onClick={save}, items.map(render)) hands the function over to be called.
         self.fn_names: set[str] = set()
+        self.fn_nodes: dict = {}       # name -> the function's node, for a program path a helper of the file builds
         self.imported: set[str] = set()
         self._prescan(self.tree.root_node)
 
@@ -215,10 +216,12 @@ class _Walker:
             t = n.type
             if t in ("function_declaration", "generator_function_declaration"):
                 self.fn_names.add(_text(n.child_by_field_name("name")))
+                self.fn_nodes.setdefault(_text(n.child_by_field_name("name")), n)
             elif t == "variable_declarator":
                 name, value = n.child_by_field_name("name"), n.child_by_field_name("value")
                 if name is not None and name.type == "identifier" and self._fn_of(value) is not None:
                     self.fn_names.add(_text(name))
+                    self.fn_nodes.setdefault(_text(name), self._fn_of(value))
                 elif name is not None and name.type == "identifier" and value is not None and n.parent is not None \
                         and n.parent.parent is not None and n.parent.parent.type in ("program", "export_statement"):
                     found = _strings(value) if value.type in ("string", "template_string", "array") else []
@@ -236,6 +239,80 @@ class _Walker:
                                         self.imported.add(_text(s.child_by_field_name("alias") or s.child_by_field_name("name")))
                 continue
             stack.extend(n.children)
+
+    def _helper_paths(self, call, arg_nodes) -> Optional[list[str]]:
+        """The paths a launch call's program comes from when a function of this file computes it: an argument (or a
+        local variable it names) calls `hostEntry()`, which returns `resolve(__dirname, "..", "host", "index.js")`.
+        None when no argument calls a function of this file; otherwise the paths those functions build, relative to
+        the repository root (possibly none)."""
+        scope = call.parent
+        while scope is not None and scope.type not in FUNCS and scope.type not in ("function_declaration", "generator_function_declaration",
+                                                                                   "method_definition", "program"):
+            scope = scope.parent
+        decls: dict = {}
+        stack = [scope] if scope is not None else []
+        while stack:
+            n = stack.pop()
+            if n.type == "variable_declarator" and n.child_by_field_name("name") is not None:
+                decls.setdefault(_text(n.child_by_field_name("name")), n.child_by_field_name("value"))
+            stack.extend(n.named_children)
+        helpers, stack, looked = [], list(arg_nodes), set()
+        while stack:
+            n = stack.pop()
+            if n is None:
+                continue
+            if n.type == "identifier" and _text(n) in decls and _text(n) not in looked:
+                looked.add(_text(n))
+                stack.append(decls[_text(n)])
+                continue
+            if n.type == "call_expression":
+                f = _unwrap(n.child_by_field_name("function"))
+                if f is not None and f.type == "identifier" and _text(f) in self.fn_nodes:
+                    helpers.append(self.fn_nodes[_text(f)])
+                    continue
+            if n.type not in FUNCS:
+                stack.extend(n.named_children)
+        if not helpers:
+            return None
+        here = self.path.rsplit("/", 1)[0] if "/" in self.path else ""
+        out = []
+        for fn in helpers:
+            body = fn.child_by_field_name("body")
+            exprs = [body] if body is not None and body.type != "statement_block" else []   # () => resolve(...)
+            stack = [body] if body is not None else []
+            while stack:
+                n = stack.pop()
+                if n.type == "return_statement":
+                    exprs.extend(n.named_children)
+                elif n.type not in FUNCS:
+                    stack.extend(n.named_children)
+            for e in exprs:
+                e = _unwrap(e)
+                if e is None or e.type != "call_expression":
+                    continue
+                f, a = e.child_by_field_name("function"), e.child_by_field_name("arguments")
+                if f is None or a is None or _text(f).rsplit(".", 1)[-1] not in ("resolve", "join"):
+                    continue
+                parts = [x for x in a.named_children if x.type != "comment"]
+                if not parts or _text(parts[0]) not in ("__dirname", "import.meta.dirname"):
+                    continue
+                bits = [_string(x) for x in parts[1:]]
+                if not bits or any(b is None for b in bits):
+                    continue
+                segs: Optional[list] = []
+                for seg in "/".join([here] + bits).split("/"):
+                    if seg in ("", "."):
+                        continue
+                    if seg != "..":
+                        segs.append(seg)
+                    elif segs:
+                        segs.pop()
+                    else:
+                        segs = None    # above the repository root
+                        break
+                if segs:
+                    out.append("/".join(segs))
+        return list(dict.fromkeys(out))
 
     def _fn_of(self, value):
         """The function a declarator's value amounts to, if any."""
@@ -1037,6 +1114,11 @@ class _Walker:
                 self.all_strings = _strings(self.tree.root_node)
             # A program named by a literal ("git") is that program; only a computed one is looked for among the file's strings.
             named = bool(arg_nodes) and _unwrap(arg_nodes[0]) is not None and _unwrap(arg_nodes[0]).type == "string"
+            # A program a function of this file computes (spawn(node, [hostEntry(), ...])) is the path that function
+            # builds, or nothing known: the file's other strings name other things.
+            helped = self._helper_paths(node, arg_nodes)
+            if helped is not None:
+                found, named = helped + found, True
             self.res.spawns.append(Spawn(cid, found, [] if named else self.all_strings,
                                          "pipe" in _text(args) or "stdio" in _text(args), node.start_point[0] + 1))
         for a in arg_nodes:

@@ -971,6 +971,8 @@ def _plain_summary(b: dict) -> str:
     S = [_first_sentence(b["why"], 300)] if b["why"] else []
     existing = sorted({x for t in b["tasks"] for x in t["labels"]})
     new = list(dict.fromkeys(n.get("label") or n["name"] for t in b["tasks"] for n in t["new"]))
+    # a new function at the top of a file is labelled `file: name`; a sentence says it as `name` in file
+    new = [f"`{x.split(': ', 1)[1]}` in {x.split(': ', 1)[0]}" if ": " in x else x for x in new]
     did = ([f"changes {_some(existing)}"] if existing else []) + ([f"adds {_some(new)}"] if new else [])
     S.append(f"The plan has {_n(len(b['tasks']), 'task')}" + (f": it {' and '.join(did)}." if did else "."))
     imp = b["impact"]
@@ -1399,7 +1401,8 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings),
                       "kinds": reviews(con, cid), "all": all_findings},
            "baseline": review.get("baseline"),
-           "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results)} if results else None,
+           "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results),
+                           "skipped": sum(r["status"] == "skip" for r in results.values())} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
            "done_as_agreed": not verdict, "why_not": verdict, "verdicts": judged, "view_id": review.get("view_id")}
     from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
@@ -1492,12 +1495,12 @@ def verify_text(v: dict) -> str:
         L += ["", "**Rules that held before and fail now:**"] + [f"- {r['kind']} {r['from']} {r['to']}" for r in v["rules_newly_failing"]]
     t = v["tests"]
     if t:
-        L += ["", f"Tests: {t['before']['passed']} of {t['before']['total']} passed before, {t['after']['passed']} of {t['after']['total']} after."]
+        L += ["", f"Tests: {diff.passed_pair_text(t['before'], t['after'])}."]
         L += [f"- now fails: {x['name']}" + (f": {x['message']}" if x["message"] else "") for x in t["newly_failing"]]
         L += [f"- new, and fails: {x['name']}" + (f": {x['message']}" if x["message"] else "") for x in t.get("new_failing", [])]
     elif v.get("after_tests"):
         a = v["after_tests"]
-        L += ["", f"Tests: {a['passed']} of {a['total']} passed after the change. No run from before it was recorded, so a test "
+        L += ["", f"Tests: {diff.passed_text(a)} after the change. No run from before it was recorded, so a test "
                   "the change broke cannot be told from one that already failed."]
         L += [f"- fails: {r['name']}" for r in v.get("after_failing", [])[:10]]
     else:

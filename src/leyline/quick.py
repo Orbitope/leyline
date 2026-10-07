@@ -347,7 +347,7 @@ def start_text(b: dict) -> str:
     else:
         L.append("Must edit with it: nothing, as far as the map sees.")
     L.append(f"Runs into it: {spec._n(b['reached'], 'place')} in {spec._n(b['modules'], 'module')}"
-             + (f", first from {_names(b['callers'], 4)}" if b["callers"] else "") + "." if b["reached"]
+             + (f"; the nearest {_nearest(b['callers'])}" if b["callers"] else "") + "." if b["reached"]
              else "Runs into it: nothing else on the map calls it.")
     if b["channels"]:
         L += ["Channels: " + spec._crossing_line(c) for c in b["channels"][:3]]
@@ -370,7 +370,7 @@ def start_text(b: dict) -> str:
                  f"  Run them: `leyline affected-tests {b['change_id']}` prints the command ({spec._n(c['tests'], 'test')}).")
     t = b.get("tests_recorded")
     if t:
-        L.append(f"Recorded the tests as they are now: {t.get('pass', 0)} pass, {t.get('fail', 0)} fail.")
+        L.append(f"Recorded the tests as they are now: {diff.recorded_text(t)}.")
     elif b["baseline"] == "kept":
         L.append("The code has changed since this change was first started; `--done` still compares with the code as it was"
                  " then (`--new-baseline` starts over).")
@@ -391,6 +391,15 @@ def next_after_start(b: dict, for_agent: bool = False) -> list[str]:
     if for_agent:
         return [f"Make the change, run the tests, and call `quick` with done={cid!r} and their output as test_output."]
     return [f"Next: make the change, then run `<your test command> | leyline quick --done {cid} --tests -`."]
+
+
+def _nearest(callers: list[str]) -> str:
+    """`is `build`, which calls the changed code` / `are `build` and `cost`, which call the changed code`."""
+    xs = list(dict.fromkeys(callers))
+    if len(xs) == 1:
+        return f"is `{xs[0]}`, which calls the changed code"
+    said = _names(xs, 4) if len(xs) > 4 else ", ".join(f"`{x}`" for x in xs[:-1]) + f" and `{xs[-1]}`"
+    return f"are {said}, which call the changed code"
 
 
 def _names(xs: list[str], k: int = 4) -> str:
@@ -414,6 +423,31 @@ def stored(con, cid: str) -> Optional[dict]:
 def _inside(i: str, named: set) -> bool:
     from .pr import _inside as inside
     return inside(i, named) or inside(diff._base(i), {diff._base(n) for n in named})
+
+
+TOP_ASSIGN = re.compile(r"^(?:(?:export|const|let|var|final|static|pub)\s+)*([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=(?!=)")
+
+
+def _top_values(con, path: str, lines: list[int]) -> dict[str, list[int]]:
+    """The values set at the top of a file (no indentation: `LINE_MAX = 200`, `export const MAX = 3`) whose
+    statements hold some of `lines`: name -> those lines."""
+    if not lines:
+        return {}
+    row = con.execute("SELECT repo_id FROM nodes WHERE path = ? AND kind = 'file' LIMIT 1", (path,)).fetchone()
+    data = diff.source(con, row[0], path) if row else None
+    if data is None:
+        return {}
+    text = data.decode("utf-8", errors="replace").split("\n")
+    out: dict[str, list[int]] = {}
+    for k, line in enumerate(text, 1):
+        m = TOP_ASSIGN.match(line)
+        if not m:
+            continue
+        s, e = _statement(text, k)
+        held = [ln for ln in lines if s <= ln <= e]
+        if held:
+            out.setdefault(m.group(1), []).extend(held)
+    return out
 
 
 def _value_span(con, v: dict) -> Optional[tuple[int, int]]:
@@ -483,8 +517,13 @@ def judge(con, cid: str, a: dict, facts: dict, before_run: Optional[str], after_
         mine = [ln for ln in lines if any(s <= ln <= e for s, e in spans.get(path, []))]
         if mine:
             value_edited.append(path)
-        if len(mine) < len(lines):
-            top_outside.append({"name": f"the top level of {path}", "path": path, "lines": len(lines) - len(mine)})
+        rest = [ln for ln in lines if ln not in mine]
+        by_name = _top_values(con, path, rest)   # a constant set at the top of the file is named by its name
+        for name, lns in by_name.items():
+            top_outside.append({"name": name, "path": path, "lines": len(lns), "about": name})
+        left = [ln for ln in rest if not any(ln in lns for lns in by_name.values())]
+        if left:
+            top_outside.append({"name": f"the top level of {path}", "path": path, "lines": len(left)})
     tests_edited = [x["name"] for x in items if is_test(x) and x["name"] not in ("<module>", "<top-level>")]
     r = facts["reaches"]
     label = lambda i, fallback: spec._label(names, i) if i in names.by_id else fallback
@@ -526,8 +565,7 @@ def judge(con, cid: str, a: dict, facts: dict, before_run: Optional[str], after_
     elif delta is not None:
         tests = ((verdicts.CONTRADICTED, f"{spec._n(len(broke), 'test')} {'fails' if len(broke) == 1 else 'fail'} that"
                   " passed before, or are new and fail") if broke else
-                 (verdicts.PROVEN, f"{delta['after']['passed']} of {delta['after']['total']} pass, against"
-                  f" {delta['before']['passed']} of {delta['before']['total']} before"))
+                 (verdicts.PROVEN, diff.passed_pair_text(delta["before"], delta["after"], now_first=True)))
     elif failing_now:
         one = len(failing_now) == 1
         tests = (verdicts.INCONCLUSIVE, f"{spec._n(len(failing_now), 'test')} {'fails' if one else 'fail'}, and no run from"

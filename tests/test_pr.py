@@ -152,3 +152,41 @@ def test_a_moved_checkout_maps_without_parsing_again(tmp_path):
     (moved / "app/store.py").write_text(FILES["app/store.py"] + "\n\ndef more():\n    return 1\n")
     third = index(moved, db, "repo", "off", full=True)    # asked for: everything is parsed again
     assert third["incremental"]["files_parsed"] == len(FILES)
+
+
+def test_the_description_follows_the_commits_and_keeps_what_a_person_said(tmp_path, monkeypatch):
+    """A description made from commit messages is not stored as if someone said it: each review reads the commits
+    again, so a new commit shows; one given with --about is kept for the reviews after it."""
+    root = tmp_path / "repo"
+    for f, text in FILES.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    monkeypatch.chdir(root)
+
+    def said(page):
+        return next(ln for ln in page.splitlines() if ln.startswith("**What it says it does:**"))
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p)) + 0"))
+    page = run("pr", "main")[1]
+    assert page.startswith("# Review: Uncommitted edits on feature") and "no description given" in said(page)
+
+    git(root, "commit", "-qam", "Count one more way")
+    page = run("pr", "main")[1]
+    assert said(page) == "**What it says it does:** From its commit messages: Count one more way"
+    assert page.startswith("# Review: Count one more way")
+
+    use.write_text(use.read_text().replace("return helper(x)", "return helper(x) + 0"))
+    git(root, "commit", "-qam", "Double one more way")
+    page = run("pr", "main")[1]
+    assert "Double one more way" in said(page) and "Count one more way" in said(page)
+    assert said(page).count("Double one more way") == 1                       # each subject said once
+    assert page.startswith("# Review: Count one more way")                     # the title stays the first commit's
+
+    page = run("pr", "main", "--about", "Make counting and doubling agree")[1]
+    assert "Make counting and doubling agree" in said(page)
+    page = run("pr", "main")[1]
+    assert "Make counting and doubling agree" in said(page) and "commit messages" not in said(page)

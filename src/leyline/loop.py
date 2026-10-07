@@ -305,7 +305,7 @@ def plan_text(b: dict, name: str) -> str:
     t = b.get("tests_recorded")
     if t:
         L.append(t["error"] if "error" in t else
-                 f"Recorded the tests as they are before the change: {t.get('pass', 0)} pass, {t.get('fail', 0)} fail"
+                 f"Recorded the tests as they are before the change: {diff.recorded_text(t)}"
                  f" ({t['on_map']} named like tests on the map).")
     if b.get("reindexed"):
         L.append("The code had changed since it was mapped, so it was mapped again first.")
@@ -412,7 +412,7 @@ def check_text(v: dict, name: str) -> str:
     L = [f"Check of: {v['title']}", "", spec.verify_text(v).rstrip(), ""]
     if v.get("tests_recorded"):
         t = v["tests_recorded"]
-        L.append(f"Recorded the test results: {t.get('pass', 0)} pass, {t.get('fail', 0)} fail"
+        L.append(f"Recorded the test results: {diff.recorded_text(t)}"
                  f" ({t['on_map']} named like tests on the map).")
     if v.get("reindexed"):
         L.append("The code had changed since it was mapped, so it was mapped again first.")

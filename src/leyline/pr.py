@@ -679,7 +679,11 @@ def _described(root: Path, base_sha: str, db, given_id, github) -> str:
     except GitError:
         return ""
     msgs = [m.strip() for m in log.split("\0") if m.strip()][:20]
-    return ("From its commit messages: " + " / ".join(m.split("\n")[0] for m in msgs) + "\n\n" + "\n\n".join(msgs)) if msgs else ""
+    if not msgs:
+        return ""
+    subjects = " / ".join(m.split("\n")[0] for m in msgs)
+    # the whole messages only when one says more than its subject line: else the page reads each subject twice
+    return "From its commit messages: " + subjects + ("\n\n" + "\n\n".join(msgs) if any("\n" in m for m in msgs) else "")
 
 
 def _other_files(root: Path, base_sha: str, mapped: list[str]) -> list[str]:
@@ -913,8 +917,10 @@ def text(r: dict) -> str:
     # tests
     L += ["", "## Tests", ""]
     if t.get("likely_to_fail_unedited"):
+        one = len(set(t["likely_to_fail_unedited"])) == 1
         L.append("- **Likely to fail:** " + _names(t["likely_to_fail_unedited"], 6)
-                 + ": they call code whose signature changed, or that was removed, and were not edited.")
+                 + (": it calls code whose signature changed, or that was removed, and was not edited." if one else
+                    ": they call code whose signature changed, or that was removed, and were not edited."))
     if t["touched_by_the_change"] or t["test_files_changed"]:
         L.append("- The change edits or adds tests: " + _names(t["touched_by_the_change"] or t["test_files_changed"], 6) + ".")
     else:

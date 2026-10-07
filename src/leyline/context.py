@@ -14,7 +14,9 @@ and test on the map is ranked by personalized PageRank, seeded at the focus, ove
     contains                    0.3 between a type and its members, 0.2 between a file and what sits at its top
 
 Links run both ways: callers matter (they break when a signature changes) and so do callees (the agent calls
-them). The rank is worked out by forward push (Andersen, Chung and Lang), which only visits code near the focus, so
+them). A broad hub (an error class every script raises, a route most of the client requests) links code that shares
+nothing else, so a link through a node with more than HUB links counts for less, and such a node, unless it is
+linked to the focus, is shown in proportion to how few links it has. The rank is worked out by forward push (Andersen, Chung and Lang), which only visits code near the focus, so
 it costs milliseconds however large the map. Code a test reaches, and code an entry point runs first, get a small
 boost. The outline then shows, file by file, each chosen symbol's declaration line (not its body), with the focus
 marked `>`, each channel end said in words ("answers GET /api/x", "writes table t"), and the symbols that call the
@@ -40,6 +42,7 @@ WEIGHTS = {"calls": 1.0, "overrides": 1.0, "communicates": 1.0, "extends": 0.8, 
            "instantiates": 0.6, "uses_type": 0.4, "reads": 0.3, "writes": 0.3}
 IN_TYPE, IN_FILE = 0.3, 0.2      # containment: a member and its type; something at the top of a file and the file
 MAX_PAIR = 1.5                   # two nodes linked several ways count a little more, not without bound
+HUB = 12                         # a node with more links than this is a hub: each of its links counts sqrt(HUB/links)
 RESTART = 0.25                   # the walk's chance of going back to the focus at each step: higher keeps it nearer
 EPS = 2e-6                       # forward push stops when what is left at a node is below this times its degree
 TESTED_BOOST, ENTRY_BOOST = 1.15, 1.3
@@ -120,8 +123,15 @@ class Graph:
                 link(i, p, "contains", IN_TYPE)
         n = len(self.ids)
         self.adj: list[list] = [[] for _ in range(n)]
+        # A broad hub (an error class every scenario raises, a route half the client requests, a registrar of every
+        # route) links things that share nothing else: a link through it counts for less, the more it links.
+        links = [0] * n
+        for a, b in pair:
+            links[a] += 1
+            links[b] += 1
+        damp = [min(1.0, (HUB / c) ** 0.5) if c else 1.0 for c in links]
         for (a, b), ks in pair.items():
-            w = min(sum(ks.values()), MAX_PAIR)
+            w = min(sum(ks.values()), MAX_PAIR) * damp[a] * damp[b]
             self.adj[a].append((b, w))
             self.adj[b].append((a, w))
         self.deg = [sum(w for _, w in nb) for nb in self.adj]
@@ -133,6 +143,9 @@ class Graph:
             if si is not None and di is not None and si != di:
                 self.callees[si].add(di)
                 self.callers[di].add(si)
+        # A walk piles up at a hub because so much leads to it, not because it is near: past HUB links, a hub's score
+        # is taken in proportion to how many it has, as a reason to show it (unless it is linked to the focus itself).
+        self.hub = [min(1.0, HUB / c) if c else 1.0 for c in links]
         self.boost = [1.0] * n
         for (cid,) in con.execute(store.TESTED):
             if cid in ix:
@@ -407,8 +420,11 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
         if g.kind[u] == "file":
             fset |= {k for k, p in enumerate(g.parent) if p == u and _shown(g, k) and k in seeds}
     names = {u: _short(g, u) for u in fset}
-    ranked = sorted((u for u in scores if _shown(g, u) and u not in fset),
-                    key=lambda u: (-scores[u] * g.boost[u], g.ids[u]))
+    near = {v for u in seeds for v, _w in g.adj[u]}
+
+    def weight(u):   # the walk's score with its boosts, and a hub's share of it unless it is linked to the focus
+        return scores.get(u, 0.0) * g.boost[u] * (1.0 if u in near else g.hub[u])
+    ranked = sorted((u for u in scores if _shown(g, u) and u not in fset), key=lambda u: (-weight(u), g.ids[u]))
     order = sorted(fset, key=lambda u: -seeds.get(u, 0.0)) + ranked
     t_rank = time.perf_counter() - t0 - t_load
 
@@ -440,7 +456,7 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
             continue
         used += c
         chosen.update(need)
-        files[g.path[u]] = max(files.get(g.path[u], 0.0), 10.0 if u in fset else scores.get(u, 0.0) * g.boost[u])
+        files[g.path[u]] = max(files.get(g.path[u], 0.0), 10.0 if u in fset else weight(u))
 
     # Render: files by their best score, inside each by line, members under their type.
     out = [header, ""]

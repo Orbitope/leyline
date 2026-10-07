@@ -59,6 +59,11 @@ def enclosing(nodes, i: str) -> list[str]:
     return out
 
 
+def _side_entry(path: str) -> bool:
+    from .diagrams import _side_entry as side
+    return side(path)
+
+
 def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: Optional[dict] = None) -> dict:
     """Work out what a change reaches. Each target is {id, action, note?}; for action `add` it is
     {action: "add", name, parent, uses?: [ids], used_by?: [ids], note?}. `test_entries` maps entry points that are
@@ -304,6 +309,14 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
         if s:
             g = by_system.setdefault(s, {"system": sys_name.get(s, s), "id": s, "changed": 0, "must_edit": 0, "reached": 0})
             g["changed" if m["role"] in ("changed", "new") else "must_edit" if m["role"] in ("must_edit", "contract") else "reached"] += 1
+    for n in new_nodes:   # new code counts where it will be written, as the summary counts it among what changes
+        p, mod = n.get("parent"), None
+        while p in nodes and mod is None:
+            mod = p if nodes[p]["kind"] == "module" else module_of(p)
+            p = nodes[p]["parent_id"]
+        if mod:
+            by_module.setdefault(mod, {"module": nodes[mod]["name"], "id": mod, "repo": mod.split(":", 1)[0],
+                                       "changed": 0, "must_edit": 0, "reached": 0})["changed"] += 1
 
     must = [m for m in marks.values() if m["role"] in ("must_edit", "contract")]
     tests = [f for f in flows if f["kind"] == "test"]
@@ -351,7 +364,13 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
         "must_edit": [brief(m) for m in ordered if m["role"] in ("must_edit", "contract")][:80],
         "tests_to_run": [{"name": f["name"], "id": f["entry"], "touched_steps": f["touched_steps"],
                           **({"measured": True} if f.get("measured") else {})} for f in tests],
-        "entry_points_affected": [{"name": f["name"], "trigger": f["trigger"], "id": f["entry"]} for f in flows if f["kind"] != "test"][:40],
+        # a script's body is named by its file, never by the map's id for it (`app.tools.run.<module>`); the
+        # product's own entry points before scripts, benchmarks and examples
+        "entry_points_affected": [{"name": (nodes[f["entry"]]["path"] if f["entry"] in nodes and nodes[f["entry"]]["path"]
+                                            and nodes[f["entry"]]["name"] in ("<module>", "<top-level>") else f["name"]),
+                                   "trigger": f["trigger"], "id": f["entry"]}
+                                  for f in sorted((f for f in flows if f["kind"] != "test"),
+                                                  key=lambda f: _side_entry(nodes[f["entry"]]["path"] or "" if f["entry"] in nodes else ""))][:40],
         "untested": [{"id": t, "name": _label(nodes, t)} for t in untested][:40],
         "channels": [{**c, "from_name": _label(nodes, c["from"]), "to_name": _label(nodes, c["to"])} for c in channel_links],
         "by_module": sorted(by_module.values(), key=lambda g: -(g["changed"] * 100 + g["must_edit"] * 10 + g["reached"])),

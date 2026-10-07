@@ -151,6 +151,13 @@ def since(con, cid: str, facts_now: list[dict], fingerprint: Optional[str] = Non
             before = diff._open(snap)
             try:
                 d = diff.compare(before, con)
+                # A function whose text changed only inside one nested in it (a registrar around an edited route
+                # handler) is not an edit of its own, as on the pull request page.
+                ids = [n["id"] for n in d["nodes"]["edited"] + d["nodes"]["resigned"]]
+                own = diff.own_changes(before, con, ids)
+                if own is not None:
+                    for key in ("edited", "resigned"):
+                        d["nodes"][key] = [n for n in d["nodes"][key] if own.get(n["id"])]
             finally:
                 before.close()
         except sqlite3.Error:

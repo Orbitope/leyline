@@ -427,6 +427,8 @@ def main(argv=None) -> int:
                 stream.reconfigure(errors="replace")
             except (AttributeError, ValueError):
                 pass
+    from . import indexer
+    indexer.REPORTED = set()   # one command that maps twice (a pull request's base and head) says what it left out once
     try:
         return _main(argv)
     except KeyboardInterrupt:
@@ -445,6 +447,8 @@ def main(argv=None) -> int:
         print("leyline: ran out of memory. A repository this large needs more than this machine has free: close other"
               " programs, or map one part of it (a subdirectory) at a time.", file=sys.stderr)
         return 2
+    finally:
+        indexer.REPORTED = None
 
 
 def _store_problem(e: Exception) -> str:

@@ -220,13 +220,18 @@ def _base(qualified_id: str) -> str:
     return head if sep and qualified_id.endswith(")") else qualified_id
 
 
-def _changed_lines(old: list[int], new: list[int]) -> set[int]:
-    """The lines of the new text (from 1) that are new or edited, plus the line where any line was deleted."""
+def _changed_lines(old: list[int], new: list[int], gone: Optional[set] = None) -> set[int]:
+    """The lines of the new text (from 1) that are new or edited, plus the line where any line was deleted. A
+    deletion of nothing but code that is gone from the map (`gone`, old line numbers from 1: a removed function)
+    and blank lines marks no line: the removal is said as a removal, not as an edit of what was around it."""
     out = set()
+    blank = zlib.crc32(b"")
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if op in ("replace", "insert"):
             out.update(range(j1 + 1, j2 + 1))
         elif op == "delete":
+            if gone and all(k + 1 in gone or old[k] == blank for k in range(i1, i2)) and any(k + 1 in gone for k in range(i1, i2)):
+                continue
             out.add(max(1, j1))
     return out
 
@@ -259,7 +264,16 @@ def own_changes(before: sqlite3.Connection, after: sqlite3.Connection, ids: list
                 files[key] = None
             else:
                 text = data.decode("utf-8", errors="replace").split("\n")
-                changed = _changed_lines(_unpack(old[0]) if old else [], line_hashes(data))
+                gone = set()     # the old lines of code the map no longer has: removed functions, types, fields
+                try:
+                    for j, a, b in before.execute(
+                            f"SELECT id, span_start, span_end FROM nodes WHERE repo_id = ? AND path = ? AND span_start IS NOT NULL"
+                            f" AND kind IN ({','.join('?' * len(CODE_KINDS))})", (*key, *CODE_KINDS)).fetchall():
+                        if after.execute("SELECT 1 FROM nodes WHERE id = ?", (j,)).fetchone() is None:
+                            gone.update(range(a, (b or a) + 1))
+                except sqlite3.Error:
+                    gone = set()
+                changed = _changed_lines(_unpack(old[0]) if old else [], line_hashes(data), gone)
                 inner = [(r[0], r[1], r[2]) for r in after.execute(
                     f"SELECT id, span_start, span_end FROM nodes WHERE repo_id = ? AND path = ? AND span_start IS NOT NULL"
                     f" AND kind IN ({','.join('?' * len(CODE_KINDS))})", (*key, *CODE_KINDS))]
@@ -663,6 +677,29 @@ def review_text(r: dict) -> str:
     return "\n".join(lines)
 
 
+def passed_text(side: dict) -> str:
+    """`3854 of 3854 passed (1 skipped)`: a skipped test neither passed nor failed, so it is said apart."""
+    skipped = side.get("skipped", 0)
+    return f"{side['passed']} of {side['total'] - skipped} passed" + (f" ({skipped} skipped)" if skipped else "")
+
+
+def passed_pair_text(before: dict, after: dict, now_first: bool = False) -> str:
+    """`3854 of 3854 passed before, 3866 of 3866 after (1 skipped in each run)`; `now_first`: `7 of 7 pass, against
+    7 of 7 before`. A skipped test neither passed nor failed, so it is said apart."""
+    sb, sa = before.get("skipped", 0), after.get("skipped", 0)
+    out = (f"{after['passed']} of {after['total'] - sa} pass, against {before['passed']} of {before['total'] - sb} before"
+           if now_first else
+           f"{before['passed']} of {before['total'] - sb} passed before, {after['passed']} of {after['total'] - sa} after")
+    if sb or sa:
+        out += (f" ({sb} skipped in each run)" if sb == sa else f" (skipped: {sb} before, {sa} after)")
+    return out
+
+
+def recorded_text(t: dict) -> str:
+    """`3854 pass, 0 fail, 1 skipped`: the counts of a recorded run."""
+    return f"{t.get('pass', 0)} pass, {t.get('fail', 0)} fail" + (f", {t['skip']} skipped" if t.get("skip") else "")
+
+
 def test_delta(con, before_run: str, after_run: str) -> Optional[dict]:
     def load(run):
         return {r["name"]: r for r in con.execute("SELECT * FROM test_results WHERE run = ?", (run,))}
@@ -670,8 +707,10 @@ def test_delta(con, before_run: str, after_run: str) -> Optional[dict]:
     if not b or not a:
         return None
     return {
-        "before": {"run": before_run, "passed": sum(1 for r in b.values() if r["status"] == "pass"), "total": len(b)},
-        "after": {"run": after_run, "passed": sum(1 for r in a.values() if r["status"] == "pass"), "total": len(a)},
+        "before": {"run": before_run, "passed": sum(1 for r in b.values() if r["status"] == "pass"), "total": len(b),
+                   "skipped": sum(1 for r in b.values() if r["status"] == "skip")},
+        "after": {"run": after_run, "passed": sum(1 for r in a.values() if r["status"] == "pass"), "total": len(a),
+                  "skipped": sum(1 for r in a.values() if r["status"] == "skip")},
         "newly_failing": [{"name": n, "message": a[n]["message"]} for n in sorted(a) if a[n]["status"] == "fail" and b.get(n) and b[n]["status"] == "pass"],
         "newly_passing": [n for n in sorted(a) if a[n]["status"] == "pass" and b.get(n) and b[n]["status"] == "fail"],
         # A test that was not there before and fails now: as wrong as one that broke.

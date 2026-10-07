@@ -298,10 +298,17 @@ def _report_skipped(repo: str, skipped: list) -> None:
         by[why].append(f)
     for why, fs in sorted(by.items(), key=lambda kv: -len(kv[1])):
         if why in quiet:
-            print(f"leyline: {repo}: left out {len(fs)} file{'s' * (len(fs) != 1)}: {why}", file=sys.stderr)
+            line = f"leyline: {repo}: left out {len(fs)} file{'s' * (len(fs) != 1)}: {why}"
         else:
             shown = ", ".join(fs[:3]) + (f" and {len(fs) - 3} more" if len(fs) > 3 else "")
-            print(f"leyline: {repo}: left out {why}: {shown}", file=sys.stderr)
+            line = f"leyline: {repo}: left out {why}: {shown}"
+        if REPORTED is None or line not in REPORTED:   # a command that maps twice (a pull request's base and head)
+            if REPORTED is not None:                     # says it once
+                REPORTED.add(line)
+            print(line, file=sys.stderr)
+
+
+REPORTED: Optional[set] = None   # the lines said so far by the command running (leyline.cli sets it)
 
 
 def skipped_summary(skipped: list, failed: list) -> dict:
@@ -720,6 +727,45 @@ class FlowSteps:
 def _repo_of(node_id: str) -> str:
     """Every node id starts with its repo id: flask:python:..., flask:file:..., flask:module:..."""
     return node_id.split(":", 1)[0]
+
+
+_WILDCARD = re.compile(r"\*\w*|\(\.\*\)|:\w+(\*|\+|\(\.\*\))|\{\*\*?\w*\}")
+
+
+def _wildcard(segment: str) -> bool:
+    """A route segment that takes the rest of the path: Fastify's and Express's `*`, Express's `(.*)`, `:path*` and
+    `*name`, ASP.NET's `{*path}`."""
+    return bool(_WILDCARD.fullmatch(segment))
+
+
+def _segment_fits(route: str, request: str) -> bool:
+    """One segment of a route against one of a request: equal, or a parameter of the route (ASP.NET's [controller]
+    is the class's name, which clients write in lower case)."""
+    return route == request or route.startswith(("<", "{", ":")) or route.lower() == request.lower()
+
+
+def _fits_wildcard(route: list, request: list) -> bool:
+    """Does a request's path fit a route that ends in a wildcard? The wildcard takes one segment or more; a hole in
+    the request (`/api/lore/${rel}`, written {}) may itself be several segments, so it can cover the route's
+    parameters up to and including the wildcard. A hole never stands in for a segment the route spells out."""
+    k = len(route) - 1
+
+    def go(i: int, j: int) -> bool:
+        if i == k:
+            return j < len(request)
+        if j == len(request) or not _segment_fits(route[i], request[j]):
+            return False
+        if go(i + 1, j + 1):
+            return True
+        if request[j] != "{}":
+            return False
+        i2 = i + 1
+        while i2 < k and route[i2].startswith(("<", "{", ":")):
+            if go(i2 + 1, j + 1):
+                return True
+            i2 += 1
+        return i2 == k and j == len(request) - 1
+    return go(0, 0)
 
 
 class Indexer:
@@ -2786,10 +2832,14 @@ class Indexer:
 
         def fits(route, request):
             a, b = segments(route.address), segments(request.address)
-            if len(a) != len(b) or (route.method and request.method and route.method != request.method):
+            if route.method and request.method and route.method != request.method:
+                return False
+            if a and _wildcard(a[-1]):
+                return _fits_wildcard(a, b)
+            if len(a) != len(b):
                 return False
             # ASP.NET's [controller] is the class's name, which clients write in lower case
-            return all(x == y or x.startswith(("<", "{", ":")) or x.lower() == y.lower() for x, y in zip(a, b))
+            return all(_segment_fits(x, y) for x, y in zip(a, b))
         seen = set()
         for req, _ in requests:
             cands = [r for r, _ in routes if fits(r, req)]
@@ -2799,7 +2849,8 @@ class Indexer:
             chosen = near or (cands if len({r.src_id for r in cands}) == 1 else [])
             if handlers and len({r.src_id for r in chosen or cands}) > 1:   # several handlers, perhaps of one registrar
                 chosen = self._one_handler(chosen or cands, handlers, req.method,
-                                           lambda r: sum(1 for x in segments(r.address) if not x.startswith(("<", "{", ":")))) or chosen
+                                           lambda r: sum(1 for x in segments(r.address)
+                                                         if not x.startswith(("<", "{", ":")) and not _wildcard(x))) or chosen
             if req.role == "maybe":   # a path handed to a wrapper: a request only when exactly one route serves it
                 chosen = chosen if len(segments(req.address)) >= 2 and len({r.src_id for r in chosen}) == 1 else []
             elif cands and not chosen:
@@ -2877,6 +2928,13 @@ class Indexer:
                 fid = files_by_path[(repo, text)]
                 tops = [e.dst_id for e in self.edges if e.kind == "exposes" and self.file_of.get(e.dst_id) == fid]
                 return tops[0] if tops else fid
+            built = re.match(r"^(.*?/)?(?:dist|build|out|lib)/(.+)\.[cm]?js$", text)
+            if built:   # a built script (host/dist/index.js) runs the source it was built from (host/src/index.ts)
+                for src in ("src/", ""):
+                    for ext in (".ts", ".mts", ".cts", ".tsx", ".js", ".mjs"):
+                        source = f"{built.group(1) or ''}{src}{built.group(2)}{ext}"
+                        if (repo, source) in files_by_path:
+                            return match(source, repo)
             for path, mid in sorted(modules, key=lambda m: _repo_of(m[1]) != repo):   # own repository first
                 stem = text.rsplit("/", 1)[-1].rsplit(".", 1)[0] if "." in text.rsplit("/", 1)[-1] else None
                 if text == path or text.startswith(path + "/") or (stem and stem == path.rsplit("/", 1)[-1] and text.endswith((".dll", ".exe", ".csproj"))):
