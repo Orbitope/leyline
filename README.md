@@ -115,10 +115,29 @@ ready, done as agreed or not) and a paragraph in plain words, then:
 
 ### With an agent
 
-Register `leyline --db <repo>/.leyline/leyline.db serve` as an MCP server. The agent's path is the same
-three tools, `map`, `plan` and `check`, each returning `next`; the skills in `skills/` say how to write
-the spec (`leyline-spec`), review it (`leyline-adversarial-review`), assess any change
-(`leyline-change-impact`) and explain the code (`leyline-tour`).
+The agent uses the same loop through Leyline's MCP server. To connect it to Claude Code, run this in
+the root of the repository you will work on:
+
+```bash
+claude mcp add leyline -- leyline serve                 # this repository only
+claude mcp add -s user leyline -- leyline serve         # or: every project you open
+```
+
+and, once, from Leyline's own checkout, `mkdir -p ~/.claude/skills && cp -r skills/* ~/.claude/skills/`
+to give Claude Code the four skills below.
+
+Claude Code starts the server in the directory it was opened in, and the server reads the store there,
+`.leyline/leyline.db`. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
+installed in a virtual environment, give its full path (`-- /path/to/venv/bin/leyline serve`); for a
+store elsewhere, such as a workspace mapped from another directory, add `-e LEYLINE_DB=/full/path/leyline.db`
+before the `--`. `claude mcp list` should then show `leyline` as connected.
+
+The agent's path is the same three tools, `map`, `plan` and `check`, each returning `next`, with the
+review tools between plan and implementation; the server's instructions give the agent that order.
+The skills in `skills/` say how to write the spec (`leyline-spec`), review it
+(`leyline-adversarial-review`), assess any change (`leyline-change-impact`) and explain the code
+(`leyline-tour`). Answers are kept short enough for an agent's context: long lists are cut, and the
+answer says what was cut (`cut`) and how to see the rest (`more`).
 
 Everything below is the detail: the other commands, how the map is built, and how far to trust it.
 `leyline --help` lists the other commands under "advanced".
@@ -408,32 +427,37 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `map(paths?)` | Step 1: index the code (or map again what the store holds); counts, the map page, `next` |
 | `plan(change, test_output?, test_results?)` | Step 2: the one page for a change, `status.blocking`, `next`; records the tests from before |
 | `check(change, test_output?, test_results?)` | Step 3: re-index, record the tests from after, the verdict and `next` |
-| `overview` | Repos, modules with sizes, module-to-module dependencies by edge kind, external packages, extractor status |
+| `overview(scope?, limit?)` | Repos, modules with sizes, module-to-module dependencies by edge kind, systems, external packages, extractors that ran |
 | `cross_repo` | In a workspace of several repositories: links between them, functions most called across, flows that cross and come back |
-| `expand(node_id)` | One node in detail: contents, dependencies, dependents, callers and callees |
-| `search(text, kind?)` | Nodes matching a name, qualified name or path |
-| `neighbors(node_id, direction?, kinds?)` | Raw edges around a node |
-| `source(node_id)` | The node's source text |
-| `flows(kind?, through?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
-| `flow(flow_id)` | One flow step by step, in source order, with call depth |
+| `search(text, kind?, limit?)` | Node ids matching a name, qualified name or path |
+| `expand(node_id, limit?)` | One node in detail: contents, dependencies, dependents, callers and callees |
+| `neighbors(node_id, direction?, kinds?, limit?)` | Raw edges around a node, by kind |
+| `source(node_id, max_lines?)` | The node's source text |
+| `flows(kind?, through?, limit?, offset?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
+| `flow(flow_id, max_steps?, offset?)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |
-| `impact(node_id)` | What can reach a node: callers by module and the flows through it |
+| `impact(node_id, max_depth?, limit?)` | What can reach a node: callers by module and the flows through it |
 | `annotate(node_id, key, value, evidence, confidence, layer)` | Write an inferred or intent statement about a node |
-| `propose_change(intent, targets, title?)` | Assess a change before it is made and save its blast-radius view |
+| `propose_change(intent, targets, title?)` | Assess a change without an OpenSpec folder and save its blast-radius view |
 | `save_view(title, narrative, marks, legend?)` | Save any set of marked nodes as a view |
-| `review_change(change_id, before_run?, after_run?)` | Compare an implemented change with its proposal and save a review view |
-| `record_test_run(run, results)` | Store one test run under a label |
+| `review_change(change_id, before_run?, after_run?)` | Compare a change assessed with `propose_change` with what was done, and save a review view |
+| `record_test_run(run, results)` | Store one test run under a label, for `review_change` |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
-| `spec_brief(change_dir)`, `spec_verify(change_dir, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time |
-| `spec_review_facts(change_dir, reviewer?)`, `spec_finding(...)`, `spec_findings(change_id)`, `spec_resolve(...)` | Adversarial review of a spec |
+| `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change |
+| `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
-| `patterns(pattern?, node_id?)` | Design patterns found by shape, with roles, rationale and confidence |
+| `patterns(pattern?, node_id?, limit?)` | Design patterns found by shape, with roles, rationale and confidence |
 | `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |
 | `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |
 | `save_tour(title, stops, audience?)` | Save a tour written for the user |
-| `views()`, `view(view_id)` | List saved views, or read one in full |
+| `views()`, `view(view_id, limit?)` | List saved views, or read one |
+
+`change` is a change folder or its id. A tool that cannot answer returns an error saying what to do
+instead (no store yet: call `map`; an unknown id: find it with `search`). Each answer is at most about
+24,000 characters: lists show their first items and their total, `cut` names any list that was
+shortened, and `more` says how to see the rest (`limit`, `offset`, `scope`, or a narrower id).
 
 ## What is indexed
 
