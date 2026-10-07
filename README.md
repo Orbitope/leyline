@@ -26,6 +26,9 @@ folder; `skills/leyline-spec/SKILL.md` tells it how. `<change>` is the folder or
 A change someone else already wrote (a branch, a pull request) has no spec. Check it out and run
 `leyline pr [base]` instead: see [Reviewing a pull request](#reviewing-a-pull-request).
 
+A one-line fix needs no spec either: `leyline quick "make the retry count 3" --about RETRIES` before, and
+`leyline quick --done quick-make-the-retry-count-3 --tests -` after. See [A quick change](#a-quick-change).
+
 ### A worked example
 
 The repository `tests/fixture2` has a small Python package with an `Engine` class and its tests.
@@ -381,6 +384,38 @@ files one, and the page lists them. A finding whose evidence is nowhere near the
 radius, nor one call from it) is kept but marked, so the person questions it first. `leyline spec forget
 pr-123` deletes the base's map.
 
+### A quick change
+
+A spec folder is too much for "make the retry count 3". `leyline quick` gives the same three answers with no folder:
+
+```
+pytest -rA | leyline quick "make the retry count 3" --about RETRIES fetch --tests -
+... edit ...
+pytest -rA | leyline quick --done quick-make-the-retry-count-3 --tests -
+```
+
+Before the edit it looks up the named code as a task's names are looked up (`--about`, or names in backticks in the
+sentence; a constant the map has no node for is found where it is set, with the functions that read it), assesses what
+it reaches, records the test run, keeps a baseline, and prints a short page: what it will touch, what must be edited
+with it, the channels it touches or is reached across, the tests that run it, and the command to run when done.
+
+After the edit, `--done` maps the code again and compares it with the baseline as `leyline pr` compares a branch with its
+base. One line gives the verdict, then four items, each proven, partial, contradicted, inconclusive or needs a person:
+the edits stayed in the named code (a new helper only it calls, and a caller updated to match a changed signature,
+count as part of it), no caller was left broken, no test broke against the run from before, and a test that passed ran
+the changed code. It exits 0 when nothing that blocks is left (by default partial, contradicted and inconclusive; the
+project's `openspec/leyline.toml` applies). An edit that belongs but was not named is named afterwards, keeping the
+baseline: `leyline quick --done <id> --about <name>`.
+
+When the change has grown past quick (more than three functions edited, a channel crossed, or a caller that must
+change left as it was), the page says so and gives the way into a spec: write `openspec/changes/<id>/`, run
+`leyline quick --to-spec <id> quick-<slug>` to hand it this baseline and the test run from before, then `leyline plan
+<id>` and `leyline check <id>`.
+
+The change is stored as `quick-<slug>`, and the review steps take it as they take `pr-<id>`: `leyline spec facts
+quick-<slug> --reviewer logic`, `leyline spec finding`, `leyline spec findings`, `leyline affected-tests` and
+`leyline spec forget quick-<slug>` (which deletes its baseline). The MCP tool is `quick`.
+
 ### Learning from rejected findings
 
 Many review findings that people reject are correct about the code but miss a choice made on purpose. So
@@ -653,6 +688,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
 | `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
+| `quick(what?, names?, done?, test_output?, test_results?, coverage_path?, change_id?)` | A small change with no spec folder: before (`what`, `names`), what it touches and the tests that run it; after (`done`), one verdict, and `grown` when it needs a spec |
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
 | `learnings(retire?, why?)` | Past decisions on review findings, kept from rejections with a reason; `retire` one the person says no longer holds |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |

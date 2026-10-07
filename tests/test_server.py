@@ -427,6 +427,30 @@ def test_long_answers_are_cut_to_fit_and_say_so():
     assert len(capped["keep"]) == 30 and len(capped["a"]) == 10
 
 
+def test_a_quick_change_over_mcp(repo):
+    """A one-line change with no spec folder: quick before, edit, quick with done after."""
+    before = run_tests(repo)
+
+    async def script(a: Agent, tools, init):
+        assert "`what`" in await a.fail("quick")
+        b = await a.call("quick", what="engine names in upper case", names=["Engine.start"], test_output=before)
+        assert b["change_id"] == "quick-engine-names-in-upper-case" and "Will touch: `Engine.start`" in b["page"]
+        assert b["tests_to_run"] and "done=" in b["next"][0]
+        core = repo / "py/src/pkg/core.py"
+        core.write_text(core.read_text().replace("        return self.name\n", "        return self.name.upper()\n", 1))
+        tests = repo / "py/tests/test_engine.py"
+        tests.write_text(tests.read_text().replace('engine.start() == "fixture"', 'engine.start() == "FIXTURE"'))
+        v = await a.call("quick", done=b["change_id"], test_output=run_tests(repo))
+        assert v["done"] is True and "**Done.**" in v["page"], v["page"]
+        assert {x["key"]: x["verdict"] for x in v["items"]} == {"scope": "proven", "callers": "proven", "tests": "proven",
+                                                               "ran": "proven"}
+        facts = await a.call("spec_review_facts", change=b["change_id"], reviewer="logic")
+        assert "Engine.start" in facts["named_code"]
+        assert "no quick change 'quick-nope'" in await a.fail("quick", done="quick-nope")
+
+    serve(repo, script)
+
+
 def test_every_tool_was_called():
     """Runs last in this file: each tool the server lists was called by some test above."""
     if not LISTED or len(CALLED) < 10:

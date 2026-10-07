@@ -9,6 +9,10 @@ The person decides the design. You write it down in a form that can be checked, 
 it against the code. The person should finish able to say three things in a sentence each: what
 code will be written, what it will affect, and how they will know it was done.
 
+For a change of a function or two and a constant, with no design to agree (a value, a one-line fix), skip the folder:
+use `quick` (`leyline quick "<what>" --about <names>` before, `--done quick-<slug>` after), and write a spec only if its
+answer says the change grew.
+
 It works with the Leyline MCP server or with the `leyline` command alone. Without the server, use the
 command for each tool this skill names:
 
