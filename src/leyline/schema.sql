@@ -69,14 +69,19 @@ CREATE TABLE IF NOT EXISTS flows (
   id TEXT PRIMARY KEY, name TEXT, origin TEXT, entry_id TEXT, weight REAL,
   group_id TEXT, layer TEXT, source TEXT, attrs TEXT
 );
-CREATE TABLE IF NOT EXISTS flow_steps (
-  flow_id TEXT, seq INTEGER, depth INTEGER, callable_id TEXT, edge_id INTEGER,
-  via TEXT,            -- start | calls | runs | dispatch | event | process
+-- Flow steps are the largest table by far (millions of rows on a big repository), so they are stored as
+-- integers: every id once in `keys`, every step as a row of numbers. Readers use the `flow_steps` view,
+-- which store.connect creates and which has the columns of the original table.
+CREATE TABLE IF NOT EXISTS keys (k INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE);
+CREATE INDEX IF NOT EXISTS flows_entry ON flows(entry_id);
+CREATE TABLE IF NOT EXISTS steps (
+  flow INTEGER, seq INTEGER, depth INTEGER, callable INTEGER,
+  via INTEGER,         -- index into store.VIA
   site_line INTEGER,   -- line of the call that led here
-  parent_seq INTEGER   -- the step this one was reached from
-);
-CREATE INDEX IF NOT EXISTS flow_steps_flow ON flow_steps(flow_id, seq);
-CREATE INDEX IF NOT EXISTS flow_steps_callable ON flow_steps(callable_id);
+  parent_seq INTEGER,  -- the step this one was reached from
+  PRIMARY KEY (flow, seq)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS steps_callable ON steps(callable, flow);
 CREATE TABLE IF NOT EXISTS pattern_instances (
   id TEXT PRIMARY KEY, pattern TEXT, matcher TEXT, rationale TEXT,
   confidence REAL, evidence_hash TEXT, stale INTEGER DEFAULT 0

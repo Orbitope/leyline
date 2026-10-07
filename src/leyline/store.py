@@ -31,8 +31,47 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         for col in cols:
             if col not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+    _flow_steps_view(con)
     con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
     return con
+
+
+VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel")
+_VIA_CASE = "CASE s.via " + " ".join(f"WHEN {i} THEN '{v}'" for i, v in enumerate(VIA)) + " END"
+
+
+def _flow_steps_view(con) -> None:
+    """`flow_steps` as readers know it, over the integer tables. A store written before the change has a
+    real `flow_steps` table: its rows are moved across once."""
+    kind = con.execute("SELECT type FROM sqlite_master WHERE name = 'flow_steps'").fetchone()
+    if kind is not None and kind[0] == "table":
+        rows = con.execute("SELECT flow_id, seq, depth, callable_id, via, site_line, parent_seq FROM flow_steps").fetchall()
+        con.execute("DROP TABLE flow_steps")
+        _insert_steps(con, rows)
+        kind = None
+    if kind is None:
+        con.execute(f"""CREATE VIEW flow_steps AS
+            SELECT fk.id AS flow_id, s.seq, s.depth, ck.id AS callable_id, NULL AS edge_id, {_VIA_CASE} AS via,
+                   s.site_line, s.parent_seq
+            FROM steps s JOIN keys fk ON fk.k = s.flow JOIN keys ck ON ck.k = s.callable""")
+
+
+def _keys(con, ids) -> dict:
+    ids = list(dict.fromkeys(ids))
+    con.executemany("INSERT OR IGNORE INTO keys (id) VALUES (?)", [(i,) for i in ids])
+    out = {}
+    for i in range(0, len(ids), 900):
+        chunk = ids[i:i + 900]
+        out.update((r[1], r[0]) for r in con.execute(f"SELECT k, id FROM keys WHERE id IN ({','.join('?' * len(chunk))})", chunk))
+    return out
+
+
+def _insert_steps(con, steps) -> None:
+    key = _keys(con, [s[0] for s in steps] + [s[3] for s in steps])
+    via = {v: i for i, v in enumerate(VIA)}
+    con.executemany("INSERT OR REPLACE INTO steps (flow, seq, depth, callable, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
+                    [(key[f], seq, depth, key[c], via.get(v, via["channel"]), line, parent)
+                     for f, seq, depth, c, v, line, parent in steps])
 
 
 def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
@@ -42,7 +81,8 @@ def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
     con.execute(f"DELETE FROM edges WHERE layer = 'fact' AND src_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM ancestry WHERE node_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM search WHERE node_id IN ({ids})", (repo_id,))
-    con.execute(f"DELETE FROM flow_steps WHERE flow_id IN (SELECT id FROM flows WHERE entry_id IN ({ids}))", (repo_id,))
+    con.execute(f"DELETE FROM steps WHERE flow IN (SELECT k FROM keys WHERE id IN (SELECT id FROM flows WHERE entry_id IN ({ids})))",
+                (repo_id,))
     con.execute(f"DELETE FROM flows WHERE layer = 'fact' AND entry_id IN ({ids})", (repo_id,))
     con.execute("DELETE FROM nodes WHERE repo_id = ? AND layer = 'fact'", (repo_id,))
     con.execute("DELETE FROM extractor_coverage WHERE repo_id = ?", (repo_id,))
@@ -87,9 +127,7 @@ def write_flows(con, repo_id: str, flows, steps) -> None:
         "INSERT OR REPLACE INTO flows (id, name, origin, entry_id, weight, group_id, layer, source, attrs)"
         " VALUES (?,?,?,?,?,?,?,?,?)",
         [(f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], json.dumps(f[8])) for f in flows])
-    con.executemany(
-        "INSERT INTO flow_steps (flow_id, seq, depth, callable_id, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
-        steps)
+    _insert_steps(con, steps)
 
 
 def evidence_hash(con, evidence: Iterable[str]) -> str:

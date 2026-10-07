@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import json
+import os
 import re
 import subprocess
 import time
@@ -85,6 +86,50 @@ def _arity(type_id: str) -> int:
     return int(tail[1]) if len(tail) == 2 and tail[1].isdigit() else 0
 
 
+def _parse_one(job):
+    """Parse one file: (path, ext, module dir, module id, lines, sha1, result or None, error or None).
+    Runs in a worker process on large repositories, so it touches nothing but its arguments."""
+    root, repo, (f, ext, mod_dir, mod_id) = job
+    data = (Path(root) / f).read_bytes()
+    loc, sha = data.count(b"\n") + 1, hashlib.sha1(data).hexdigest()
+    adapter = BY_EXTENSION[ext]
+    try:
+        res = adapter.parse(repo, f, f"{repo}:file:{f}", data, mod_dir or ".")
+    except Exception as exc:
+        return f, ext, mod_dir, mod_id, loc, sha, None, str(exc)[:300]
+    lines = data.split(b"\n")
+    for n in res.nodes:
+        if n.span_start and n.kind in ("type", "callable", "test", "field"):
+            # A hash of the node's own text, so a later index can tell which nodes were edited.
+            n.content_hash = hashlib.sha1(b"\n".join(ln.strip() for ln in lines[n.span_start - 1:n.span_end])).hexdigest()[:16]
+    return f, ext, mod_dir, mod_id, loc, sha, res, None
+
+
+def _jobs() -> int:
+    env = os.environ.get("LEYLINE_JOBS")
+    if env and env.isdigit():
+        return max(1, int(env))
+    return max(1, min(os.cpu_count() or 1, 16))
+
+
+def _parse_all(root: Path, repo: str, work: list):
+    """Parse every file, across processes when there are enough files to pay for starting them.
+    Results come back in the order given, so the index is the same however many processes ran."""
+    jobs = _jobs()
+    items = [(str(root), repo, w) for w in work]
+    if jobs == 1 or len(items) < 300:
+        yield from map(_parse_one, items)
+        return
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    try:
+        ctx = multiprocessing.get_context("fork")
+    except ValueError:
+        ctx = None   # no fork (Windows): the default start method works, it is only slower to begin
+    with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as pool:
+        yield from pool.map(_parse_one, items, chunksize=max(4, len(items) // (jobs * 16)))
+
+
 class Indexer:
     def __init__(self, root: str | Path, repo_id: Optional[str] = None):
         self.root = Path(root).resolve()
@@ -147,6 +192,7 @@ class Indexer:
         self._add(Node(id=self.repo, kind="repo", name=self.repo, path="",
                        attrs={"url": _git(self.root, "remote", "get-url", "origin"),
                               "branch": _git(self.root, "rev-parse", "--abbrev-ref", "HEAD")}))
+        work = []
         for f in files:
             ext = "." + f.rsplit(".", 1)[-1] if "." in f else ""
             adapter = BY_EXTENSION.get(ext)
@@ -154,29 +200,22 @@ class Indexer:
                 continue
             mod_dir = _module_for(f, module_dirs)
             mod_id = self._module(mod_dir, files)
-            data = (self.root / f).read_bytes()
+            work.append((f, ext, mod_dir, mod_id))
+        for f, ext, mod_dir, mod_id, loc, sha, res, failed in _parse_all(self.root, self.repo, work):
+            adapter = BY_EXTENSION[ext]
             file_id = f"{self.repo}:file:{f}"
             self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
-                           language=adapter.LANGUAGE, path=f, span_start=1,
-                           span_end=data.count(b"\n") + 1,
-                           content_hash=hashlib.sha1(data).hexdigest(),
-                           attrs={"loc": data.count(b"\n") + 1}))
-            try:
-                res = adapter.parse(self.repo, f, file_id, data, mod_dir or '.')
-            except Exception as exc:  # one bad file must not sink the run
+                           language=adapter.LANGUAGE, path=f, span_start=1, span_end=loc,
+                           content_hash=sha, attrs={"loc": loc}))
+            if res is None:   # one bad file must not sink the run
                 self.stats[adapter.NAME]["files_failed"] += 1
-                print(f"leyline: failed to parse {f}: {exc}", file=sys.stderr)
+                print(f"leyline: failed to parse {f}: {failed}", file=sys.stderr)
                 continue
             self.results[file_id] = res
             self.file_of_path[f] = file_id
             self.file_lang[file_id] = adapter.LANGUAGE
             self.stats[adapter.NAME]["files"] += 1
-            lines = data.split(b"\n")
             for n in res.nodes:
-                if n.span_start and n.kind in ("type", "callable", "test", "field"):
-                    # A hash of the node's own text, so a later index can tell which nodes were edited.
-                    body = b"\n".join(ln.strip() for ln in lines[n.span_start - 1:n.span_end])
-                    n.content_hash = hashlib.sha1(body).hexdigest()[:16]
                 self._add(n)
             self.edges.extend(res.edges)
         self.timing["parse"] = round(time.perf_counter() - started, 3)
