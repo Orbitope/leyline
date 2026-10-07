@@ -115,7 +115,6 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
               scip: Optional[list[str]] = None, page: bool = True) -> dict:
     """Index, write the browsable map page next to the store, and count what was found. With no paths, map
     again the repositories the store already holds."""
-    from . import export
     from .indexer import index
 
     began = time.perf_counter()
@@ -133,12 +132,22 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
         out = {"db": str(db), "seconds": round(time.perf_counter() - began, 1), **counts(con),
                "timing": stats.get("timing", {}), "exact": {k: v for k, v in stats.items() if k.startswith("exact:")}}
         if page:
-            path = Path(db).parent / "map.html"
-            path.write_text(export.page(con))
-            out["page"] = str(path)
+            out["page"] = str(write_page(con, db, always=True))
     finally:
         con.close()
     return out
+
+
+def write_page(con, db: str | Path, open_change: Optional[str] = None, always: bool = False) -> Optional[Path]:
+    """The map page beside the store. `map` writes it; `plan` and `check` rewrite it when it is there, opening
+    on their change, so the page a person already has open shows the change after a reload."""
+    from . import export
+
+    path = Path(db).parent / "map.html"
+    if not always and not path.is_file():
+        return None
+    path.write_text(export.page(con, open_change=open_change))
+    return path
 
 
 def counts(con) -> dict:
@@ -212,6 +221,9 @@ def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] =
                 b["tests_recorded"] = _record(con, spec.run_label(b["change_id"], "before"), results)
                 b["baseline_tests"] = True
                 spec._write(Path(b["written"]), spec.brief_text(b))   # the page now knows the baseline is there
+        page = write_page(con, db, b["change_id"])   # after leyline.md is final, since the page embeds it
+        if page:
+            b["page"] = str(page)
     finally:
         con.close()
     return b
@@ -229,6 +241,8 @@ def plan_text(b: dict, name: str) -> str:
     if b.get("baseline") == "kept":
         L.append("The code has changed since the first plan; `leyline check` still compares with the code as it was then.")
     L.append(f"Written to {_show(b['written'])}")
+    if b.get("page"):
+        L.append(f"Map page: {_show(b['page'])} (opens on this change)")
     L += ["", *next_after_plan(b, name)]
     return "\n".join(L)
 
@@ -274,6 +288,9 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         # Results recorded earlier describe code that has since changed.
         v["tests_old"] = bool(reindexed) and results is None and has(after)
         v["tests_missing"] = not has(after)
+        page = write_page(con, db, v["change_id"])
+        if page:
+            v["page"] = str(page)
     finally:
         con.close()
     return v
@@ -289,6 +306,8 @@ def check_text(v: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if v.get("written"):
         L.append(f"Written to {_show(v['written'])}")
+    if v.get("page"):
+        L.append(f"Map page: {_show(v['page'])} (opens on this change)")
     L += ["", *next_after_check(v, name)]
     return "\n".join(L)
 
