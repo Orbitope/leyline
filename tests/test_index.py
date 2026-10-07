@@ -1103,7 +1103,7 @@ def test_map_plan_check_from_the_command_line(tmp_path, monkeypatch, capsys):
     assert "| Start | passes |" in page and "| Shout | passes |" in page and page.count("## 4. Was it done as agreed") == 1
 
 
-FIXTURE5 = Path(__file__).parent / "fixture5"
+FIXTURE5 = Path(__file__).parent / "fixture6"
 
 
 @pytest.fixture(scope="module")
