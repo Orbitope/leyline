@@ -21,6 +21,9 @@ command for each tool this skill names:
 | `spec_review_facts` | `leyline spec facts <id> --reviewer logic` (or `performance`) |
 | `spec_finding` | `leyline spec finding <id> --reviewer logic --severity medium --claim "..." --evidence <node id> --proposal "..."` |
 | `spec_findings`, `spec_resolve` | `leyline spec findings <id>`, `leyline spec resolve <finding id> accepted\|rejected\|deferred "why"` |
+| `check` (with `coverage_path`) | `... \| leyline check <id> --tests - --coverage .coverage` (per-test coverage: `pytest --cov --cov-context=test`) |
+| `affected_tests` | `leyline affected-tests <id>`: the tests to run for the change, as a command |
+| `drift` (`accept`) | `leyline drift` (`--accept`) |
 
 Where this skill says a result field (`next`, `status.blocking`, `page`), the command prints the same
 thing: the `Next:` line, the "Before implementation" list, and the plan itself. If neither the server nor
