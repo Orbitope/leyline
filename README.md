@@ -264,8 +264,9 @@ outside the spec.
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
 the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
 That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once, holding only what the
-comparison reads (nodes and their hashes, links, flows, a hash per source line), and deleted when the
-change is checked done as agreed or with `leyline spec forget <id>`. `leyline map` writes
+comparison reads (nodes and their hashes, links, flows, a hash per source line). It stays after the
+change is checked done as agreed, so `check` can run again after a later edit, and is deleted with
+`leyline spec forget <id>` or once the change folder is archived or removed. `leyline map` writes
 `.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.

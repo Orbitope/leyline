@@ -591,9 +591,10 @@ def _data_access(con, row) -> dict:
     return {}
 
 
-def shared_state(con, scope: Optional[str] = None, limit: int = 40) -> dict:
+def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: bool = True) -> dict:
     """Fields assigned from outside the type that declares them, most widely written first.
-    `scope` narrows to a module, type or path prefix of the field's id."""
+    `scope` narrows to a module, type or path prefix of the field's id. `guesses=False` leaves out links found only
+    by a unique field name."""
     parent = {r["id"]: (r["parent_id"], r["kind"]) for r in con.execute("SELECT id, parent_id, kind FROM nodes")}
     module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
@@ -613,7 +614,8 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40) -> dict:
         seen = seen or set()
         return t == base or any(b not in seen and not seen.add(b) and is_a(b, base, seen) for b in supers.get(t, ()))
     writers, readers = defaultdict(set), defaultdict(set)
-    for e in con.execute("SELECT kind, src_id, dst_id, attrs FROM edges WHERE kind IN ('reads', 'writes')"):
+    for e in con.execute("SELECT kind, src_id, dst_id, attrs FROM edges WHERE kind IN ('reads', 'writes')"
+                         + ("" if guesses else " AND COALESCE(precision, '') != 'guess'")):
         if e["kind"] == "writes" and json.loads(e["attrs"] or "{}").get("init"):
             continue  # filling in a new object is construction, not a change to shared state
         if e["kind"] == "writes" and names.get(e["src_id"]) in (".ctor", "__init__") and owner(e["src_id"]) == owner(e["dst_id"]):

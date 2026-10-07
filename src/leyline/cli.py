@@ -17,7 +17,14 @@ DEFAULT_DB = ".leyline/leyline.db"
 
 
 def _spec(con, args) -> int:
-    from . import spec
+    from . import loop, spec
+    if args.action != "resolve":   # a change folder or its id, as plan and check take it
+        folder = loop.find_change(args.target, args.db)
+        if folder is None and args.action in ("brief", "verify", "facts"):
+            print(f"leyline: no change folder {args.target!r}: looked for it as a path and under openspec/changes/.",
+                  file=sys.stderr)
+            return 2
+        args.target = str(folder) if folder is not None else args.target
     if args.action == "brief":
         r = spec.brief(con, args.target, new_baseline=args.new_baseline)
         if "error" in r:
@@ -76,7 +83,7 @@ def _impact(con, args) -> int:
     if args.json:
         _print(r)
         return 0
-    print(f"{found['id']}\nreached by {r['reached_by']} places within {r['depth_limit']} calls"
+    print(f"{found['id']}\nreached by {_n(r['reached_by'], 'place')} within {_n(r['depth_limit'], 'call')}"
           + (", across modules" if r["crosses_module_boundary"] else "")
           + (", across repositories" if r["crosses_repo_boundary"] else ""))
     for m in r["by_module"]:
@@ -92,6 +99,11 @@ def _impact(con, args) -> int:
             print(f"  and {t['total'] - 10} more (--json lists 40)")
     print(r["note"])
     return 0
+
+
+def _n(n: int, word: str, plural: str = "") -> str:
+    """A count and its noun: 1 file, 2 files."""
+    return f"{n:,} {word if n == 1 else plural or word + 's'}"
 
 
 def _print(obj) -> None:
@@ -362,7 +374,7 @@ def _main(argv=None) -> int:
     p.add_argument("--claim", help="finding: one sentence a person can check")
     p.add_argument("--evidence", nargs="*", default=[], help="finding: node ids that show it")
     p.add_argument("--proposal", default="", help="finding: the change to the spec")
-    p.add_argument("target", help="the change folder (openspec/changes/<id>), or a finding id for resolve")
+    p.add_argument("target", help="the change folder (openspec/changes/<id>) or its id, or a finding id for resolve")
     p.add_argument("status", nargs="?", choices=["accepted", "rejected", "deferred", "open"], help="for resolve")
     p.add_argument("reason", nargs="?", help="for resolve: why")
     p.add_argument("--before", help="verify: label of the test run recorded before the change")
@@ -391,7 +403,7 @@ def _main(argv=None) -> int:
         db = args.db if explicit else str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB
         stats = index(args.path if len(args.path) > 1 else args.path[0], db, args.repo, args.exact, args.scip, full=args.full)
         t = stats.get("timing", {})
-        print(f"indexed into {db}: {t.get('files', 0):,} files, {t.get('lines', 0):,} lines in {t.get('total_seconds', 0)} s"
+        print(f"indexed into {db}: {_n(t.get('files', 0), 'file')}, {_n(t.get('lines', 0), 'line')} in {t.get('total_seconds', 0)} s"
               f" ({t.get('lines_per_second', 0):,} lines/s)")
         _print(stats)
         return 0
@@ -467,7 +479,7 @@ def _main(argv=None) -> int:
         print("\n" + r["note"])
     elif args.cmd == "state":
         r = query.shared_state(con, args.scope, 60)
-        print(f"{r['total']} fields are assigned from outside their own type\n")
+        print(f"{_n(r['total'], 'field is', 'fields are')} assigned from outside their own type\n")
         for f in r["fields"]:
             print(f"{f['name']:<40} {f['writers']:>3} writers in {', '.join(f['written_from'][:5])}"
                   f"{' ...' if len(f['written_from']) > 5 else ''}; {f['readers']} readers")

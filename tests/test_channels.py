@@ -163,4 +163,6 @@ def test_brief_names_the_channels_a_change_crosses(tmp_path):
     text = spec.brief_text(spec.brief(c, ch))
     c.close()
     assert "Crosses a di boundary (IOrderStore -> SqlOrderStore): calls to IOrderStore.Save reach SqlOrderStore.Save" in text
-    assert "Crosses a db boundary (Orders): app.py.list_orders reads what SqlOrderStore.Save writes." in text
+    assert "Crosses a db boundary (Orders): Billing.Pending, Reports.Count and app.py.list_orders read what SqlOrderStore.Save writes." in text
+    # Each reader of what changed must agree with it, and no task names one (Signal item 5).
+    assert "- app.py.list_orders (py/app.py): also reads what SqlOrderStore.Save writes" in text

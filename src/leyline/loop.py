@@ -143,6 +143,7 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
         ignore.write_text("# Leyline's map and baselines: local, rebuilt by `leyline map`.\n*\n", encoding="utf-8")
     con = store.connect(db)
     try:
+        prune_baselines(con)
         if paths:
             with con:   # so plan and check re-index the same way
                 con.execute("INSERT OR REPLACE INTO meta VALUES ('exact', ?)", (exact,))
@@ -207,10 +208,11 @@ def map_text(m: dict) -> str:
     repos = m["repos"]
     who = repos[0] if len(repos) == 1 else f"{len(repos)} repositories ({', '.join(repos)})"
     mods = m["modules"]
-    L = [f"Mapped {who} in {m['seconds']} s: {m['files']:,} files, {m['lines']:,} lines, {len(mods)} modules.",
+    n = lambda k, word: f"{k:,} {word}{'' if k == 1 else 's'}"
+    L = [f"Mapped {who} in {m['seconds']} s: {n(m['files'], 'file')}, {n(m['lines'], 'line')}, {n(len(mods), 'module')}.",
          f"Found {spec._n(m['types'], 'type')}, {spec._n(m['functions'], 'function')}, {spec._n(m['tests'], 'test')} and "
          f"{spec._n(m['entry_points'], 'entry point')} (where a program starts).",
-         ("Largest modules: " if len(mods) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({x['files']} files)" for x in mods[:5])
+         ("Largest modules: " if len(mods) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({n(x['files'], 'file')})" for x in mods[:5])
          + (f" and {len(mods) - 5} more" if len(mods) > 5 else "")]
     if not mods:
         L.pop()
@@ -227,7 +229,7 @@ def map_text(m: dict) -> str:
         L.append("Design patterns found: " + ", ".join(f"{k} {v}" if v > 1 else k for k, v in m["patterns"].items()))
     for k, v in m.get("exact", {}).items():
         if isinstance(v, dict) and v.get("status") == "ok" and "calls_confirmed" in v:
-            L.append(f"Checked by a compiler ({k.split(':')[1]}): {v['calls_confirmed']:,} calls confirmed, "
+            L.append(f"Checked by a compiler ({k.split(':')[1]}): {n(v['calls_confirmed'], 'call')} confirmed, "
                      f"{v.get('calls_removed', 0)} removed, {v.get('calls_added', 0)} added.")
     L.append(f"Store: {m['db']}")
     if m.get("page"):
@@ -244,25 +246,39 @@ def _record(con, run: str, results: list[dict]) -> dict:
     return out
 
 
+def prune_baselines(con) -> list[str]:
+    """Delete the baseline of each change whose folder is gone (archived or removed): nothing will check it again.
+    A change's baseline is otherwise kept, done or not, so `check` can always run again."""
+    gone = []
+    for r in con.execute("SELECT id FROM change_proposals WHERE id LIKE 'spec-%'").fetchall():
+        if spec.folder_gone(con, r[0]) and diff.drop_snapshot(con, r[0]):
+            gone.append(r[0])
+    return gone
+
+
 # -- plan -----------------------------------------------------------------------------------------
 def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None, new_baseline: bool = False) -> dict:
     """Bring the map up to date, write the brief, and record the tests as they pass before the change."""
     reindexed = refresh(db)
     con = store.connect(db)
     try:
+        parsed = spec.parse(change_dir)
+        if "error" in parsed:
+            return parsed
+        cid = "spec-" + parsed["id"]
+        prune_baselines(con)
+        # Results passed in are the start only while the code is as it was when first planned (or a new baseline is
+        # taken now). They are recorded before the brief, which reads them to find tests the map does not know.
+        kept = not new_baseline and diff.snapshot_path(con, cid).exists() and diff.moved_on(con, cid)
+        recorded = _record(con, spec.run_label(cid, "before"), results) if results is not None and not kept else None
         b = spec.brief(con, change_dir, new_baseline=new_baseline)
         if "error" in b:
             return b
         b["reindexed"] = bool(reindexed)
         if results is not None:
-            if b.get("baseline") == "kept":
-                # The code has moved on since the first plan: these results would describe the change, not the start.
-                b["tests_recorded"] = {"error": "The code has changed since the first plan, so these results are not a "
-                                                "baseline. Pass them to `leyline check` instead."}
-            else:
-                b["tests_recorded"] = _record(con, spec.run_label(b["change_id"], "before"), results)
-                b["baseline_tests"] = True
-                spec._write(Path(b["written"]), spec.brief_text(b))   # the page now knows the baseline is there
+            # The code has moved on since the first plan: these results would describe the change, not the start.
+            b["tests_recorded"] = recorded or {"error": "The code has changed since the first plan, so these results are not"
+                                                        " a baseline. Pass them to `leyline check` instead."}
         page = write_page(con, db, b["change_id"])   # after leyline.md is final, since the page embeds it
         if page:
             b["page"] = str(page)
@@ -310,6 +326,15 @@ def next_after_plan(b: dict, name: str, for_agent: bool = False) -> list[str]:
         return [f"Next: fix the spec for: {first}{more}. Edit the files in {_show(b['dir'])} (or ask your agent), then run"
                 f" `leyline plan {name}` again."]
     out = []
+    opened = [f["id"] for f in b.get("findings") or [] if f["status"] == "open"]
+    if opened:   # the person decides each finding before the code is written; nothing else says so
+        ids = ", ".join(opened)
+        out.append(f"ask the person to decide the open review finding{'s' if len(opened) > 1 else ''} {ids} and record each"
+                   " with `spec_resolve` (accepted means the spec changes; edit it to match), then call `plan` again."
+                   if for_agent else
+                   f"decide the open review finding{'s' if len(opened) > 1 else ''} {ids}: `leyline spec resolve <finding id>"
+                   f" accepted|rejected|deferred \"why\"` (accepted means the spec changes), then run `leyline plan {name}` again."
+                   " `leyline spec findings " + name + "` shows them in full.")
     if not b.get("baseline_tests") and b.get("baseline") != "kept":
         out.append("while the code is unchanged, run the tests and call `plan` again with their output as test_output"
                    " (TAP, `pytest -rA`, or one PASS or FAIL line per test)." if for_agent else
@@ -346,6 +371,7 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         before, after = spec.run_label(cid, "before"), spec.run_label(cid, "after")
         recorded = _record(con, after, results) if results is not None else None
         has = lambda run: con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1", (run,)).fetchone() is not None
+        prune_baselines(con)
         v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) else None)
         if "error" in v:
             return v
@@ -372,8 +398,6 @@ def check_text(v: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if v.get("written"):
         L.append(f"Written to {_show(v['written'])}")
-    if v.get("baseline_dropped"):
-        L.append("The copy of the code from before the change is no longer needed, so it was deleted.")
     if v.get("page"):
         L.append(f"Map page: {_show(v['page'])} (opens on this change)")
     L += ["", *next_after_check(v, name)]
@@ -388,8 +412,11 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
                  " no code.") if mine else ""
         return [("Next: nothing left to check; the change was done as agreed. Show the person the verdict and the diff."
                  if for_agent else "Next: nothing left to check; the change was done as agreed. Review the diff and commit it.")
-                + yours]
-    again = "call `check` again" if for_agent else f"run `leyline check {name}` again"
+                + yours + (" The baseline is kept, so `check` can run again after later edits." if for_agent else
+                           f" The baseline is kept, so a later edit can be checked the same way; `leyline spec forget {name}`"
+                           " deletes it.")]
+    again = ("call `check` again with the tests' output" if for_agent else
+             f"run the tests again into `leyline check {name} --tests -`")
     out = []
     if v.get("tests_missing") or v.get("tests_old"):
         out.append(("the test results on record are from before the code last changed. " if v.get("tests_old") else "")
@@ -434,7 +461,7 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
         out.append("new links between modules: " + spec._some([f"{d['from']} to {d['to']}" for d in v["new_dependencies"]], 3)
                    + ". Keep them in the spec, or undo them.")
     if v["rules_newly_failing"]:
-        out.append(f"{len(v['rules_newly_failing'])} rule{'s' if len(v['rules_newly_failing']) > 1 else ''} that held now fail:"
+        out.append(f"{spec._n(len(v['rules_newly_failing']), 'rule')} that held now {'fail' if len(v['rules_newly_failing']) > 1 else 'fails'}:"
                    " fix the code or change the rule.")
     if not out:
         out.append(f"fix what the verdict lists, then {again}.")

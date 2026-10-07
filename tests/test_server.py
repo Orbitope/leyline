@@ -156,7 +156,9 @@ def test_the_loop_over_mcp(repo):
         r = await a.call("spec_resolve", finding_id=f1["id"], status="rejected", resolution="A child is a copy; fine.")
         assert r["status"] == "rejected"
         p = await a.call("plan", change="loud-engine")
-        assert p["status"]["blocking"] == [] and p["next"][0].startswith("Next: implement the tasks")
+        # The low finding is still open: next names it and the call that records the decision (Signal item 9).
+        assert p["status"]["blocking"] == [] and f2["id"] in p["next"][0] and "spec_resolve" in p["next"][0]
+        assert p["next"][1].startswith("Then: implement the tasks")
 
         # Implement. Without test output check says what is missing; with it, the verdict.
         implement(repo, ch)
@@ -165,7 +167,7 @@ def test_the_loop_over_mcp(repo):
         v = await a.call("check", change="loud-engine", test_output=run_tests(repo))
         assert v["done_as_agreed"] is True and v["why_not"] == [] and "**Yes.**" in v["page"]
         assert v["next"] == ["Next: nothing left to check; the change was done as agreed. Show the person the verdict"
-                             " and the diff."]
+                             " and the diff. The baseline is kept, so `check` can run again after later edits."]
         assert "**State: done as agreed.**" in (ch / "leyline.md").read_text()
 
     serve(repo, script)

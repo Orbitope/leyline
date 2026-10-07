@@ -6,6 +6,7 @@ import base64
 import gzip
 import html
 import json
+import re
 from importlib import resources
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,12 @@ PAGE = """<!doctype html>
 </body>
 </html>
 """
+
+
+def remote_url(url: Optional[str]) -> Optional[str]:
+    """A git remote that is a URL (https://, ssh://, git@host:path), or None for a path on this machine."""
+    ok = url and not url.lower().startswith("file:") and re.match(r"^(?:[a-z][a-z0-9+.-]*://|[\w.-]+@[\w.-]+:)", url, re.I)
+    return url if ok else None
 
 
 def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict:
@@ -175,11 +182,16 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
                                          "i": index.get(st["ref"]), "text": st["narrative"]} for st in full["stops"] if st["exists"]]})
     except Exception:  # a store written before tours existed
         tour_list = []
-    repos = [{"id": r["id"], "commit": r["commit_sha"], **(json.loads(r["attrs"]) if r["attrs"] else {})}
-             for r in rows if r["kind"] == "repo"]
     sources = {}
     from . import store
     roots = {k: str(v) for k, v in store.roots(con).items()}
+    # The folder mapped is where the code is; git's origin is shown apart, and only when it is a URL (a clone of a
+    # local folder has that folder as its origin, which is not this one).
+    repos = [{"id": r["id"], "commit": r["commit_sha"], **(json.loads(r["attrs"]) if r["attrs"] else {}), "folder": roots.get(r["id"], "")}
+             for r in rows if r["kind"] == "repo"]
+    for r in repos:
+        if not remote_url(r.get("url")):
+            r.pop("url", None)
     if with_sources:
         from .indexer import source_lines
         # Keyed by path; in a workspace by repo/path, since two repositories can hold the same path.

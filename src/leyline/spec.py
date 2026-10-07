@@ -14,6 +14,7 @@ Conventions a spec author follows, and nothing more:
   `module.new_func`, `path/to/file.py: new_func` or `new_func` in `file.py` for a top-level function.
   Other words in backticks are noted, not checked; a task that names no code is the person's to check.
 - Start a task with what it does: add, remove, rename, change. Anything else is read as a change in behavior.
+  The code right after the verb is what the task changes; other code in the sentence is only mentioned.
 - Give each scenario a test with the same name, written or made at run time.
 """
 
@@ -23,6 +24,7 @@ import datetime
 import hashlib
 import json
 import re
+import sqlite3
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -239,16 +241,71 @@ class _Names:
         return {"ids": [cur]}
 
 
+# Where a name sits in a task decides what it is. The code right after the verb (and any joined to it by "and" or a
+# comma, or named after a later "and add" or "and change") is what the task changes; code after "in", "into" or
+# "to" is where it goes; any other code in the sentence is context the task only mentions ("slower than
+# `SimConfig.QueueSpeed`", "one `Metrics.QueuedVehicles` per env"), shown in the plan but not counted as changed.
+HOME_BEFORE = re.compile(r"\b(?:in|into|inside|to|under|from|of)\s+(?:the\s+)?$", re.I)
+JOINED = re.compile(r"\s*(?:,\s*|/\s*)?(?:(?:and|or|&)\s+)?(?:(?:the|its)\s+)?", re.I)
+CLAUSE = re.compile(r"(?:\band|[,;]|\bthen)\s+(?:then\s+|also\s+)?(?:add|change|update|remove|delete|rename|create|extend|move"
+                    r"|register|introduce|implement|replace|modify)\b", re.I)
+
+
+def _roles(text: str) -> list[tuple[str, str]]:
+    """Each backticked name in a task with its part: lead (what the task changes), home (where it goes) or mention."""
+    occ = [(m.start(), m.end(), m.group(1)) for m in CODE.finditer(text)]
+    lead = set()
+    for start in [0] + [m.end() for m in CLAUSE.finditer(text)]:
+        k = next((k for k, (a, _, _) in enumerate(occ) if a >= start), None)
+        while k is not None and k not in lead:
+            lead.add(k)
+            k = k + 1 if k + 1 < len(occ) and JOINED.fullmatch(text[occ[k][1]:occ[k + 1][0]]) else None
+    return [(w, "lead" if k in lead else "home" if HOME_BEFORE.search(text[:a]) else "mention")
+            for k, (a, _, w) in enumerate(occ)]
+
+
+def _narrow(names: _Names, could_be: list[str], context: list[str]) -> list[str]:
+    """Of the things an ambiguous name could be, those that sit with the code the task mentions (same owner or file)."""
+    def file_of(i):
+        row = names.con.execute("SELECT file_id FROM ancestry WHERE node_id = ?", (i,)).fetchone()
+        return row[0] if row else None
+    near = {x for i in context if i in names.by_id for x in (i, names.by_id[i]["parent_id"], file_of(i)) if x}
+    return [c for c in could_be if c in names.by_id and (names.by_id[c]["parent_id"] in near or file_of(c) in near)]
+
+
 def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
     """Turn tasks into change targets. Returns (targets, per-task links)."""
     targets, links, seen = [], [], set()
     for t in parsed["tasks"]:
         link = {"key": t["key"], "text": t["text"], "action": t["action"], "nodes": [], "new": [], "ambiguous": [], "unknown": [],
-                "into": [], "notes": [],
+                "into": [], "notes": [], "mentions": [], "mention_ids": [],
                 # A task covers a scenario's test when it quotes the scenario's name.
                 "scenarios": [s["key"] for s in parsed["scenarios"]
                               if _norm(s["name"]) in {_norm(q) for q in re.findall(r'["\u201c]([^"\u201d]+)["\u201d]', t["text"])}]}
-        resolved = [(w, names.resolve(w), False) for w in t["names"]]
+        roles = _roles(t["text"])
+        mentioned = [(w, names.resolve(w)) for w, role in roles if role == "mention"]
+        context = [i for _, r in mentioned for i in r.get("ids", [])]
+        for written, r in mentioned:   # context: shown with the task, never counted as changed
+            if r.get("skip"):
+                continue
+            if "note" in r:
+                link["notes"].append(r["note"])
+            elif "ids" in r:
+                link["mention_ids"] += [i for i in r["ids"] if i not in link["mention_ids"]]
+                link["mentions"] += [x for x in dict.fromkeys(_label(names, i) for i in r["ids"]) if x not in link["mentions"]]
+            elif r.get("parent") in names.by_id:
+                link["mentions"].append(f"{names.by_id[r['parent']]['name']}.{r['new']} (not on the map yet)")
+            elif "ambiguous" in r:
+                link["mentions"].append(f"{written} (could be {len(r['ambiguous'])} things)")
+            else:
+                link["notes"].append(f"`{written}` is not on the map; read as a word, not code")
+        resolved = []
+        for w, role in roles:
+            if role == "mention":
+                continue
+            r = names.resolve(w)
+            near = _narrow(names, r["ambiguous"], context) if "ambiguous" in r and context else []
+            resolved.append((w, {"ids": near} if len(near) == 1 else r, False))   # the one beside what the task mentions
         # A path written without backticks counts when it is a file on the map; otherwise it is only prose.
         unquoted = re.sub(r"`[^`]*`", " ", t["text"])
         resolved += [(w, {"ids": [h["id"] for h in names.file(w)]}, True) for w in dict.fromkeys(BARE_PATH.findall(unquoted))
@@ -363,8 +420,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     targets, links = _targets(names, parsed)
     cid = "spec-" + parsed["id"]
     intent = parsed["what"] or parsed["why"] or parsed["title"]
+    self_tests = _self_tests(con, [run_label(cid, "before"), run_label(cid, "after")])
     report = change.propose(con, intent, targets, parsed["title"], source="spec", change_id=cid,
-                            keep_baseline=not new_baseline) if targets else {
+                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) if targets else {
         "error": "no task names code that is on the map. Put code names in backticks in tasks.md."}
     tests = _tests(con)
     test_names = diff.TestNames(con)
@@ -390,16 +448,15 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
         return bool(row and row[0] in tasked)
     uncovered = [m for m in report.get("must_edit", []) if not covered(m["id"])] if "error" not in report else []
     if "error" not in report:
-        # A channel matters to this change when the changed code is one of its two ends. Being reachable from
-        # a program that some other program launches is true of nearly everything.
-        ends = {r[0] for r in con.execute("SELECT src_id FROM edges WHERE kind = 'communicates'")} | {
-            r[0] for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'communicates'")}
-        direct = [c for c in report.get("channels") or [] if c.get("to") in tasked and c.get("to") in ends]
-        report["channels"] = direct
-        if not direct:
-            report["risks"] = [r for r in report.get("risks") or [] if "far side of a channel" not in r["what"]]
+        _remember_folder(con, cid, Path(parsed["dir"]))
+    crossings, agree = _crossings(con, names, links) if "error" not in report else ([], [])
+    if "error" not in report:
+        report["channels"] = crossings
+        # The channels themselves say this, end by end (see brief_text).
+        report["risks"] = [r for r in report.get("risks") or [] if "far side of a channel" not in r["what"]]
+        _say_what_tests_are_known(con, cid, report, self_tests)
     state = _shared_state_touched(con, tasked)
-    others = _left_alone(con, names, links)
+    others = _left_alone(con, names, links, cid)
     patterns = _patterns_touched(con, tasked)
     rule_state = rules.check(con)
     gaps = list(parsed["problems"])
@@ -418,7 +475,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "notes": [f"task {l['key']}: {n}" for l in links for n in dict.fromkeys(l["notes"])],
               "scenarios": scenarios, "impact": {k: report.get(k) for k in ("summary", "risks", "by_module", "tests_to_run", "channels", "untested")}
               if "error" not in report else {"error": report["error"]},
-              "must_edit_uncovered": uncovered, "shared_state": state, "left_alone": others, "patterns": patterns,
+              "must_edit_uncovered": uncovered, "must_agree": agree, "self_tests": self_tests,
+              "shared_state": state, "left_alone": others, "patterns": patterns,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
               "baseline": report.get("snapshot"), "reviews": reviews(con, cid),
@@ -429,7 +487,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
         con.executemany("INSERT INTO spec_items VALUES (?,?,?,?,?,?,?)",
                         [(cid, "task", l["key"], l["text"], l["action"], json.dumps(l["nodes"]),
-                          json.dumps({"new": l["new"], "into": l["into"], "scenarios": l["scenarios"], "by_you": l["by_you"]}))
+                          json.dumps({"new": l["new"], "into": l["into"], "scenarios": l["scenarios"], "by_you": l["by_you"],
+                                      "mentions": l["mention_ids"]}))
                          for l in links]
                         + [(cid, "scenario", s["key"], s["name"], s["kind"], json.dumps([s["test"]] if s["test"] else []),
                             json.dumps({"when": s["when"], "then": s["then"], "requirement": s["requirement"]})) for s in scenarios])
@@ -439,13 +498,201 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     return result
 
 
+def _remember_folder(con, cid: str, folder: Path) -> None:
+    """Note where a change's folder is, relative to its repository when it is inside one (a store finds its
+    repository after a move), so its baseline can go once the folder is archived or removed."""
+    from . import store
+    where = {"dir": str(folder.resolve())}
+    for repo, root in store.roots(con).items():
+        try:
+            where = {"dir_repo": repo, "dir_rel": folder.resolve().relative_to(root.resolve()).as_posix()}
+            break
+        except ValueError:
+            continue
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    attrs = {k: v for k, v in json.loads(row[0] or "{}").items() if k not in ("dir", "dir_repo", "dir_rel")} if row else {}
+    with con:
+        con.execute("UPDATE change_proposals SET attrs = ? WHERE id = ?", (json.dumps({**attrs, **where}), cid))
+
+
+def folder_gone(con, cid: str) -> bool:
+    """True when the folder a change was planned from is no longer where it was: archived, or removed."""
+    from . import store
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    attrs = json.loads(row[0] or "{}") if row else {}
+    if attrs.get("dir_repo"):
+        root = store.roots(con).get(attrs["dir_repo"])
+        return root is not None and root.is_dir() and not (root / attrs["dir_rel"]).is_dir()
+    return bool(attrs.get("dir")) and not Path(attrs["dir"]).is_dir()
+
+
+# -- channels and tests the map does not see as such -------------------------------------------------
+CHANNEL_SKIP = ("event",)   # inside one program, where the compiler joins the two sides
+
+
+def _crossing_line(c: dict) -> str:
+    """One channel the change crosses, as the plan says it."""
+    at = f" ({c.get('program') or c.get('address')})" if c.get("program") or c.get("address") else ""
+    if "hub" not in c:   # a brief stored before channels had ends
+        return f"Crosses a {c['channel']} boundary{at}: {c['from_name']} to {c['to_name']}."
+    spokes = [x["name"] for x in sorted(c["spokes"], key=lambda x: not x["changed"])]   # the ends that change first
+    one = len(spokes) == 1
+    if c["channel"] == "di":
+        return (f"Crosses a di boundary{at}: calls to {_and(spokes)} reach {c['hub_name']} because a container registers it."
+                " The calling code never names the implementation.")
+    who, s_ = _and(spokes), "s" if one else ""
+    how = (f"{who} start{s_} {c['hub_name']} and talk{s_} to it over its stdio pipe." if c["channel"] == "process" else
+           f"{who} read{s_} what {c['hub_name']} writes." if c.get("data") else f"{who} call{s_} {c['hub_name']}.")
+    changed = list(dict.fromkeys(c["hub_changed"] + [x for s in c["spokes"] for x in s["changed"]]))
+    if c["hub_changed"] and any(x["changed"] for x in c["spokes"]):
+        return (f"Crosses a {c['channel']} boundary{at}: {how} Both ends change ({_and(changed)}); nothing checks one against"
+                " the other, so a mismatch fails only at run time.")
+    return (f"Crosses a {c['channel']} boundary{at}: {how} One end changes ({_and(changed)}); the other has no"
+            " compile-time link to it.")
+
+
+def _crossings(con, names: _Names, links: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Channels the change crosses, and their other ends that no task names. A channel is crossed when the code
+    a task changes sits at one of its ends. For a process, the launched end is the type (or script) around the
+    program's entry, which reads its input and writes its output, and the launcher's end is the type that holds the
+    process, whose methods talk over the pipe. For a request or a message it is the two functions linked. Every
+    other launcher or caller of the same end must agree with what changed there."""
+    changed = [(i, _label(names, i)) for l in links for i in l["nodes"]]
+    changed += [(n["parent"], n.get("label") or n["name"]) for l in links for n in l["new"] if n.get("parent") in names.by_id]
+    named = {i for l in links for i in l["nodes"] + l["into"] + l.get("mention_ids", [])} | {p for p, _ in changed}
+
+    def within(i, end):
+        while i:
+            if i == end:
+                return True
+            i = names.by_id[i]["parent_id"] if i in names.by_id else None
+        return False
+
+    def at(end):
+        return list(dict.fromkeys(lab for i, lab in changed if within(i, end)))
+
+    def unit(i, keep_function):   # the type around a node; with none, the function itself or its file
+        cur = i
+        while cur in names.by_id and names.by_id[cur]["kind"] not in ("file", "module"):
+            if names.by_id[cur]["kind"] == "type":
+                return cur
+            cur = names.by_id[cur]["parent_id"]
+        return i if keep_function or cur not in names.by_id else cur
+    groups: dict = defaultdict(list)
+    for r in con.execute("SELECT src_id, dst_id, precision, attrs FROM edges WHERE kind = 'communicates' ORDER BY src_id, dst_id"):
+        a = json.loads(r["attrs"] or "{}")
+        ch = a.get("channel", "channel")
+        if ch in CHANNEL_SKIP or r["src_id"] not in names.by_id or r["dst_id"] not in names.by_id:
+            continue
+        if ch == "process" and not (a.get("pipes") or a.get("direction") == "both"):
+            continue    # started and left to run: it reads nothing the program sends
+        data = ch in change.DATA_CHANNELS
+        # The hub is the end others connect to: the launched program, the handler, or the writer of the data.
+        hub, spoke = (r["src_id"], r["dst_id"]) if data else (r["dst_id"], r["src_id"])
+        hub_end = unit(hub, False) if ch == "process" else hub
+        spoke_end = unit(spoke, True) if ch == "process" else spoke
+        groups[(ch, hub_end)].append({"hub": hub, "spoke": spoke, "end": spoke_end, "address": a.get("address") or "",
+                                      "guessed": r["precision"] == "guess"})
+    crossings, agree, seen = [], [], set()
+
+    def label(i):   # `Owner.name`, or `file.name` at the top of a file
+        return change._label(names.by_id, i)
+    for (ch, hub_end), members in groups.items():
+        there = at(hub_end)
+        moved = [m for m in members if at(m["end"])]
+        if not there and not moved:
+            continue
+        hub = members[0]["hub"]
+        script = names.by_id[hub]["name"] in ("<module>", "<top-level>")   # a script is named by its file
+        module = names.by_id.get(names.module.get(hub))
+        program = (names.by_id[hub]["path"] if script else module["name"] if module else "") if ch == "process" else ""
+        ends = list({m["end"]: m for m in members}.values())
+        crossings.append({"channel": ch, "address": members[0]["address"], "data": ch in change.DATA_CHANNELS,
+                          "hub": hub, "hub_name": names.by_id[hub]["path"] if script else label(hub), "program": program,
+                          "hub_changed": there, "spokes": [{"id": m["spoke"], "name": label(m["end"]), "changed": at(m["end"])}
+                                                           for m in ends],
+                          "guessed": all(m["guessed"] for m in moved or members),
+                          # kept for older readers of the brief: one end and the other
+                          "from": (moved or members)[0]["spoke"], "to": hub,
+                          "from_name": label((moved or members)[0]["end"]), "to_name": label(hub)})
+        if ch == "di":   # the container picks the implementation; its callers name only the interface
+            continue
+        what = program or label(hub)
+        if there:   # what the hub sends or answers changed: everyone who talks to it must agree
+            mine = {lab.rsplit(".", 1)[-1] for m in moved for lab in at(m["end"])}
+            for m in members:
+                if m in moved or m["end"] in seen or any(within(n, m["end"]) or within(m["end"], n) for n in named):
+                    continue
+                seen.add(m["end"])
+                twins = [r["id"] for r in names.rows if r["kind"] == "callable" and r["name"] in mine and within(r["id"], m["end"])]
+                agree.append({"id": m["end"], "name": label(m["end"]), "path": (names.by_id.get(m["end"]) or {})["path"],
+                              "reads": [label(t) for t in twins], "channel": ch,
+                              "why": (f"also starts {what} and reads what it sends" if ch == "process" else
+                                      f"also reads what {what} writes" if ch in change.DATA_CHANNELS else
+                                      f"also calls {what} over {ch}")})
+        elif hub_end not in seen and not any(within(n, hub_end) or within(hub_end, n) for n in named):
+            seen.add(hub_end)   # one side changed what it sends or expects: the hub must agree
+            agree.append({"id": hub_end, "name": label(hub_end), "path": (names.by_id.get(hub_end) or {})["path"],
+                          "reads": [], "channel": ch,
+                          "why": (f"the program {what}, at the other end of the pipe" if ch == "process" else
+                                  f"writes what {_some([x['name'] for x in crossings[-1]['spokes'] if x['changed']])} reads"
+                                  if ch in change.DATA_CHANNELS else
+                                  f"answers {_some([x['name'] for x in crossings[-1]['spokes'] if x['changed']])}")})
+    return crossings, agree
+
+
+def _self_tests(con, runs: list[str]) -> dict:
+    """Entry points that are tests of their own: a script whose checks print one PASS or FAIL line each, which the
+    map has no test node for (`check(ok, "queued reported per env")` in a file run as a script). Found by the
+    recorded results whose names are written in the entry's file. entry id -> {name, path, results}."""
+    names = set()
+    for run in runs:
+        for r in con.execute("SELECT name FROM test_results WHERE run = ? AND test_id IS NULL", (run,)):
+            leaf = diff.result_parts(r["name"])["leaf"].strip()
+            if len(leaf) >= 8 and " " in leaf:   # a phrase, not a word that could be written anywhere
+                names.add(leaf)
+    if not names:
+        return {}
+    by_file = defaultdict(list)
+    for r in con.execute("SELECT f.entry_id, n.repo_id, n.path FROM flows f JOIN nodes n ON n.id = f.entry_id"
+                         " WHERE COALESCE(json_extract(f.attrs, '$.kind'), '') != 'test' AND n.path IS NOT NULL"):
+        by_file[(r["repo_id"], r["path"])].append(r["entry_id"])
+    root_of = diff.roots(con)
+    out = {}
+    for (repo, path), ids in sorted(by_file.items()):
+        data = diff.source(con, repo, path, root_of)
+        text = data.decode("utf-8", errors="replace") if data else ""
+        found = sorted(n for n in names if n in text and re.search(r"[\"']" + re.escape(n) + r"[\"']", text))
+        if len(found) >= 2:
+            for i in ids:
+                out[i] = {"name": f"{path}, run as a script (its own checks)", "path": path, "results": found}
+    return out
+
+
+def _say_what_tests_are_known(con, cid: str, report: dict, self_tests: dict) -> None:
+    """A function on "no test's path" is on none the map knows. When the recorded run has passing results the map
+    cannot place, one of them may run the change after all: say what is known instead."""
+    placed = {n for x in self_tests.values() for n in x["results"]}
+    loose = {r[0] for run in (run_label(cid, "before"), run_label(cid, "after")) for r in con.execute(
+        "SELECT name FROM test_results WHERE run = ? AND test_id IS NULL AND status = 'pass'", (run,))
+        if diff.result_parts(r[0])["leaf"].strip() not in placed}
+    if not loose:
+        return
+    for r in report.get("risks") or []:
+        if r["what"].endswith("changed functions are on no test's path."):
+            r["level"] = "medium"
+            r["what"] = (r["what"][:-1] + " on the map. The recorded test run has " + _n(len(loose), "passing result")
+                         + " the map cannot place, so one of them may run it.")
+
+
 def _shared_state_touched(con, tasked: set) -> list[dict]:
     """Fields the named code assigns that other types also assign."""
     from . import query
-    shared = {f["id"]: f for f in query.shared_state(con, limit=100000)["fields"]}
+    shared = {f["id"]: f for f in query.shared_state(con, limit=100000, guesses=False)["fields"]}
     out = {}
     for i in tasked:
-        for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'writes' AND (src_id = ? OR src_id LIKE ?)", (i, i + ".%")):
+        for r in con.execute(f"SELECT dst_id FROM edges WHERE kind = 'writes' AND (src_id = ? OR src_id LIKE ?) AND {SURE}",
+                             (i, i + ".%")):
             if r[0] in shared and len(shared[r[0]]["written_from"]) >= 2:
                 out[r[0]] = {"name": shared[r[0]]["name"], "also_written_from": shared[r[0]]["written_from"][:5]}
         if i in shared:
@@ -470,7 +717,24 @@ def _task_functions(names: _Names, links: list[dict]) -> list[str]:
     return list(dict.fromkeys(fns))
 
 
-def _left_alone(con, names: _Names, links: list[dict]) -> dict:
+SURE = "COALESCE(precision, '') != 'guess'"   # an edge found by more than a name that happens to be unique
+
+
+def _in_baseline(con, cid: str, i: str) -> bool:
+    """Whether the change's baseline (the code as it was when first planned) holds this node. True with no baseline."""
+    snap = diff.snapshot_path(con, cid)
+    if not cid or not snap.exists():
+        return True
+    before = diff._open(snap)
+    try:
+        return before.execute("SELECT 1 FROM nodes WHERE id = ?", (i,)).fetchone() is not None
+    except sqlite3.Error:
+        return True
+    finally:
+        before.close()
+
+
+def _left_alone(con, names: _Names, links: list[dict], cid: str = "") -> dict:
     """Code that shares something with the change and that no task names: other callers of a changed function,
     and other users of a field a changed function uses. A parallel edit is most often forgotten here."""
     fns = _task_functions(names, links)
@@ -509,13 +773,14 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
                             "far": len({names.module.get(w) for w in who} - {names.module.get(i)}),
                             "other_types": len({owner(w) for w in who} - {owner(i)})})
         about = _task_words(names, links, i)
-        for f in con.execute("SELECT dst_id, MAX(kind = 'writes') FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?"
-                             " GROUP BY dst_id ORDER BY 2 DESC", (i,)):
+        # A field link guessed by name alone (`.Size` read on some other type) is not evidence: only sure links count.
+        for f in con.execute(f"SELECT dst_id, MAX(kind = 'writes') FROM edges WHERE kind IN ('reads', 'writes') AND src_id = ?"
+                             f" AND {SURE} GROUP BY dst_id ORDER BY 2 DESC", (i,)):
             if f[0] in seen or f[0] not in names.by_id:
                 continue
             # A constructor setting a field up is not a second user of it.
             users = sorted({r[0] for r in con.execute(
-                "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f[0],))
+                f"SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ? AND {SURE}", (f[0],))
                 if r[0] not in inside and product(r[0]) and not is_ctor(r[0])})
             if not 0 < len(users) <= 8:   # a field half the program uses says nothing about this change
                 continue
@@ -544,8 +809,10 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
     # one of the same thing, and whoever uses the first is a candidate to need the second.
     beside = []
     fresh = [(n["name"].split(".")[-1], n.get("parent")) for l in links for n in l["new"] if n.get("parent")]
+    # Code an add task names that is on the map already is new only when the baseline does not hold it (a plan made
+    # again after the code was written); otherwise the task changes it, and it is not new.
     fresh += [(names.by_id[i]["name"], owner(i)) for l in links if l["action"] == "add" for i in l["nodes"]
-              if names.by_id[i]["kind"] in ("field", "callable")]
+              if names.by_id[i]["kind"] in ("field", "callable") and not _in_baseline(con, cid, i)]
     fresh_names = {(n, p) for n, p in fresh}
     for name, parent in dict.fromkeys(fresh):
         last = _words(name)[-1:]
@@ -555,7 +822,7 @@ def _left_alone(con, names: _Names, links: list[dict]) -> dict:
             if r["parent_id"] != parent or r["kind"] != "field" or (r["name"], parent) in fresh_names or _words(r["name"])[-1:] != last:
                 continue
             users = sorted({u[0] for u in con.execute(
-                "SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (r["id"],))
+                f"SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ? AND {SURE}", (r["id"],))
                 if u[0] not in inside and product(u[0]) and not is_ctor(u[0])})
             if users:
                 beside.append({"new": _label(names, parent) + "." + name, "existing": _label(names, r["id"]),
@@ -625,10 +892,26 @@ def _some(xs: list[str], n: int = 4) -> str:
     return ", ".join(xs[:n]) + (f" and {len(xs) - n} more" if len(xs) > n else "")
 
 
+def _and(xs: list[str], n: int = 4) -> str:
+    """A list as a sentence says it: A, B and C."""
+    return _some(xs, n) if len(xs) > n else ", ".join(xs[:-1]) + " and " + xs[-1] if len(xs) > 1 else "".join(xs)
+
+
 def _first_sentence(text: str, limit: int = 220) -> str:
     m = re.match(r"(.+?[.!?])(\s|$)", text.strip(), re.S)
     out = (m.group(1) if m else text.strip()).replace("\n", " ")
     return out if len(out) <= limit else out[:limit - 3].rstrip() + "..."
+
+
+def _clip(text: str, limit: int) -> str:
+    """Text cut at a word boundary to fit, with an ellipsis when cut."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0] if " " in text[:limit] else text[:limit]
+    if cut.count("`") % 2:   # not inside a code name: it would leave a backtick open
+        cut = cut[:cut.rindex("`")]
+    return cut.rstrip(" ,;:") + "…"
 
 
 def _n(n: int, word: str, plural: str = "") -> str:
@@ -688,7 +971,7 @@ def _plain_summary(b: dict) -> str:
         made = sum(1 for x in sc if x.get("generated_by") or x.get("in_run"))
         have = sum(1 for x in sc if x["test_exists"]) - made
         need = len(sc) - have - made
-        S.append(f"It is done when {_n(len(sc), 'scenario')} pass: " + ", ".join(
+        S.append(f"It is done when {_n(len(sc), 'scenario passes', 'scenarios pass')}: " + ", ".join(
             x for x in ((f"{have} already {'has' if have == 1 else 'have'} a test" if have else ""),
                         (f"{made} {'gets its test' if made == 1 else 'get their tests'} made at run time" if made else ""),
                         (f"{need} {'needs' if need == 1 else 'need'} a test written" if need else "")) if x) + ".")
@@ -745,7 +1028,10 @@ def brief_text(b: dict) -> str:
             new = ", ".join(f"{n.get('label') or n['name']} (new)" for n in t["new"])
             into = ", ".join(f"in {x}" for x in t.get("into_labels", []))
             test = "a test for the scenario" if t.get("scenarios") else ""
-            L.append(f"| {t['key']} | {t['text'].replace('|', '/')} | {', '.join(x for x in (code, new, test, into) if x) or 'no code: checked by you'} |")
+            does = ", ".join(x for x in (code, new, test, into) if x) or "no code: checked by you"
+            if t.get("mentions"):   # context the task reads or compares with: not changed by it
+                does += "; mentions " + _some(t["mentions"], 3)
+            L.append(f"| {t['key']} | {t['text'].replace('|', '/')} | {does} |")
         if b.get("notes"):
             L += ["", "Not read as code (nothing to check on the map): " + "; ".join(b["notes"][:8])
                   + (f"; and {len(b['notes']) - 8} more" if len(b["notes"]) > 8 else "") + "."]
@@ -757,8 +1043,11 @@ def brief_text(b: dict) -> str:
         L.append(imp["error"])
     else:
         s = imp["summary"]
-        L.append(f"{s['changed'] + s['added']} things change, {s['must_edit']} more must be edited with them, and {s['reached']} "
-                 f"are reached without needing an edit, across {s['modules']} modules. {s['tests_to_run']} existing tests run through the change.")
+        n = s["changed"] + s["added"]
+        L.append(f"{_n(n, 'thing changes', 'things change')}, {s['must_edit']} more must be edited with {'it' if n == 1 else 'them'},"
+                 f" and {s['reached']} {'is' if s['reached'] == 1 else 'are'} reached without needing an edit, across"
+                 f" {_n(s['modules'], 'module')}. {_n(s['tests_to_run'], 'existing test runs', 'existing tests run')}"
+                 " through the change.")
         L += ["", "*Must be edited*: code that breaks unless it changes too, such as the callers of a function whose parameters "
                   "change. *Reached*: code that runs into the change, directly or through other calls; it needs no edit but may "
                   "behave differently.", ""]
@@ -768,18 +1057,16 @@ def brief_text(b: dict) -> str:
         for r in imp.get("risks") or []:
             L.append(f"- **{r['level']} risk:** {r['what']}")
         for c in (imp.get("channels") or [])[:6]:
-            at = f" ({c['address']})" if c.get("address") else ""
-            if c["channel"] == "di":
-                L.append(f"- Crosses a di boundary{at}: calls to {c['from_name']} reach {c['to_name']} because a container "
-                         "registers it. The calling code never names the implementation.")
-            elif c.get("data"):
-                L.append(f"- Crosses a {c['channel']} boundary{at}: {c['from_name']} reads what {c['to_name']} writes. "
-                         "The reader has no compile-time link to this change.")
-            else:
-                L.append(f"- Crosses a {c['channel']} boundary{at}: {c['from_name']} to {c['to_name']}. "
-                         "The other side has no compile-time link to this change.")
+            # A channel is the risk, said once: high when a mismatch can only show at run time.
+            loud = c.get("hub") and c["channel"] != "di" and (c["hub_changed"] and any(x["changed"] for x in c["spokes"])
+                                                               or any(x["channel"] == c["channel"] for x in b.get("must_agree") or []))
+            L.append("- " + ("**high risk:** " if loud else "") + _crossing_line(c))
     if b["must_edit_uncovered"]:
         L += ["", "**Must be edited, and no task covers it:**"] + [f"- {m['name']}: {m.get('note', '')}" for m in b["must_edit_uncovered"][:20]]
+    if b.get("must_agree"):
+        L += ["", "**Must agree with the change, and no task names it** (another end of a channel it crosses):"] + [
+            f"- {_and(x['reads']) if x.get('reads') else x['name']}" + (f" ({x['path']})" if x.get("path") else "")
+            + f": {x['name'] + ' ' if x.get('reads') else ''}{x['why']}" for x in b["must_agree"][:10]]
     la = {"beside": [], "callers": [], "state": [], **(b.get("left_alone") or {})}
     # One page: new members that double an existing one, callers outside the changed function's own type,
     # and state the changed type owns.
@@ -893,6 +1180,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     results = {r["name"]: r for r in con.execute("SELECT * FROM test_results WHERE run = ?", (after_run,))} if after_run else {}
     index = _results_index(results.values())
     from . import coverage as measured
+    own_checks = _self_tests(con, [r for r in (before_run, after_run) if r])
 
     scenarios, scenario_ran = [], {}
     for s in parsed["scenarios"]:
@@ -909,7 +1197,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
             ran_change = bool(ran & touched) if ran else None
         static = bool(tid) and bool({r[0] for r in con.execute(
             "SELECT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id WHERE f.entry_id = ?", (tid,))} & touched)
-        scenarios.append({"name": s["name"], "state": state, "test": tid, "generated": not tid and bool(rows or gen),
+        script = next((x["path"] for x in own_checks.values() if s["name"] in x["results"]), None) if not tid else None
+        scenarios.append({"name": s["name"], "state": state, "test": tid, "generated": not tid and bool(gen),
+                          "off_map": not tid and not gen and bool(rows), **({"script": script} if script else {}),
                           "results": len(rows), "reaches_the_change": static, "measured_running_the_change": ran_change,
                           "message": (failed[0]["message"] or "") if failed else ""})
 
@@ -1031,13 +1321,13 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         _write(path, head + "\n\n" + verify_text(out))
         out["written"] = str(path)
     if out["done_as_agreed"]:
-        # Done: the picture of the code from before is no longer needed. A later check needs a new plan.
+        # Done. The baseline stays (it is small), so a later edit can be checked against the same start; it goes
+        # with `leyline spec forget`, or once the change folder is archived or removed.
         row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
         attrs = json.loads(row[0] or "{}") if row else {}
         attrs["verified"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         with con:
             con.execute("UPDATE change_proposals SET status = 'verified', attrs = ? WHERE id = ?", (json.dumps(attrs), cid))
-        out["baseline_dropped"] = diff.drop_snapshot(con, cid)
     return out
 
 
@@ -1068,7 +1358,7 @@ def verify_text(v: dict) -> str:
          else "**Not yet:** " + "; ".join(v["why_not"]) + ".", "",
          "| Task | Result | Missing |", "| --- | --- | --- |"]
     for t in v["tasks"]:
-        L.append(f"| {t['key']} {t['text'][:70].replace('|', '/')} | {t['state']} | {', '.join(t['missing'])} |")
+        L.append(f"| {t['key']} {_clip(t['text'], 70).replace('|', '/')} | {t['state']} | {', '.join(t['missing'])} |")
     if any(t["state"] == "checked by you" for t in v["tasks"]):
         L += ["", "*Checked by you*: the task names no code, so the map cannot see it done; it does not hold up the verdict."]
     L += ["", "| Scenario | Result | Evidence |", "| --- | --- | --- |"]
@@ -1076,6 +1366,9 @@ def verify_text(v: dict) -> str:
         ev = ("measured running the changed code" if s["measured_running_the_change"] else
               "proven by the test run (the test is generated, so it is not on the map)"
               if s["generated"] and s["state"] == "passes" else
+              f"proven by the test run (a check in {s['script']}, which runs as a script; the test is not on the map)"
+              if s.get("script") and s["state"] == "passes" else
+              "proven by the test run (the test is not on the map)" if s.get("off_map") and s["state"] == "passes" else
               "its test reaches the changed code on the map" if s["reaches_the_change"] else
               "its test does not reach the changed code" if s["test"] else "")
         if s["state"] == "passes" and s.get("results", 0) > 1:
@@ -1119,9 +1412,10 @@ CLOCK = re.compile(r"performance\.now|process\.hrtime|perf_counter|time\.time\(|
                    r"benchmark|\bbench\(", re.I)
 
 
-def _speed_tests(con, changed: set) -> list[dict]:
+def _speed_tests(con, changed: set, self_tests: Optional[dict] = None) -> list[dict]:
     """Tests that measure speed: those in a file or suite named for it, and those whose own text reads a clock.
-    A test named "adds 5s of slow_down" does not measure speed; perf-budget.test.ts does."""
+    A test named "adds 5s of slow_down" does not measure speed; perf-budget.test.ts does. A script's own checks
+    (see _self_tests) count too, by their names and by a clock read near where each is named."""
     tests = con.execute("SELECT id, name, path, repo_id, span_start, span_end, attrs FROM nodes WHERE kind = 'test'"
                         " OR json_extract(attrs, '$.is_test') = 1").fetchall()
     root_of = diff.roots(con)
@@ -1140,6 +1434,22 @@ def _speed_tests(con, changed: set) -> list[dict]:
         if place or clock:
             out.append({"id": r["id"], "name": r["name"], "path": r["path"], "why": " and ".join(
                 x for x in ("named for speed" if place else "", "reads a clock" if clock else "") if x)})
+    done = set()
+    for entry, x in (self_tests or {}).items():
+        if x["path"] in done:
+            continue
+        done.add(x["path"])
+        repo = con.execute("SELECT repo_id FROM nodes WHERE id = ?", (entry,)).fetchone()
+        data = diff.source(con, repo[0], x["path"], root_of) if repo else None
+        lines = data.decode("utf-8", errors="replace").split("\n") if data else []
+        for name in x["results"]:
+            at = [k for k, ln in enumerate(lines) if name in ln]
+            near = "\n".join(lines[max(0, at[0] - 15):at[0] + 3]) if at else ""
+            place, clock = bool(SPEED_PLACE.search(name)), bool(near and CLOCK.search(near))
+            if place or clock:
+                out.append({"id": entry, "name": name, "path": x["path"], "why": " and ".join(
+                    w for w in ("named for speed" if place else "", "reads a clock" if clock else "") if w)
+                    + " (a check the script runs and prints)"})
     if out and changed:
         reach = {r[0] for r in con.execute(
             f"SELECT DISTINCT f.entry_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
@@ -1175,7 +1485,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
         hot.append({"id": i, "name": _label(names, i), "flows_through": through, "share_of_flows": round(through / n_flows, 2),
                     "program_entries_that_reach_it": entry, "call_sites": sites})
     hot.sort(key=lambda h: (-h["flows_through"], -h["call_sites"]))
-    perf_tests = _speed_tests(con, set(fns))
+    perf_tests = _speed_tests(con, set(fns), b.get("self_tests"))
     la = b["left_alone"]
     imp = b["impact"] if "error" not in b["impact"] else {}
     return {
@@ -1183,6 +1493,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
         "logic": {
             "must_edit_with_no_task": b["must_edit_uncovered"],
             "channels_crossed": imp.get("channels") or [],
+            "other_ends_of_those_channels_no_task_names": b.get("must_agree") or [],
             "shared_state_written": b["shared_state"],
             "scenarios_with_no_test": [s["name"] for s in b["scenarios"] if not s["test_exists"]],
             "new_members_named_like_existing_ones": la["beside"][:20],
