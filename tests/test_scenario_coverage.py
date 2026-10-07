@@ -114,10 +114,11 @@ def test_a_scenario_test_that_ran_the_changed_code_and_one_that_did_not(tmp_path
     assert weak["state"] == "passes" and weak["ran_changed_code"] is False
     assert weak["ran_changed_code_note"].startswith("passed without running the changed code")
     page = (ch / "leyline.md").read_text()
-    assert "| Negative factor gives zero | passes | passed without running the changed code |" in page
-    assert "| Scale by a factor | passes | measured running the changed code |" in page
-    assert "**Weaker proof**" in page
-    assert "passed without running the changed code, so it proves less" in loop.next_after_check(v, "clamp-scale")[0]
+    assert "| Negative factor gives zero | passes | needs a person | passed without running the changed code |" in page
+    assert "| Scale by a factor | passes | proven | measured running the changed code |" in page
+    assert weak["verdict"] == "needs a person" and "never ran the changed code" in weak["verdict_why"]
+    assert "never ran the changed code" in page.split("**Not proven, and why:**")[1]
+    assert "\"Negative factor gives zero\" needs a person" in loop.next_after_check(v, "clamp-scale")[0]
 
 
 def test_a_test_measured_running_only_itself_did_not_run_the_change(tmp_path):
