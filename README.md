@@ -406,6 +406,20 @@ out the repository's id, so a clone in a folder of another name reads them.
 
 `leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand.
 
+### How it runs: sequence diagrams
+
+`leyline.md` (under "What code will be written", and again after `check`) and the pull request page carry a
+Mermaid sequence diagram of the changed code, which GitHub draws from the ```` ```mermaid ```` block: how execution
+reaches it from the nearest entry point (along the stored flow, in source order), and what it calls. Participants
+are types, or the file for a function at the top of a file. Every arrow is an edge on the map: a call, a call through
+an interface into an implementation, or a channel link, drawn with an open arrowhead (`-)`) and named (`http GET
+/api/x`, `writes table orders, which load() reads later`); a link the map guessed by name is dotted. The changed
+code is shaded. A diagram keeps to about 8 participants and 25 arrows, and says how many calls it left out.
+
+After a change, the page also lists what changed in how it runs: calls and channel links into or out of the changed
+code, added and removed since the baseline. A baseline keeps which pairs were linked but not in what order, so the
+code as it was is listed, not drawn. `diagrams.unbacked` checks a diagram's arrows against the map.
+
 ### Reviewing a change after it is made
 
 The first `propose_change` of a change keeps a baseline in `.leyline/snapshots/<change id>.db` (what the

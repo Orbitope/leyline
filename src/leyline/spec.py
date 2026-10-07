@@ -489,6 +489,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "ready": not gaps and not any(f["status"] == "open" and f["severity"] == "high" for f in findings(con, cid)["findings"])}
     from . import drift   # specs, living or of finished changes, that no longer match code this change touches
     result["drifted_specs"] = drift.touching(con, parsed["dir"], sorted(tasked | {i for l in links for i in l["into"]}))
+    from . import diagrams   # the planned path through the changed code, drawn from the map as it is now
+    result["how_it_runs"] = diagrams.safe(diagrams.sequence, con, [i for l in links for i in l["nodes"]])
     with con:
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
         con.executemany("INSERT INTO spec_items VALUES (?,?,?,?,?,?,?)",
@@ -1048,6 +1050,11 @@ def brief_text(b: dict) -> str:
                   + (f"; and {len(b['notes']) - 8} more" if len(b["notes"]) > 8 else "") + "."]
     else:
         L.append("No tasks yet.")
+    from . import diagrams
+    drawn = diagrams.markdown(b.get("how_it_runs"), "How execution reaches the code the tasks change, and what that code calls,"
+                              " as the code is now:", "The code the tasks change is shaded.")
+    if drawn:
+        L += ["", "### How it runs", ""] + drawn
     imp = b["impact"]
     L += ["", "## 2. What it will affect", ""]
     if imp.get("error"):
@@ -1361,6 +1368,10 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results)} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
            "done_as_agreed": not verdict, "why_not": verdict, "verdicts": judged, "view_id": review.get("view_id")}
+    from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
+    out["how_it_runs"] = diagrams.safe(diagrams.for_snapshot, diff.snapshot_path(con, cid), con,
+                                       [n["id"] for k in ("edited", "resigned", "added") for n in g[k]]
+                                       or [n["id"] for n in g["types_edited"]], [n["id"] for n in g["removed"]])
     if write:
         path = Path(parsed["dir"]) / "leyline.md"
         body = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
@@ -1457,6 +1468,8 @@ def verify_text(v: dict) -> str:
         L += [f"- fails: {r['name']}" for r in v.get("after_failing", [])[:10]]
     else:
         L += ["", "No test results were recorded after the change, so scenarios cannot be marked as passing."]
+    from . import diagrams
+    L += diagrams.section(v.get("how_it_runs"), "### How it runs now")
     r = v.get("review") or {}
     L += ["", "Review before implementation:"] + review_lines(r.get("all") or [], r.get("kinds") or [], full=False)
     if v.get("baseline"):

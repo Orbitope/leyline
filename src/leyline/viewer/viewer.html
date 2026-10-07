@@ -165,6 +165,7 @@ table.matrix { border-collapse: collapse; font: 11.5px var(--mono); font-variant
 pre.code { font: 12px/1.5 var(--mono); background: var(--sunken); border-radius: 6px; padding: 8px 0; margin: 0;
   overflow: auto; max-height: 420px; tab-size: 4; }
 pre.code code { display: block; padding: 0 10px 0 0; white-space: pre; }
+pre.code.diagram { margin: 8px 0; } pre.code.diagram code { padding-left: 10px; }
 pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-align: right; color: var(--muted);
   user-select: none; opacity: 0.7; }
 .status { font: 12px var(--mono); }
@@ -1434,9 +1435,12 @@ function mdBlocks(text) {
     if (!ln.trim()) { k++; continue; }
     if (ln.startsWith("# ")) { out.push({ t: "title", text: ln.slice(2) }); k++; continue; }
     if (ln.startsWith("## ")) { section = ln.slice(3); out.push({ t: "h", text: section }); k++; continue; }
+    if (ln.startsWith("### ")) { out.push({ t: "sub", text: ln.slice(4) }); k++; continue; }
+    // A ```mermaid block (a sequence diagram drawn from the map): this page has no renderer, so it shows the source.
+    if (ln.startsWith("```")) { const code = []; k++; while (k < lines.length && !lines[k].startsWith("```")) code.push(lines[k++]); k++; out.push({ t: "pre", lang: ln.slice(3).trim(), text: code.join("\n") }); continue; }
     if (ln.startsWith("|")) { const rows = []; while (k < lines.length && lines[k].startsWith("|")) rows.push(lines[k++]); out.push({ t: "table", rows: rows.map((r) => r.split("|").slice(1, -1).map((c) => c.trim())), section }); continue; }
     if (/^\s*- /.test(ln)) { const items = []; while (k < lines.length && /^\s*- /.test(lines[k])) items.push(lines[k++].replace(/^\s*- /, "")); out.push({ t: "ul", items }); continue; }
-    const para = []; while (k < lines.length && lines[k].trim() && !/^(#|\||\s*- )/.test(lines[k])) para.push(lines[k++]);
+    const para = []; while (k < lines.length && lines[k].trim() && !/^(#|\||\s*- |```)/.test(lines[k])) para.push(lines[k++]);
     out.push({ t: "p", text: para.join(" ") });
   }
   return out;
@@ -1489,7 +1493,7 @@ function changeHtml() {
     if (b.t === "p" && b.text.startsWith("**State:")) { h += `<p class="state ${stateClass(b.text)}">${inline(b.text)}</p>`; continue; }
     if (b.t === "p" && /^The one-page plan for/.test(b.text)) continue;
     if (b.t === "h" && !placed) { body += onmap; placed = true; }
-    body += b.t === "h" ? `<h3>${inline(b.text)}</h3>` : b.t === "p" ? `<p>${inline(b.text)}</p>` : b.t === "ul" ? `<ul>${b.items.map((x) => `<li>${inline(x)}</li>`).join("")}</ul>` : tableHtml(b);
+    body += b.t === "h" ? `<h3>${inline(b.text)}</h3>` : b.t === "sub" ? `<h4>${inline(b.text)}</h4>` : b.t === "pre" ? `<pre class="code diagram" data-lang="${esc(b.lang)}"><code>${esc(b.text)}</code></pre>` : b.t === "p" ? `<p>${inline(b.text)}</p>` : b.t === "ul" ? `<ul>${b.items.map((x) => `<li>${inline(x)}</li>`).join("")}</ul>` : tableHtml(b);
   }
   if (!placed) body += onmap;
   return h + `<div class="md">${body}<p class="note">This is <code>${esc(c.folder)}leyline.md</code>, written by <code>leyline plan</code> and <code>leyline check</code>. To change the plan, edit the spec files beside it and run <code>leyline plan ${esc(c.name)}</code> again.</p></div>`;
