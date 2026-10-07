@@ -89,6 +89,7 @@ def _arity(type_id: str) -> int:
 
 
 NOT_TYPES = ("String", "Self", "None", "Some", "Ok", "Err")
+_IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
 def _declared(text: list[str], start: Optional[int], end: Optional[int]) -> dict:
@@ -133,8 +134,17 @@ def _parse_one(job):
         except OSError:
             text = None
         if text is not None:
+            # Only where a call names a variable receiver is the type looked for; any other place falls back to
+            # reading the text in the main process.
+            holders, todo = set(), list(res.calls)
+            while todo:
+                c = todo.pop()
+                if c.receiver not in (None, "this", "base", "?") and _IDENT.fullmatch(c.receiver):
+                    holders.update((c.src_id, c.enclosing_type))
+                if c.chain is not None:
+                    todo.append(c.chain)
             decls = {n.id: (n.span_start, n.span_end, _declared(text, n.span_start, n.span_end))
-                     for n in res.nodes if n.kind in ("callable", "type", "test")}
+                     for n in res.nodes if n.id in holders}
     return f, ext, mod_dir, mod_id, loc, sha, res, None, decls
 
 

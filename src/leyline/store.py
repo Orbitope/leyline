@@ -46,15 +46,24 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return con
 
 
-# Every callable on some test's path. The flows are filtered before the join: reading the kind out of each
-# flow's attrs once per step instead was most of the cost on a large repo.
-TESTED = ("SELECT DISTINCT callable_id FROM flow_steps"
-          " WHERE flow_id IN (SELECT id FROM flows WHERE json_extract(attrs, '$.kind') = 'test')")
+# Every callable on some test's path, as `SELECT DISTINCT callable_id FROM flow_steps` over the test flows
+# would give it. Done on the keyed table: the flows are filtered first (reading the kind out of each flow's
+# attrs once per step was most of the cost on a large repo), and only the distinct callables are turned
+# back into ids.
+TESTED = ("SELECT id AS callable_id FROM keys WHERE k IN (SELECT DISTINCT callable FROM steps WHERE flow IN"
+          " (SELECT k FROM keys WHERE id IN (SELECT id FROM flows WHERE json_extract(attrs, '$.kind') = 'test')))")
 
-def flow_lengths(con) -> dict:
-    """Steps per flow. Counted on the keyed table: through the view every step would be joined to its ids."""
-    return dict(con.execute("SELECT k.id, s.n FROM (SELECT flow, COUNT(*) AS n FROM steps GROUP BY flow) s"
-                            " JOIN keys k ON k.k = s.flow").fetchall())
+def flow_callables(con, least: int, most: int) -> dict:
+    """flow id -> the callable ids of its steps in order, for every flow of least..most steps. One pass over the
+    keyed table: a query per flow cost seconds on a large repo, and through the view every step of every flow
+    would be joined to its ids just to count them."""
+    out: dict[str, list] = {}
+    for f, c in con.execute(
+            "SELECT fk.id, ck.id FROM steps s JOIN keys fk ON fk.k = s.flow JOIN keys ck ON ck.k = s.callable"
+            " WHERE s.flow IN (SELECT flow FROM steps GROUP BY flow HAVING COUNT(*) BETWEEN ? AND ?)"
+            " ORDER BY s.flow, s.seq", (least, most)):
+        out.setdefault(f, []).append(c)
+    return out
 
 
 VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel")
