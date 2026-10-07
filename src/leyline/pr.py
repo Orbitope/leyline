@@ -377,6 +377,9 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     types = [n for n in d["nodes"]["types_edited"] if own is None or own.get(n["id"])]
     added = d["nodes"]["added"]
     outer_added = [n for n in added if not any(n["id"].startswith(o["id"] + ".") for o in added if o is not n)]
+    from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
+    how_it_runs = diagrams.safe(diagrams.for_snapshot, snap, con, [n["id"] for n in edited + added] or [n["id"] for n in types],
+                                [n["id"] for n in d["nodes"]["removed"]])
     top = [{"id": f["id"], "path": f["path"], "lines": len(own[f["id"]])} for f in files
            if own is not None and any(t.strip() for _, t in own.get(f["id"]) or [])]
     changed = {n["id"] for n in edited + types} | {n["id"] for n in added}
@@ -476,6 +479,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
                       "flows_changed": d["flows"]["changed"], "rules_now_failing": new_violations},
         "performance": {"changed_functions_by_how_much_runs_through_them": spec.hot_functions(con, names, fns)[:25],
                         "tests_that_measure_speed": spec._speed_tests(con, set(fns))[:20]},
+        "how_it_runs": how_it_runs,
         "how_sure": {"guessed_caller_links": guessed > 0,
                      "note": "Caller and channel links come from the map. Where the map guessed a link by name it says so;"
                              " read the code before filing anything on one."},
@@ -776,6 +780,8 @@ def text(r: dict) -> str:
     if big:
         L.append(f"- This is large for one review ({_n(s['functions'] + s['types'], 'unit')} across {_n(s['modules'], 'module')})."
                  " Ask whether it is two changes.")
+    from . import diagrams
+    L += diagrams.section(r.get("how_it_runs"), "## How it runs")
     # what it reaches and did not change
     risky = []
     for m in reach["signature_changed_callers_not_edited"][:10]:
