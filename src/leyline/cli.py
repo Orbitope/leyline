@@ -69,14 +69,20 @@ def _summary(o: dict) -> str:
             langs = ", ".join(f"{k} {v}" for k, v in m["languages"].items())
             lines.append(f"  {m['path']:<22} {m['files']:>3} files {m['loc']:>6} loc "
                          f"{m['types']:>4} types {m['callables']:>4} callables  [{langs}]")
-    name = lambda i: i.split(":module:")[-1]
+    multi = len(o["repos"]) > 1
+    name = lambda i: i.replace(":module:", "/") if multi else i.split(":module:")[-1]
+    if o.get("workspace"):
+        lines.append("\nlinks between repositories")
+        for e in o["workspace"]["links"]:
+            kinds = ", ".join(f"{k} {v}" for k, v in e.items() if k not in ("from", "to", "total"))
+            lines.append(f"  {e['from']:<18} -> {e['to']:<18} {kinds}")
     lines.append("\nmodule dependencies")
     for e in o["module_edges"]:
         kinds = ", ".join(f"{k} {v}" for k, v in e.items() if k not in ("from", "to", "total"))
         lines.append(f"  {name(e['from']):<18} -> {name(e['to']):<18} {kinds}")
     lines.append("\nextractors")
     for c in o["coverage"]:
-        lines.append(f"  {c['extractor']:<24} {c['status']}")
+        lines.append(f"  {(c['repo'] + '  ') if multi else ''}{c['extractor']:<24} {c['status']}")
     return "\n".join(lines)
 
 
@@ -89,9 +95,10 @@ def main(argv=None) -> int:
     p.add_argument("root", help="the repository")
     p.add_argument("compiler", help="a .scip file, or roslyn")
     p.add_argument("--prefix", default="", help="the folder the SCIP index's paths are relative to, inside the repository")
-    p = sub.add_parser("index", help="index a repository into the store")
-    p.add_argument("path", nargs="?", default=".")
-    p.add_argument("--repo", help="repo id (defaults to the directory name)")
+    p = sub.add_parser("index", help="index a repository into the store, or several as one workspace")
+    p.add_argument("path", nargs="*", default=["."],
+                   help="the repository; name several to index them together, so calls between them are linked")
+    p.add_argument("--repo", help="repo id (defaults to the directory name; one repository only)")
     p.add_argument("--exact", choices=["auto", "off", "roslyn", "scip"], default="auto",
                    help="let a compiler overrule the syntax-based links: the .NET SDK's for C#, a SCIP index for"
                         " other languages. auto (the default) uses whatever is available")
@@ -155,8 +162,12 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "index":
-        db = args.db if args.db != DEFAULT_DB else str(Path(args.path) / DEFAULT_DB)
-        stats = index(args.path, db, args.repo, args.exact, args.scip)
+        if len(args.path) > 1 and args.repo:
+            print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
+            return 2
+        # One repository keeps its store inside it; a workspace's store is in the current directory.
+        db = args.db if args.db != DEFAULT_DB else str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB
+        stats = index(args.path if len(args.path) > 1 else args.path[0], db, args.repo, args.exact, args.scip)
         t = stats.get("timing", {})
         print(f"indexed into {db}: {t.get('files', 0):,} files, {t.get('lines', 0):,} lines in {t.get('total_seconds', 0)} s"
               f" ({t.get('lines_per_second', 0):,} lines/s)")

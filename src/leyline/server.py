@@ -45,6 +45,13 @@ def overview() -> dict:
 
 
 @mcp.tool()
+def cross_repo(limit: int = 20) -> dict:
+    """For a workspace of several repositories: the links between them by kind, the functions most
+    called from another repo, and how many flows cross into another repo and come back."""
+    return query.cross_repo(_db(), limit)
+
+
+@mcp.tool()
 def expand(node_id: str, limit: int = 50) -> dict:
     """One node in detail. A module returns its files, public types, entry points and dependencies.
     A type returns its members, bases and users. A callable returns its signature, callers and callees.

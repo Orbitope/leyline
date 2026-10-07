@@ -30,6 +30,27 @@ leyline --db ... export -o map.html # the map as one self-contained page
 
 To use it from an MCP client, register the command `leyline --db <path> serve`.
 
+### Several repositories
+
+```bash
+leyline index flask/ werkzeug/      # one workspace; writes ./.leyline/leyline.db
+leyline --db .leyline/leyline.db index werkzeug/   # re-indexes flask too
+```
+
+Repositories named together are indexed in one run, so a name in one resolves to its declaration in
+the other: `import werkzeug` in Flask reaches Werkzeug's source (a package under `src/` by its package
+name), a Flask class extends Werkzeug's, and a Werkzeug method that calls `self.open()` dispatches
+into Flask's override. Ids keep their own repo's prefix, so a store indexed one repository at a time
+reads the same. The store remembers its members: indexing any one of them later indexes all of them
+again, which keeps the links between them. A member whose directory has gone is left as stored.
+
+`overview` lists the links between repositories; the `cross_repo` tool adds the functions most called
+across and the flows that cross and come back. An edge between repositories carries `to_repo`;
+`impact` and a change assessment count what they reach per repo and flag a change that reaches into
+another one. Not yet: the C# compiler pass (SCIP indexes are matched to their repository by the
+directory they were made in), and values handed across that the syntax pass cannot follow, such as
+the WSGI app a test client calls.
+
 ## How the pieces fit
 
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
@@ -183,7 +204,9 @@ the type that declares them: the mutable state with no single owner.
   shared-state ranking, as are constructors, subclasses and test code.
 - A change made by calling a method on the field (`list.Add(x)`) is a read of the field, not an
   assignment: the map cannot tell a mutating method from a query.
-- Properties count as fields. Enum members and events do not.
+- Properties count as fields. Enum members and events do not. In Python, reading an attribute that a
+  getter computes (`@property`, or a decorator that is a descriptor class, such as Werkzeug's
+  `cached_property`) is also a call to the getter; on `self`, so is a subclass's getter of that name.
 - In C#, a field on a receiver of unknown type is linked by name only when one field has that name,
   and marked as a guess. In Python there is no such guess: attribute names repeat too often.
 - A change assessment whose target is a field marks every reader and writer, and `review` reports
@@ -247,6 +270,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | Tool | Returns |
 | --- | --- |
 | `overview` | Repos, modules with sizes, module-to-module dependencies by edge kind, external packages, extractor status |
+| `cross_repo` | In a workspace of several repositories: links between them, functions most called across, flows that cross and come back |
 | `expand(node_id)` | One node in detail: contents, dependencies, dependents, callers and callees |
 | `search(text, kind?)` | Nodes matching a name, qualified name or path |
 | `neighbors(node_id, direction?, kinds?)` | Raw edges around a node |

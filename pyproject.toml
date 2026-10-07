@@ -33,5 +33,5 @@ packages = ["src/leyline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["fixture", "fixture2", "fixture3", "fixture4"]
+norecursedirs = ["fixture", "fixture2", "fixture3", "fixture4", "fixture_ws"]
 python_files = ["test_index.py"]

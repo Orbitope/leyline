@@ -144,6 +144,17 @@ def scip(path: str | Path, root: Optional[str | Path] = None) -> list[dict]:
     return out
 
 
+def scip_root(path: str | Path) -> Optional[Path]:
+    """The directory a SCIP index was made in (its metadata's project root), or None."""
+    from . import scip_pb2
+    index = scip_pb2.Index()
+    index.ParseFromString(Path(path).read_bytes())
+    root = index.metadata.project_root
+    if not root:
+        return None
+    return Path(root[len("file://"):] if root.startswith("file://") else root).resolve()
+
+
 def _scip_name(symbol: str) -> str:
     """The last descriptor's name: `... pkg/Engine#start().` -> start."""
     tail = symbol.rstrip(".")
@@ -156,9 +167,11 @@ def _scip_name(symbol: str) -> str:
 
 # -- applying ----------------------------------------------------------------------------------
 class _Locator:
-    def __init__(self, ix):
+    def __init__(self, ix, repo: Optional[str] = None):
         self.by_path = defaultdict(list)
         for n in ix.nodes.values():
+            if repo is not None and not n.id.startswith(repo + ":"):
+                continue   # records name paths inside one repository of a workspace
             if n.kind in ("callable", "test", "field") and n.path and n.span_start:
                 self.by_path[n.path].append((n.span_start, n.span_end or n.span_start, n))
 
@@ -183,9 +196,10 @@ class _Locator:
         return best[1] if best else None
 
 
-def apply(ix, records: list[dict], source: str) -> dict:
-    """Correct an indexer's calls and field-access edges with compiler-resolved records."""
-    loc = _Locator(ix)
+def apply(ix, records: list[dict], source: str, repo: Optional[str] = None) -> dict:
+    """Correct an indexer's calls and field-access edges with compiler-resolved records.
+    `repo`: in a workspace, the repository whose files the records' paths are relative to."""
+    loc = _Locator(ix, repo)
     complete = {r["f"]: r.get("e", 0) == 0 and not r.get("unbound_unknown") for r in records if r["k"] == "file"}
     stats = defaultdict(int)
 
@@ -273,7 +287,7 @@ def apply(ix, records: list[dict], source: str) -> dict:
     if found:
         edges = []
         for e in ix.edges:
-            if e.kind not in ("reads", "writes"):
+            if e.kind not in ("reads", "writes") or (repo is not None and not e.src_id.startswith(repo + ":")):
                 edges.append(e)
                 continue
             key = (e.kind, e.src_id, e.dst_id)
