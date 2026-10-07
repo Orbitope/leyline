@@ -48,8 +48,8 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
     definition = {}
     for doc in index.documents:
         for occ in doc.occurrences:
-            if occ.symbol_roles & 1 and not occ.symbol.startswith("local "):
-                definition[occ.symbol] = (pre + doc.relative_path, occ.range[0] + 1)
+            if occ.symbol_roles & 1 and not occ.symbol.startswith("local ") and exact.occ_range(occ):
+                definition[occ.symbol] = (pre + doc.relative_path, exact.occ_range(occ)[0] + 1)
     sites, files, mentions = {}, set(), set()
     for doc in index.documents:
         path = pre + doc.relative_path
@@ -60,28 +60,30 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
             sym = occ.symbol
             if occ.symbol_roles & 1:
                 continue
-            row = occ.range[0]
+            row, col, end = exact.occ_range(occ) or (len(lines), 0, 0)
             if row >= len(lines):
                 continue
-            end = occ.range[2] if len(occ.range) == 3 else occ.range[3]
             if sym.startswith("local "):
                 # A local the compiler could not tie to a declaration (often an import it failed to follow):
                 # a call through it is not judged either way.
                 src_node = loc.enclosing(path, row + 1)
-                word = lines[row][occ.range[1]:end].strip()
+                word = lines[row][col:end].strip()
                 if src_node is not None and lines[row][end:].lstrip().startswith("("):
                     sites.setdefault((src_node.id, row + 1, word), None)
                 continue
             text = lines[row]
-            after, before = text[end:].lstrip(), text[:occ.range[1]].rstrip()
-            called = after.startswith(("(", "!(")) or (after.startswith("<") and "(" in after) or before.endswith(("<", "new"))
-            word = text[occ.range[1]:end].strip()
+            after, before = text[end:].lstrip(), text[:col].rstrip()
+            called = after.startswith("(") or after[1:].lstrip()[:1] in ("(", "[", "{") and after[:1] == "!" or (after.startswith("<") and "(" in after) or before.endswith(("<", "new"))
+            word = text[col:end].strip()
             name = exact._scip_name(sym).strip("<>")
             src_node = loc.enclosing(path, row + 1)
             if src_node is None:
                 continue
             dst = None
-            if sym in definition:
+            macro = after.startswith("!")
+            if macro:
+                word += "!"     # a Rust macro: the map names it with its bang
+            if sym in definition and macro == name.endswith("!"):
                 tf, tl = definition[sym]
                 dst = loc.target(tf, tl, name, ("callable",))
                 if dst is None and called and (name in CTOR_NAMES or word[:1].isupper()):
@@ -159,7 +161,8 @@ def grade(root: str, scip_path: str, prefix: str = "", repo_id: Optional[str] = 
             continue
         name = ix.nodes[dst].name
         verdicts = by_line.get((src, line), {})
-        if name in CTOR_NAMES:
+        if name in CTOR_NAMES and name not in verdicts:
+            # `new Foo()` is recorded under Foo; Rust's `Foo::new()` is an ordinary call recorded under new.
             name = ix.nodes[ix.nodes[dst].parent_id].name if ix.nodes[dst].parent_id in ix.nodes else name
         if name in verdicts:
             if verdicts[name] is None:

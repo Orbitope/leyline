@@ -7,6 +7,11 @@ fn main() {
     let s = format!("{}", a);
     shout!(s);
     let n = s.len();
+    let d = geo::describe(&c);
+}
+
+fn measure(c: &geo::Circle) -> f64 {
+    c.area()
 }
 
 #[test]

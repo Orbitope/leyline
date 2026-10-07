@@ -6,4 +6,18 @@ public class App {
         c.add(2);
         System.out.println(c.get());
     }
+
+    static void words(Counter c) {
+        String label = "two";
+        c.add(label);
+        c.add(new Counter());
+    }
+
+    static int chained() {
+        return new Counter().plus(1).get();
+    }
+
+    static void again(Counter c) {
+        c.run();
+    }
 }

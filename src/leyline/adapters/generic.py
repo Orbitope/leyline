@@ -101,7 +101,7 @@ TEST_MARK = re.compile(r"#\[(tokio::)?test|@Test\b|@ParameterizedTest|\[Test\]|\
 COMMON_METHODS = frozenset("""new get set add remove push pop put clear size len length next close open read write run start stop
 init main string to_string toString equals hash clone copy map filter each find contains insert delete update append
 format print println printf error errorf log debug info warn ok err unwrap expect iter into from as_ref as_str
-is_empty isEmpty keys values join split trim send recv lock unlock wait name value index count first last sort""".split())
+is_empty isEmpty keys values join split trim send recv lock unlock wait name value index count first last sort parse""".split())
 
 
 def _text(node) -> str:
@@ -209,9 +209,12 @@ class Generic:
                                 continue   # `mod geo;` names a file, it is not a type
                             defs.append(("type", kind, name, node))
                     elif key == "reference.call":
-                        calls.append((name, node))
+                        # some queries tag a call's argument list; the call is the node around it
+                        calls.append((name, node.parent if node.type in ("argument_list", "arguments") and node.parent is not None else node))
                     elif key == "reference.implementation" and node.type in _CONTAINER:
-                        containers.append((node, _text(name)))
+                        # `impl Trait for Type`: the block's methods belong to Type; the query names the trait
+                        own = _last_name(node.child_by_field_name("type"))
+                        containers.append((node, _text(own if own is not None else name)))
                         refs.append((name, node, "base") if node.child_by_field_name("trait") is not None
                                     and name.start_byte == node.child_by_field_name("trait").start_byte else (name, node, "skip"))
                     elif key.startswith("reference."):
@@ -271,6 +274,15 @@ class Generic:
                             refs.append((m, n, "base"))
                         else:
                             inner.extend(m.named_children)
+            if t == "token_tree":
+                # A macro's arguments, which the grammar leaves as raw tokens: a name directly followed by a
+                # parenthesized group (or by `!` and one) is still a call.
+                kids = n.children
+                for i, c in enumerate(kids[:-1]):
+                    nxt = kids[i + 1] if kids[i + 1].type != "!" or i + 2 >= len(kids) else kids[i + 2]
+                    if c.type == "identifier" and nxt.type == "token_tree" and _text(nxt)[:1] == "(" and \
+                            (i == 0 or _text(kids[i - 1]) not in ("fn", "struct", "enum", "macro_rules", "mod")):
+                        calls.append((c, nxt))
             if t in _CONTAINER and not any(c[0].start_byte == n.start_byte for c in containers):
                 target = n.child_by_field_name("type") or n.child_by_field_name("name") or _name_of(n)
                 nm = _last_name(target)
@@ -371,17 +383,39 @@ class Generic:
             head = re.sub(r"\s+", " ", head.split("\n\n")[0]).strip()[:240]
             before = src[max(0, node.start_byte - 160):node.start_byte].decode("utf8", "replace")
             is_method = kind == "callable" and (native == "method" or bool(owner_name) or (outer is not None and outer[3] == "type"))
+            anonymous = kind == "callable" and not owner_name and outer is not None and _in_anonymous(node, outer[0])
+            if anonymous:
+                is_method = False   # `new Base() { void run() {} }`: a member of a class with no name, not of the outer type
             type_id = parent_id if is_method and parent_id != file_id and (outer is None or outer[3] == "type" or owner_name) else None
             attrs = {"signature": head, "native_kind": native,
                      "visibility": "private" if re.search(r"\b(private|fileprivate)\b", head) or name.startswith("_") else "public"}
             if kind == "callable":
                 params = node.child_by_field_name("parameters")
+                plist = [p for p in params.named_children if p.type != "comment"] if params is not None else []
+                # The receiver written out (Go's func (c *T), Rust's &self, Python's self): a bare call in the
+                # body is then never a call on the receiver.
+                explicit_self = recv is not None or bool(plist and ("self" in plist[0].type or
+                                                                    re.fullmatch(r"&?(mut )?(self|cls)", _text(plist[0]).strip())))
                 is_test = (test_file and re.match(r"(?i)test", name) is not None) or bool(TEST_MARK.search(before[-90:] + head[:40]))
                 attrs.update({"argc_min": 0, "argc_max": 99, "is_static": not is_method, "is_virtual": is_method,
                               "type_id": type_id, "owner_name": owner_name, "is_test": is_test or None,
                               "framework": "by convention" if is_test else None,
-                              "params_seen": len([p for p in params.named_children if p.type != "comment"]) if params is not None else None,
+                              "params_seen": len(plist) if params is not None else None, "explicit_self": explicit_self or None,
+                              "param_types": _param_types(plist[1:] if explicit_self and recv is None else plist) or None,
+                              # declared in `impl Trait for T` or in an anonymous class: it implements something declared
+                              # elsewhere, and a method of the type's own of the same name is the one called
+                              "via_base": True if anonymous or (cont is not None and owner_name and
+                                                                cont[0].child_by_field_name("trait") is not None) else None,
                               "body_line": body.start_point[0] + 1 if body is not None else None})
+                ret = node.child_by_field_name("return_type") or node.child_by_field_name("result") or \
+                    node.child_by_field_name("returns") or node.child_by_field_name("type")
+                if ret is not None:
+                    names = _type_names(_text(ret))
+                    own = owner_name or (outer[4].rsplit(".", 1)[-1] if outer is not None and outer[3] == "type" else None)
+                    attrs["returns_names"] = [own if x == "Self" and own else x for x in names][:4] or None
+                tparams = node.child_by_field_name("type_parameters")
+                if tparams is not None:
+                    attrs["type_params"] = re.findall(r"[A-Za-z_]\w*", re.sub(r"(:|extends|super)[^,>]*", "", _text(tparams)))
             else:
                 attrs.update({"namespace": qual, "is_abstract": native in ("interface", "trait", "protocol")})
                 type_ids.setdefault(name, nid)
@@ -415,6 +449,7 @@ class Generic:
 
         top_used = False
         seen_calls = set()
+        sites, site_at = [], {}
         for name_node, node in calls:
             name = _text(name_node).strip()
             if not name or not re.fullmatch(r"[A-Za-z_$@][\w$?]*", name) or name in _KEYWORDS:
@@ -441,8 +476,28 @@ class Generic:
                 name += "!"     # a macro: only a macro of that name can answer it
             args = node.child_by_field_name("arguments") or (node if node.type in ("argument_list", "arguments") else None)
             argc = len([a for a in args.named_children if a.type != "comment"]) if args is not None else 0
-            res.calls.append(CallSite(src_id, name, receiver, None, argc, name_node.start_point[0] + 1, enclosing_type,
-                                      name_node.start_point[1]))
+            if node.type == "token_tree":
+                inner = node.children[1:-1]
+                argc = sum(1 for x in inner if x.type == ",") + 1 if inner else 0
+            site = CallSite(src_id, name, receiver, None, argc, name_node.start_point[0] + 1, enclosing_type,
+                            name_node.start_point[1])
+            res.calls.append(site)
+            sites.append((site, node, args))
+            site_at[(node.start_byte, node.end_byte)] = site
+        for site, node, args in sites:
+            # What the text shows of an argument's type, and of the value a call is made on when it is
+            # itself an expression: `new Foo().run()`, `a.make().run()` (resolved by the indexer).
+            if args is not None and args.type != "token_tree":
+                hints = tuple(_arg_hint(a, site_at) for a in args.named_children if a.type != "comment")
+                site.args = hints if any(h is not None for h in hints) else ()
+            if site.receiver == "?":
+                obj = _callee_object(node)
+                if obj is not None and obj.type in _NEW:
+                    tnode = obj.child_by_field_name("type") or obj.child_by_field_name("constructor") or \
+                        (obj.named_children[0] if obj.named_children else None)
+                    site.receiver_type = _type_head(_text(tnode)) if tnode is not None else None
+                elif obj is not None and (obj.start_byte, obj.end_byte) in site_at:
+                    site.chain = site_at[(obj.start_byte, obj.end_byte)]
         by_id = {n.id: n for n in res.nodes}
         for c in res.calls:        # a method written outside its type's block still belongs to the type
             if c.enclosing_type is None and c.src_id in by_id and by_id[c.src_id].attrs.get("type_id"):
@@ -499,6 +554,121 @@ class Generic:
         return res
 
 
+def _type_head(text: str) -> Optional[str]:
+    """The type a declaration names, without what decorates it: `Class<T>` -> Class, `&'a mut io::Read` -> Read,
+    `java.io.Reader` -> Reader, `[]string` -> string."""
+    t = text
+    while True:
+        u = re.sub(r"<[^<>]*>|\[[^\[\]]*\]", "", t)
+        if u == t:
+            break
+        t = u
+    t = re.sub(r"'\w+|\b(mut|dyn|impl|const|final|in|out|ref)\b|\.\.\.|[*&?]", " ", t)
+    words = re.findall(r"[A-Za-z_]\w*", t)
+    return words[-1] if words else None
+
+
+def _param_types(plist) -> list:
+    """Each parameter's type head, in order (Go's `a, b int` is two of them); None where none is written.
+    A trailing `...` marks a parameter that takes the rest of the arguments."""
+    out = []
+    for p in plist:
+        tnode = p.child_by_field_name("type")
+        if tnode is None and ("spread" in p.type or "variadic" in p.type):
+            tnode = next((c for c in p.named_children if "type" in c.type), None)
+        head = _type_head(_text(tnode)) if tnode is not None else None
+        names = p.children_by_field_name("name") if tnode is not None else []
+        rest = "..." in _text(p) or "spread" in p.type or "variadic" in p.type
+        for _ in range(max(1, len(names))):
+            out.append((head or "") + ("..." if rest else ""))
+    return out if any(out) else []
+
+
+_LITERALS = [(re.compile(r"char"), "char"), (re.compile(r"string|template"), "string"),
+             (re.compile(r"^(true|false)$|bool"), "bool"), (re.compile(r"float|double|decimal_floating"), "float"),
+             (re.compile(r"int|number|decimal|hex|octal|binary"), "int"), (re.compile(r"^(null|nil|none|null_literal|nil_literal)$"), "null")]
+
+
+def _type_names(text: str) -> list:
+    """The names in a written type, outer first, without package qualifiers: `*pkg.Command` -> [Command]."""
+    text = re.sub(r"\b[a-z_]\w*\s*(::|\.)\s*", "", text)
+    return [w for w in re.findall(r"[A-Za-z_]\w*", text) if w not in ("mut", "dyn", "impl", "const", "final", "ref", "in", "out")]
+
+
+def _in_anonymous(node, outer_start: int) -> bool:
+    """A definition sits in an object-creation expression's body (Java's anonymous class) below its outer type."""
+    p = node.parent
+    while p is not None and p.start_byte > outer_start:
+        if p.type in _NEW or p.type in ("enum_constant", "enum_entry"):    # new Base() { }, an enum constant's own body
+            return True
+        p = p.parent
+    return False
+
+
+def _callee_object(call):
+    """The expression a method call is made on: `a.b()` -> a, `x.f().g()` -> x.f()."""
+    callee = call.child_by_field_name("function") or call
+    if callee.type in ("generic_function", "generic_name"):
+        callee = callee.child_by_field_name("function") or callee
+    obj = None
+    for f in ("object", "operand", "value", "receiver", "expression"):
+        obj = callee.child_by_field_name(f)
+        if obj is not None:
+            break
+    while obj is not None and obj.type == "parenthesized_expression" and obj.named_children:
+        obj = obj.named_children[0]
+    return obj
+
+
+def _arg_hint(a, calls=None):
+    """What an argument shows of its type: a literal's kind, a constructed or cast-to type, a class literal, a
+    lambda, `$name` for a variable or `$a.b` for a field whose declared type the indexer looks up, or the
+    call whose declared return type it is."""
+    while a.type in ("unary_expression", "reference_expression", "parenthesized_expression", "argument", "value_argument") \
+            and a.named_children and not (a.type == "unary_expression" and _text(a)[:1] in "-+!~"):
+        a = a.named_children[-1]
+    t = a.type
+    if calls and (a.start_byte, a.end_byte) in calls and t not in _NEW:
+        return calls[(a.start_byte, a.end_byte)]
+    if t in _NAME_TYPES and not a.named_child_count:
+        return "$" + _text(a)
+    if t in ("field_access", "selector_expression", "field_expression", "member_access_expression", "member_expression") \
+            and re.fullmatch(r"[A-Za-z_]\w*\s*\.\s*[A-Za-z_]\w*", _text(a)):
+        return "$" + re.sub(r"\s+", "", _text(a))
+    if "cast" in t or t == "as_expression":
+        tnode = a.child_by_field_name("type")
+        return _type_head(_text(tnode)) if tnode is not None else None
+    if t in ("ternary_expression", "conditional_expression"):
+        for f in ("consequence", "alternative"):
+            branch = a.child_by_field_name(f)
+            h = _arg_hint(branch, calls) if branch is not None else None
+            if h is not None and h != "null":
+                return h
+        return None
+    if t == "unary_expression" and _text(a)[:1] == "!":
+        return "bool"
+    if t == "unary_expression" and _text(a)[:1] in "-+" and a.named_children:
+        return _arg_hint(a.named_children[-1], calls)
+    if t in ("binary_expression", "binary_operator"):
+        op = a.child_by_field_name("operator")
+        op = _text(op) if op is not None else next((_text(c) for c in a.children if not c.is_named), "")
+        if op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||", "and", "or", "===", "!=="):
+            return "bool"
+        if op == "+" and any(_arg_hint(c) == "string" for c in a.named_children):
+            return "string"     # "a" + b, a + " " + b
+        return None
+    if t == "class_literal":
+        return "Class"
+    if t in _NEW or t == "composite_literal":
+        tnode = a.child_by_field_name("type") or a.child_by_field_name("name") or (a.named_children[0] if a.named_children else None)
+        return _type_head(_text(tnode)) if tnode is not None else None
+    if _FUNC_VALUE.match(t):
+        return "fn"
+    if t.endswith(("literal", "string", "integer", "float", "number")) or t in ("true", "false", "null", "nil", "none", "string_literal"):
+        return next((kind for pat, kind in _LITERALS if pat.search(t)), None)
+    return None
+
+
 def _first_string(call):
     """The first argument when it is a string literal (the test's title)."""
     args = call.child_by_field_name("arguments") or next((c for c in call.named_children if "argument" in c.type), None)
@@ -550,8 +720,8 @@ def _receiver(src: bytes, pos: int) -> Optional[str]:
     if m.group(3) == b":" and not src[max(0, pos - 80):pos].rstrip().endswith(b":"):
         return None
     if m.group(3) == b":":      # Lua's obj:method(); elsewhere a lone colon is a label or a type
-        if not m.group(1) or m.group(2):
-            return None
+        if not m.group(1) or m.group(2) or src[pos - 1:pos] != b":":
+            return None         # `Args: ExactArgs(2)`, `{key: f()}`: a key, with space before the value
     if m.group(2) or not m.group(1):
         return "?"
     name = m.group(1).decode("utf8", "replace")
