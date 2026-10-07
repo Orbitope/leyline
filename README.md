@@ -252,7 +252,9 @@ It then lists what the change reaches that no task covers, the patterns it sits 
 block implementation, and the code that uses the same things and that no task names: other callers of
 a changed function, other users of a field it uses, and users of an existing member that a new one is
 named like (a new `EmergencyQueues` beside `EntryQueues`). Each of those lines is either right to
-leave alone or a missing task. Reviewers (the `leyline-adversarial-review` skill, one run
+leave alone or a missing task. So is the last such list, which comes from git history rather than the map:
+files that usually change with the files the tasks touch and that no task names (see
+[Change coupling](#change-coupling)). Reviewers (the `leyline-adversarial-review` skill, one run
 for logic and one for performance) file findings with node ids as evidence; only the person
 resolves them (`leyline spec resolve <finding> accepted|rejected|deferred "why"`). A reviewer that passes
 its kind (`--reviewer`, or `reviewer` on the `spec_review_facts` tool) is recorded as having run, so the page
@@ -308,6 +310,8 @@ seconds), compares it with the checkout, uncommitted edits included, and writes
   table, event or program it names) with every other end that must agree. A channel the changed function
   sits on but the edit does not touch is left out.
 - **Shares a caller, a field or data with the change**: weaker leads, for a reviewer to read.
+- **Usually changes with what it changed, and it did not change**: from the history before the branch (see
+  [Change coupling](#change-coupling)).
 - **Tests**: whether it edits any, which changed code no test reaches, and which tests run it.
 - New dependencies between modules, rules that now fail, and the repository's own rules for reviewers
   (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` ...) to review against.
@@ -444,6 +448,36 @@ most depended-on outward, the main abstractions and boundaries, one test path wo
 is tested, and what the map cannot see. Every sentence in it is a count or a name the store can
 back. An agent can write further tours with `save_tour`; `skills/leyline-tour/SKILL.md` says how.
 
+### Change coupling
+
+Some files have to change together with nothing in the code to say so: a doc and the rule it describes, a JSON
+schema and its reader, a test fixture, the other side of a protocol. Git history shows them. `leyline coupling
+<file>` lists what usually changed in the same commits as a file, and `leyline coupling` alone the most coupled
+pairs:
+
+```
+$ leyline coupling tooling/validate.py
+`tooling/validate.py` changed in 12 commits (from the last 206 commits, leaving out 17 that changed more than 50
+files). What usually changed with it:
+
+- files in `editor/core/src/validation/`: 7 of 12 (58%)
+- `tooling/conformance/validator/build_cases.py`: 7 of 12 (58%)
+- files in `tooling/conformance/validator/cases/`: 7 of 12 (58%)
+- `tooling/scripts/mutation_probe.py`: 6 of 12 (50%)
+```
+
+That is the rule a contributor's guide states in words (a validator rule changes both validators, adds a
+conformance case and a mutant), found from history alone.
+
+A file is listed when it changed together with the first in at least 3 commits and in at least half of the first
+file's commits (`--min-together`, `--min-confidence`). A folder is listed when its files did, though no one file
+did (a rule that comes with a new test case each time), unless it is at the top of the repository. Read: the last
+1,000 commits within two years, merges and commits that changed more than 50 files left out, renames followed.
+It is worked out once per commit and kept in the store. `plan` lists the files that usually change with the files
+the tasks touch and that no task names, and `pr` those that usually changed with what the branch changed and that
+it did not; `leyline spec facts` has the whole list. Coupling is by file, not by function: a past commit's line
+numbers do not say which function they were in without parsing every file as it was then.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
@@ -494,6 +528,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
+| `coupling(path?, min_together?, min_confidence?, limit?)` | Files (and folders) that usually change in the same commits as a file, from git history; with no path, the most coupled pairs |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
 | `patterns(pattern?, node_id?, limit?)` | Design patterns found by shape, with roles, rationale and confidence |
 | `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |

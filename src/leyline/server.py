@@ -700,6 +700,20 @@ def shared_state(scope: Annotated[Optional[str], Field(description="A module id 
     return query.shared_state(_db(), scope, limit)
 
 
+@_tool(name="coupling")
+def change_coupling(path: Annotated[Optional[str], Field(description="A file: its path in the repository, or the end of"
+                                                                     " it. Left out: the most coupled pairs.")] = None,
+                    min_together: Annotated[int, Field(ge=2, description="Commits the two changed in together.")] = 3,
+                    min_confidence: Annotated[float, Field(ge=0, le=1, description="Share of the file's commits that"
+                                                                                   " changed the other too.")] = 0.5,
+                    limit: Limit = 20) -> dict:
+    """Files (and folders) that usually change in the same commits as a file, from git history: links the map
+    cannot see, such as docs, schemas, config, fixtures and the other side of a protocol. Worked out once per
+    commit. `plan` and `review_pr` already list those a change leaves alone."""
+    from . import coupling as history
+    return history.query(_db(), path, min_together, min_confidence, limit)
+
+
 @_tool(items=50)
 def coverage(node_id: Annotated[Optional[str], Field(description="A function: the tests under which it ran.")] = None,
              flow_id: Annotated[Optional[str], Field(description="A test's flow: its static path against what ran.")] = None,

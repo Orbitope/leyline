@@ -153,3 +153,17 @@ CREATE TABLE IF NOT EXISTS findings (
   id TEXT PRIMARY KEY, change_id TEXT, reviewer TEXT, severity TEXT, claim TEXT, evidence TEXT,
   proposal TEXT, status TEXT, resolution TEXT, created TEXT
 );
+
+-- Change coupling read from git history (leyline.coupling), kept per repository under the commit it was read from:
+-- how many commits changed each file, and each pair of files (and file and folder) changed together in two or more.
+CREATE TABLE IF NOT EXISTS coupling_runs (
+  repo_id TEXT, sha TEXT, commits INTEGER, bulk INTEGER, seconds REAL, created REAL,
+  PRIMARY KEY (repo_id, sha)
+);
+CREATE TABLE IF NOT EXISTS coupling_files (repo_id TEXT, sha TEXT, path TEXT, changes INTEGER, PRIMARY KEY (repo_id, sha, path));
+CREATE TABLE IF NOT EXISTS coupling_pairs (repo_id TEXT, sha TEXT, a TEXT, b TEXT, together INTEGER);
+CREATE INDEX IF NOT EXISTS coupling_pairs_a ON coupling_pairs (repo_id, sha, a);
+CREATE INDEX IF NOT EXISTS coupling_pairs_b ON coupling_pairs (repo_id, sha, b);
+-- A file and a folder outside it (dir ends in /): commits that changed the file and any file in the folder.
+CREATE TABLE IF NOT EXISTS coupling_dirs (repo_id TEXT, sha TEXT, path TEXT, dir TEXT, together INTEGER);
+CREATE INDEX IF NOT EXISTS coupling_dirs_path ON coupling_dirs (repo_id, sha, path);

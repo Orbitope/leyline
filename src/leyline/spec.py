@@ -461,6 +461,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     state = _shared_state_touched(con, tasked)
     others = _left_alone(con, names, links, cid)
     patterns = _patterns_touched(con, tasked)
+    from . import coupling   # files that usually change with what the tasks touch, from git history
+    history = coupling.for_spec(con, names, links)
     rule_state = rules.check(con)
     gaps = list(parsed["problems"])
     for l in links:
@@ -479,7 +481,7 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "scenarios": scenarios, "impact": {k: report.get(k) for k in ("summary", "risks", "by_module", "tests_to_run", "channels", "untested")}
               if "error" not in report else {"error": report["error"]},
               "must_edit_uncovered": uncovered, "must_agree": agree, "self_tests": self_tests,
-              "shared_state": state, "left_alone": others, "patterns": patterns,
+              "shared_state": state, "left_alone": others, "patterns": patterns, "usually_changes_with": history,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
               "baseline": report.get("snapshot"), "reviews": reviews(con, cid),
@@ -1091,6 +1093,14 @@ def brief_text(b: dict) -> str:
     if quiet:   # said, so a short list is not read as the whole list
         L += ["", f"{quiet} more field{'s' if quiet != 1 else ''} shared with the change left off this page: "
                   f"{(la.get('left_out') or {}).get('why', 'weak links')}. `leyline spec facts` lists them."]
+    hist = b.get("usually_changes_with") or {}
+    if hist.get("files"):   # from git history: docs, schemas, config and fixtures the map has no link to
+        from .coupling import line as coupling_line
+        L += ["", f"**Usually changes with the files the tasks touch, and no task names it** ({hist['about']}). Each line "
+                  "is either right to leave alone or a missing task:"]
+        L += [f"- {coupling_line(x, 'no task names it')}." for x in hist["files"][:4]]
+        if hist["total"] > 4:
+            L.append(f"- and {hist['total'] - 4} more: `leyline spec facts`")
     if b["patterns"]:
         L += ["", "**Design patterns the change sits in** (found from the shape of the code):"] + [
             f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]
@@ -1539,6 +1549,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
             "new_members_named_like_existing_ones": la["beside"][:20],
             "callers_of_changed_functions_the_spec_leaves_alone": la["callers"][:30],
             "state_shared_with_functions_the_spec_leaves_alone": la["state"][:30],
+            "usually_changes_with_no_task": b.get("usually_changes_with") or {},
             "changed_code_no_test_reaches": imp.get("untested") or [],
             "patterns_involved": b["patterns"],
             "rules_failing_before_the_change": b["rules_failing_now"],

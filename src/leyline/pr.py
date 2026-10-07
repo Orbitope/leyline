@@ -572,6 +572,8 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                "house_rules": _house_rules(root, facts["changed"]["files"]),
                "other_files": _other_files(root, base_sha, facts["changed"]["files"] + facts["changed"]["files_removed"]),
                "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid)}
+        from . import coupling   # files that usually changed with what the branch changed, in the history before it
+        out["usually_changes_with"] = coupling.for_pr(con, rid, root, base_sha)
         page = Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
         page.write_text(text(out), encoding="utf-8")
@@ -682,6 +684,7 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
             "state_shared_with_unchanged_code": r["state_shared_with_unchanged_code"],
             "fields_written_from_elsewhere_too": r["fields_written_from_elsewhere_too"],
             "new_members_named_like_existing_ones": r["new_members_named_like_existing_ones"],
+            "usually_changes_with_not_changed": _usually(con, cid, a, root),
             "changed_code_no_test_reaches": t["changed_code_no_test_reaches"],
             "tests_touched": t["touched_by_the_change"], "test_files_changed": t["test_files_changed"],
             "new_dependencies_between_modules": f["structure"]["new_dependencies"],
@@ -698,6 +701,13 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
         "how_to_file": f"leyline spec finding {cid} --reviewer <logic|performance> --severity <high|medium|low>"
                        " --claim \"...\" --evidence <node id> --proposal \"...\" (or the spec_finding tool with this id).",
     }
+
+
+def _usually(con, cid: str, a: dict, root: Path) -> dict:
+    """What usually changed with the files the branch changed, and was not changed, from git history before it."""
+    from . import coupling
+    rid = _repo_of(con, root) if root.is_dir() else None
+    return coupling.for_pr(con, rid, root, a["base_sha"]) if rid and a.get("base_sha") else {}
 
 
 # -- the page ---------------------------------------------------------------------------------------------
@@ -807,6 +817,13 @@ def text(r: dict) -> str:
         soft.append(f"- `{x['name']}` {x['why']}.")
     if soft:
         L += ["", "Shares a caller, a field or data with the change:", ""] + soft
+    hist = r.get("usually_changes_with") or {}
+    if hist.get("files"):   # from git history: docs, schemas, config and fixtures the map has no link to
+        from .coupling import line as coupling_line
+        L += ["", f"Usually changes with what it changed, and it did not change ({hist['about']}):", ""]
+        L += [f"- {coupling_line(x)}." for x in hist["files"][:5]]
+        if hist["total"] > 5:
+            L.append(f"- and {hist['total'] - 5} more: `leyline spec facts {r['change_id']}`")
     if reach["entry_points_affected"]:
         L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6) + "."]
     # tests
