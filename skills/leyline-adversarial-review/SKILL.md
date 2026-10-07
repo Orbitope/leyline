@@ -54,6 +54,9 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
    `signature_changed_callers_not_edited`, `removed_but_still_called` and `tests.likely_to_fail_unedited`.
 5. A finding whose evidence is not on the change's blast radius comes back with a warning. Either add the node
    that links it to the change, or ask yourself whether you wandered.
+6. On a re-review (new commits since the last one; the facts' `since_last_review` names the previous head), start
+   from `since_last_review`: read the code changed since then and its `new_facts` first, re-check each finding under
+   `may_be_fixed` and tell the person which ones the new code fixed, and do not refile findings under `still_applies`.
 
 ## Logic reviewer: answer each of these
 

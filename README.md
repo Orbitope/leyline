@@ -381,6 +381,19 @@ files one, and the page lists them. A finding whose evidence is nowhere near the
 radius, nor one call from it) is kept but marked, so the person questions it first. `leyline spec forget
 pr-123` deletes the base's map.
 
+Run it again after new commits and the page opens with **Since the last review (`<sha>`, `<when>`)**: the functions
+edited, added and removed between the two heads (not since the base), the facts that are new (a caller newly broken)
+and those that are gone, and each open finding marked "may be fixed" (the code its evidence names changed since it
+was filed: re-check it) or "still applies" (do not file it again). Each run is kept in the store with its head, its
+time and its facts, and a slim map of the code at that head (`.leyline/snapshots/pr-<id>.head-<n>.db`, the last
+three and any an open finding was filed against); running it again on the same code changes nothing. The reviewers'
+facts carry the same as `since_last_review`.
+
+Both `leyline pr` and `leyline plan` list **Earlier changes to this code**: up to five finished OpenSpec changes
+(archived, or checked) and earlier pull request reviews that touched the same functions or types, newest first, with
+the names they share; the facts carry them as `related_changes`. A repository with no such history gets the commits
+before the change that changed the same files instead (of the last 500 that touched them), most overlap first.
+
 ### Learning from rejected findings
 
 Many review findings that people reject are correct about the code but miss a choice made on purpose. So

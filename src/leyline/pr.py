@@ -588,6 +588,12 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid)}
         from . import coupling   # files that usually changed with what the branch changed, in the history before it
         out["usually_changes_with"] = coupling.for_pr(con, rid, root, base_sha)
+        from . import related, rereview   # earlier changes to this code; and, on a re-review, what changed since the last
+        out["related_changes"] = related.find(con, spec._Names(con), _touched(facts), exclude=cid, since=base_sha)
+        summary, fp = rereview.summarize(facts), diff._fingerprint(con)
+        out["since_last_review"] = rereview.since(con, cid, summary, fp)
+        rereview.mark(out["findings"], out["since_last_review"])
+        rereview.record(con, cid, head_sha, dirty, summary, fp)
         page = Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
         page.write_text(text(out), encoding="utf-8")
@@ -597,9 +603,19 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         con.close()
 
 
+def _touched(f: dict) -> list[str]:
+    """The code a review's change edited or added, by id."""
+    c = f["changed"]
+    return [x["id"] for k in ("edited", "types", "added") for x in c[k]]
+
+
 def _title(about: str) -> str:
-    """A title from a description: its first line, or the first commit's subject, cut at a word near 80 characters."""
-    line = about.strip().split("\n")[0].removeprefix("From its commit messages: ").split(" / ")[0].strip()
+    """A title from a description: its first line, or the first commit's subject (the oldest: commits added later
+    leave it as it was), cut at a word near 80 characters."""
+    line = about.strip().split("\n")[0]
+    if line.startswith("From its commit messages: "):
+        line = line.removeprefix("From its commit messages: ").split(" / ")[-1]
+    line = line.strip()
     if len(line) <= 80:
         return line
     cut = line[:80].rsplit(" ", 1)[0].rstrip(",;:")
@@ -615,7 +631,7 @@ def _described(root: Path, base_sha: str, db, given_id, github) -> str:
             row = con.execute("SELECT intent FROM change_proposals WHERE id = ?", (change_id(root, given_id, github),)).fetchone()
         finally:
             con.close()
-        if row and row[0]:
+        if row and row[0] and not row[0].startswith("From its commit messages: "):   # commits may have come since
             return row[0]
     try:
         log = _git(root, "log", "--no-merges", "--format=%s%n%n%b%x00", f"{base_sha}..HEAD")
@@ -685,9 +701,11 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
     if reviewer:
         spec.record_review(con, cid, reviewer)
     r, t = f["reaches"], f["tests"]
-    from . import learnings
+    from . import learnings, related, rereview
     return {
         "change_id": cid, "title": a.get("title"), "what_it_says_it_does": about or "(no description: judge it by the code)",
+        "since_last_review": rereview.for_facts(rereview.since(con, cid, rereview.summarize(f))),   # a re-review starts here
+        "related_changes": related.find(con, spec._Names(con), _touched(f), exclude=cid, since=a.get("base_sha")),
         "changed": f["changed"], "size": f["size"],
         "house_rules_to_read_first": _house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
         "learnings_that_apply": learnings.applying(con, cid),   # past decisions on this code: read these first
@@ -776,6 +794,8 @@ def text(r: dict) -> str:
          + (f" {r['url']}" if r.get("url") else "")]
     L += ["", "**What it says it does:** " + (spec._first_sentence(r["about"].replace("\n", " "), 400) if r["about"].strip()
                                               else "no description given (`--about`, or `--github <number>`). Judge it by the code.")]
+    from . import related, rereview
+    L += rereview.lines(r.get("since_last_review"), head)
     # what changed
     parts = [_n(s["functions"], "function") + " edited or added" if s["functions"] else "",
              _n(s["types"], "type") + " changed" if s["types"] else "",
@@ -842,6 +862,7 @@ def text(r: dict) -> str:
         L += [f"- {coupling_line(x)}." for x in hist["files"][:5]]
         if hist["total"] > 5:
             L.append(f"- and {hist['total'] - 5} more: `leyline spec facts {r['change_id']}`")
+    L += related.lines(r.get("related_changes"))
     if reach["entry_points_affected"]:
         L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6) + "."]
     # tests

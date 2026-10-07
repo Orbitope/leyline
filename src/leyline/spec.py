@@ -493,6 +493,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     result["drifted_specs"] = drift.touching(con, parsed["dir"], sorted(tasked | {i for l in links for i in l["into"]}))
     from . import diagrams   # the planned path through the changed code, drawn from the map as it is now
     result["how_it_runs"] = diagrams.safe(diagrams.sequence, con, [i for l in links for i in l["nodes"]])
+    from . import related   # finished changes, earlier reviews (or, with neither, commits) that touched the same code
+    result["related_changes"] = related.find(con, names, sorted(tasked | {i for l in links for i in l["into"]}), exclude=cid)
     with con:
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
         con.executemany("INSERT INTO spec_items VALUES (?,?,?,?,?,?,?)",
@@ -1015,6 +1017,7 @@ def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list
                               + (f" Proposed: {f['proposal']}" if f["proposal"] else "")
                               + (" (Its evidence is not near the change: question it first.)" if f.get("evidence_far_from_change") else "")
                               + (f" (Matches a past decision: {f['learned']['reason']})" if f.get("learned") else "")
+                              + (" (Its code changed since it was filed: re-check it.)" if f.get("code_changed_since") else "")
                               for f in opened]
     closed = sorted((f for f in found if f["status"] != "open"), key=lambda f: order.get(f["severity"], 3))
     if closed:   # a settled finding is one line: the full text stays in `leyline spec findings`
@@ -1119,6 +1122,8 @@ def brief_text(b: dict) -> str:
     if b.get("drifted_specs"):
         L += ["", "**Specs that no longer match code this change touches** (update them with it):"] + [
             f"- {x}" for x in b["drifted_specs"][:8]] + ([f"- and {len(b['drifted_specs']) - 8} more"] if len(b["drifted_specs"]) > 8 else [])
+    from . import related
+    L += [x.replace("Earlier changes to this code (", "**Earlier changes to this code** (", 1) for x in related.lines(b.get("related_changes"))]
     L += ["", "## 3. How you will know it was done", "",
           "Each scenario is proven by a test with the same name. After the change, `leyline check` marks each one from "
           "the test results.", ""]
@@ -1581,6 +1586,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
     return {
         "change_id": b["change_id"], "title": b["title"],
         "learnings_that_apply": learnings.applying(con, b["change_id"], tasked),   # past decisions: read these first
+        "related_changes": b.get("related_changes") or {},   # earlier changes to the same code
         "logic": {
             "must_edit_with_no_task": b["must_edit_uncovered"],
             "channels_crossed": imp.get("channels") or [],
