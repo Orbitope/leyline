@@ -91,6 +91,8 @@ def _pr_spec(con, args) -> int:
     if args.action == "forget":
         gone = diff.drop_snapshot(con, cid)
         diff.snapshot_path(con, cid).with_suffix(".base").unlink(missing_ok=True)
+        from . import rereview   # and the maps of the heads it was reviewed at
+        rereview.forget(con, cid)
         print(f"Deleted the map of {cid}'s base." if gone else f"No base is kept for {cid}.")
         return 0
     print(f"leyline: {args.action} is for a spec folder; a pull request has `leyline pr`, then facts, finding, findings,"

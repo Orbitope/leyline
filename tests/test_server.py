@@ -401,6 +401,7 @@ def test_a_pull_request_is_reviewed_over_mcp(tmp_path):
         assert {m["name"] for m in r["reaches"]["signature_changed_callers_not_edited"]} == {"use.py.first", "use.py.count"}
         f = await a.call("spec_review_facts", change="pr-feature", reviewer="logic")
         assert f["what_it_says_it_does"] == "Read files with an encoding"
+        assert f["since_last_review"] == {"first_review": True} and "related_changes" in f
         ev = f["logic"]["signature_changed_callers_not_edited"][0]["id"]
         filed = await a.call("spec_finding", change="pr-feature", reviewer="logic", severity="high",
                              claim="first and count still pass one argument", evidence=[ev])
