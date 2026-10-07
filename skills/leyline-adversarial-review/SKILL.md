@@ -12,8 +12,9 @@ written. Do one review per run: logic or performance. It needs the Leyline MCP s
 ## Steps
 
 1. Read the change folder: `proposal.md`, the spec deltas, `tasks.md`, `leyline.md`.
-2. Call `spec_review_facts` with the folder. It returns what the graph knows, arranged as the
-   questions below.
+2. Call `spec_review_facts` with the folder and `reviewer` (logic or performance). It returns what
+   the graph knows, arranged as the questions below, and records that your review ran, so a review
+   that files nothing still shows on the plan.
 3. For every item in your section, read the code (`source`, `expand`, `flow`) before deciding. A
    fact from the graph is a lead, not a finding.
 4. File each real problem with `spec_finding`: one sentence a person can check, a severity, the node

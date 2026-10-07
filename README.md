@@ -1,5 +1,130 @@
 # Leyline
 
+## Start here
+
+Leyline lets a person design a change to a codebase while a coding agent writes it. Before any code is
+written it shows, on one page, what code will be written, what it will affect and how you will know it
+was done; afterwards it says on the same page whether the change was done as agreed. Everything on that
+page comes from the code and the test results, not from the agent's account of its own work.
+
+```bash
+pip install -e .        # Python 3.10 or later; installs the `leyline` command
+```
+
+Three commands, in this order. Each one ends with a `Next:` line saying what to do after it.
+
+| Command | When | What you read |
+| --- | --- | --- |
+| `leyline map [repo ...]` | Once, before the first change | Ten lines on what was found, and a map page to browse |
+| `leyline plan <change>` | After the change is written as a spec, and after every edit to it | The page, `leyline.md`, and what is still needed before implementation |
+| `leyline check <change> --tests FILE` | After the code is written | The verdict, added to the same page |
+
+A change is an [OpenSpec](https://openspec.dev) folder, `openspec/changes/<id>/`: a proposal, the
+requirements with scenarios, and a task list. You describe the change in words and your agent writes the
+folder; `skills/leyline-spec/SKILL.md` tells it how. `<change>` is the folder or just its id.
+
+### A worked example
+
+The repository `tests/fixture2` has a small Python package with an `Engine` class and its tests.
+
+```bash
+cp -r tests/fixture2 /tmp/engine-repo && cd /tmp/engine-repo
+leyline map .
+```
+```
+Mapped engine-repo in 1.2 s: 13 files, 323 lines, 4 modules.
+Found 31 types, 64 functions, 5 tests and 1 entry point (where a program starts).
+Modules: cs/Mod (7 files), py/src/pkg (2 files), py/tests (2 files), py/web (2 files)
+Design patterns found: builder, composite, decorator, factory 2, singleton, strategy, template method
+Store: .leyline/leyline.db
+Map page: .leyline/map.html (open it in a browser)
+Next: write the change you want as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; ...
+```
+
+You tell your agent: "engine names should come back in upper case, and add a `shout`". It writes
+`openspec/changes/loud-engine/` with this `tasks.md`
+
+```
+- [ ] 1.1 Change `Engine.start` to return the name in upper case
+- [ ] 1.2 Add `Engine.shout`, the name with an exclamation mark
+- [ ] 1.3 Add the test "Shout"
+```
+
+and two scenarios, `Start` and `Shout`, in `specs/engine/spec.md`. Then you plan it, passing the tests'
+output from before any code changes so that `check` can tell a test the change breaks from one that
+already failed (any runner that prints one PASS or FAIL line per test works; `pytest -rA` does):
+
+```bash
+(cd py && PYTHONPATH=src pytest -rA tests) | leyline plan loud-engine --tests -
+```
+```
+# Loud engine
+...
+**State: ready to implement.** It has not been reviewed.
+
+Names are hard to read in logs. The plan has 3 tasks: it changes Engine.start and adds Engine.shout.
+Nothing else must be edited with it; 3 places in 2 modules run into the changed code and may behave
+differently; 3 existing tests already run through it. It is done when 2 scenarios pass: 1 already has a
+test, 1 needs a test written.
+...
+**Shares a caller or a field with the change, and no task names it.** Each line is either right to
+leave alone or a missing task:
+- Engine.name (used by Engine.start) is also used by Engine.child
+...
+Next: have the plan reviewed before code is written (ask your agent to run the
+leyline-adversarial-review skill), then run `leyline plan loud-engine` again. Or, if you accept the plan
+as it is, implement it.
+```
+
+The agent implements the tasks. Then:
+
+```bash
+(cd py && PYTHONPATH=src pytest -rA tests) | leyline check loud-engine --tests -
+```
+```
+## 4. Was it done as agreed
+**Yes.** Every task is done, every scenario is proven, and nothing outside the spec changed.
+
+| Task | Result | Missing |
+| 1.1 Change `Engine.start` to return the name in upper case | done |  |
+...
+| Scenario | Result | Evidence |
+| Start | passes | its test reaches the changed code on the map |
+| Shout | passes | its test reaches the changed code on the map |
+
+Tests: 5 of 5 passed before, 6 of 6 after.
+Next: nothing left to check; the change was done as agreed. Review the diff and commit it.
+```
+
+`check` exits 0 only when the change was done as agreed. Had the agent also edited `Engine.child`, the
+verdict would read "Not yet: 1 edit is outside the spec", and `Next:` would ask you to add a task for it or
+undo it.
+
+### What you read
+
+`openspec/changes/<id>/leyline.md` is the one page for a change. It opens with its state (not ready,
+ready, done as agreed or not) and a paragraph in plain words, then:
+
+1. **What code will be written**: each task and the code it touches.
+2. **What it will affect**: what must be edited with it, what runs into it, the risks, and code that
+   shares a caller or a field with the change that no task names.
+3. **How you will know it was done**: each scenario and the test that proves it.
+4. **Review findings** and **Before implementation**: what blocks implementation, and what is left to
+   decide. Only you resolve a finding.
+5. **Was it done as agreed**, added by `check`.
+
+### With an agent
+
+Register `leyline --db <repo>/.leyline/leyline.db serve` as an MCP server. The agent's path is the same
+three tools, `map`, `plan` and `check`, each returning `next`; the skills in `skills/` say how to write
+the spec (`leyline-spec`), review it (`leyline-adversarial-review`), assess any change
+(`leyline-change-impact`) and explain the code (`leyline-tour`).
+
+Everything below is the detail: the other commands, how the map is built, and how far to trust it.
+`leyline --help` lists the other commands under "advanced".
+
+## What Leyline is
+
 Leyline maps a codebase into one SQLite graph that people and coding agents can both query.
 Every record belongs to one of three layers:
 
@@ -15,7 +140,8 @@ reviews it after, and checks architecture rules.
 
 ```bash
 pip install -e .
-leyline index path/to/repo          # writes path/to/repo/.leyline/leyline.db
+leyline map path/to/repo            # writes path/to/repo/.leyline/leyline.db and .leyline/map.html
+leyline index path/to/repo          # the same index, printing the full statistics instead
 leyline --db ... coverage .coverage # import measured test coverage
 leyline --db path/to/repo/.leyline/leyline.db overview
 leyline --db ... search "Simulation Step"
@@ -33,7 +159,7 @@ To use it from an MCP client, register the command `leyline --db <path> serve`.
 ### Several repositories
 
 ```bash
-leyline index flask/ werkzeug/      # one workspace; writes ./.leyline/leyline.db
+leyline map flask/ werkzeug/        # one workspace; writes ./.leyline/leyline.db
 leyline --db .leyline/leyline.db index werkzeug/   # re-indexes flask too
 ```
 
@@ -58,7 +184,7 @@ read and write it, and none of them runs unless you start it.
 
 | Piece | Started by | Reads | Writes |
 | --- | --- | --- | --- |
-| `leyline index` | You, a git hook or CI | The working tree | Facts, flows and system proposals. Replaces the previous facts. |
+| `leyline map` or `index` | You, a git hook or CI; `plan` and `check` when the code changed | The working tree | Facts, flows and system proposals. Replaces the previous facts. |
 | `leyline serve` (MCP) | Your coding agent, when it starts | The store | Annotations, change proposals and saved views |
 | `leyline view` or `export` | You | The store | Nothing |
 
@@ -71,13 +197,19 @@ The intended way to change a mapped codebase: the person drives the design, an a
 code, and one page says what will be written, what it affects and how you will know it was done.
 
 A change is an [OpenSpec](https://openspec.dev) change folder. Leyline reads it and writes
-`leyline.md` back into it.
+`leyline.md` back into it. `leyline plan` and `leyline check` (see Start here) run the loop; these are
+its steps one at a time, for when you want one alone:
 
 ```
 leyline spec brief  openspec/changes/<id>     # before any code: the one-page brief, and the gaps in the spec
-leyline spec facts  openspec/changes/<id>     # what the graph says, as questions for reviewers
+leyline spec facts  openspec/changes/<id> --reviewer logic   # what the graph says, as questions for reviewers
 leyline spec verify openspec/changes/<id> --before before --after after   # after: was it done as agreed
 ```
+
+`plan` is `brief` after re-indexing changed code, and records the test output you pass it under
+`before:spec-<id>`. `check` re-indexes, records its test output under `after:spec-<id>`, and runs `verify`
+with both. Before re-indexing, both compare each source file's hash with the store, so an unchanged
+repository is not indexed again.
 
 The brief ties each task to code and each scenario to a test, by three conventions and no markup:
 
@@ -93,9 +225,11 @@ a changed function, other users of a field it uses, and users of an existing mem
 named like (a new `EmergencyQueues` beside `EntryQueues`). Each of those lines is either right to
 leave alone or a missing task. Reviewers (the `leyline-adversarial-review` skill, one run
 for logic and one for performance) file findings with node ids as evidence; only the person
-resolves them (`leyline spec resolve <finding> accepted|rejected|deferred "why"`).
+resolves them (`leyline spec resolve <finding> accepted|rejected|deferred "why"`). A reviewer that passes
+its kind (`--reviewer`, or `reviewer` on the `spec_review_facts` tool) is recorded as having run, so the page
+can say a review found nothing rather than that none ran.
 
-After implementation and a re-index, `verify` marks each task from the graph diff and each scenario
+After implementation and a re-index, `verify` (inside `check`) marks each task from the graph diff and each scenario
 from its test's recorded result, lists edits outside the spec, new links between modules and rules
 newly broken, and appends the result to `leyline.md`. It exits 0 only when the change was done as
 agreed. A new function that only code named in the spec calls is listed as a helper, not as an edit
@@ -269,6 +403,9 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 
 | Tool | Returns |
 | --- | --- |
+| `map(paths?)` | Step 1: index the code (or map again what the store holds); counts, the map page, `next` |
+| `plan(change, test_output?, test_results?)` | Step 2: the one page for a change, `status.blocking`, `next`; records the tests from before |
+| `check(change, test_output?, test_results?)` | Step 3: re-index, record the tests from after, the verdict and `next` |
 | `overview` | Repos, modules with sizes, module-to-module dependencies by edge kind, external packages, extractor status |
 | `cross_repo` | In a workspace of several repositories: links between them, functions most called across, flows that cross and come back |
 | `expand(node_id)` | One node in detail: contents, dependencies, dependents, callers and callees |
@@ -286,8 +423,8 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
-| `spec_brief(change_dir)`, `spec_verify(change_dir, before_run?, after_run?)` | The spec loop: brief before, verify after |
-| `spec_review_facts(change_dir)`, `spec_finding(...)`, `spec_findings(change_id)`, `spec_resolve(...)` | Adversarial review of a spec |
+| `spec_brief(change_dir)`, `spec_verify(change_dir, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time |
+| `spec_review_facts(change_dir, reviewer?)`, `spec_finding(...)`, `spec_findings(change_id)`, `spec_resolve(...)` | Adversarial review of a spec |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
 | `patterns(pattern?, node_id?)` | Design patterns found by shape, with roles, rationale and confidence |

@@ -33,6 +33,29 @@ VERBS = (("add", ("add ", "create ", "introduce ", "new ", "implement ")), ("rem
          ("rename", ("rename ",)), ("signature", ("change the signature", "change signature", "add a parameter", "add parameter",
                                                   "remove a parameter", "change the return", "change return")))
 BEGIN, END = "<!-- leyline:begin -->", "<!-- leyline:end -->"
+REVIEWERS = ("logic", "performance")
+
+
+def run_label(change_id: str, when: str) -> str:
+    """The label a change's own test runs are stored under: before:spec-<id> and after:spec-<id>."""
+    return f"{when}:{change_id}"
+
+
+def record_review(con, change_id: str, reviewer: str) -> None:
+    """Note that a review of this kind ran. A review that finds nothing files nothing, so this is its only trace."""
+    row = con.execute("SELECT value FROM meta WHERE key = ?", ("review:" + change_id,)).fetchone()
+    done = json.loads(row[0]) if row else {}
+    done[reviewer] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with con:
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", ("review:" + change_id, json.dumps(done)))
+
+
+def reviews(con, change_id: str) -> list[str]:
+    """The kinds of review that have run on a change: recorded ones, and any that filed a finding."""
+    row = con.execute("SELECT value FROM meta WHERE key = ?", ("review:" + change_id,)).fetchone()
+    done = set(json.loads(row[0])) if row else set()
+    done |= {r[0] for r in con.execute("SELECT DISTINCT reviewer FROM findings WHERE change_id = ?", (change_id,))}
+    return sorted(done)
 
 
 # -- reading the folder ------------------------------------------------------------------------
@@ -265,7 +288,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "must_edit_uncovered": uncovered, "shared_state": state, "left_alone": others, "patterns": patterns,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
-              "baseline": report.get("snapshot"),
+              "baseline": report.get("snapshot"), "reviews": reviews(con, cid),
+              "baseline_tests": con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1",
+                                            (run_label(cid, "before"),)).fetchone() is not None,
               "ready": not gaps and not any(f["status"] == "open" and f["severity"] == "high" for f in findings(con, cid)["findings"])}
     with con:
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
@@ -407,11 +432,73 @@ def _first_sentence(text: str, limit: int = 220) -> str:
     return out if len(out) <= limit else out[:limit - 3].rstrip() + "..."
 
 
+def _n(n: int, word: str, plural: str = "") -> str:
+    return f"{n} {word if n == 1 else plural or word + 's'}"
+
+
+def brief_status(b: dict) -> dict:
+    """Where a plan stands: what blocks implementation, what is left to decide, and what is worth knowing."""
+    blocking = ([b["impact"]["error"]] if b["impact"].get("error") else []) + list(b["gaps"])
+    opened = [f for f in b["findings"] if f["status"] == "open"]
+    blocking += [f"decide the open high finding {f['id']}: {_first_sentence(f['claim'], 120)}" for f in opened if f["severity"] == "high"]
+    decide = [f"decide the open {f['severity']} finding {f['id']}: {_first_sentence(f['claim'], 120)}"
+              for f in opened if f["severity"] != "high"]
+    done = b.get("reviews") or sorted({f["reviewer"] for f in b["findings"]})
+    notes = []
+    if not done:
+        notes.append("No review has run. A logic and a performance review find what the plan misses before code exists.")
+    elif missing := [r for r in REVIEWERS if r not in done]:
+        notes.append(f"No {' or '.join(missing)} review has run.")
+    if b.get("baseline_tests") is False and b.get("baseline") != "kept":
+        notes.append("The tests have not been recorded as they pass now, so `leyline check` will not be able to tell a test "
+                     "the change breaks from one that already failed.")
+    return {"ready": not blocking, "blocking": blocking, "decide": decide, "notes": notes, "reviewed": bool(done)}
+
+
+def _state_line(b: dict) -> str:
+    st = brief_status(b)
+    if st["blocking"]:
+        return (f"**State: not ready to implement.** {_n(len(st['blocking']), 'thing')} to settle first, listed under "
+                f"\"Before implementation\" at the end.")
+    return "**State: ready to implement.**" + ("" if st["reviewed"] else " It has not been reviewed.")
+
+
+def _plain_summary(b: dict) -> str:
+    """One paragraph a newcomer can read without knowing Leyline."""
+    S = [_first_sentence(b["why"], 300)] if b["why"] else []
+    existing = sorted({x for t in b["tasks"] for x in t["labels"]})
+    new = list(dict.fromkeys(n.get("label") or n["name"] for t in b["tasks"] for n in t["new"]))
+    did = ([f"changes {_some(existing)}"] if existing else []) + ([f"adds {_some(new)}"] if new else [])
+    S.append(f"The plan has {_n(len(b['tasks']), 'task')}" + (f": it {' and '.join(did)}." if did else "."))
+    imp = b["impact"]
+    if not imp.get("error"):
+        s = imp["summary"]
+        must = f"{_n(s['must_edit'], 'other place')} must be edited along with it" if s["must_edit"] else "Nothing else must be edited with it"
+        reach = (f"{_n(s['reached'], 'place')} in {_n(s['modules'], 'module')} {'runs' if s['reached'] == 1 else 'run'} into the "
+                 "changed code and may behave differently") if s["reached"] else "no other code runs into it"
+        tests = (f"{_n(s['tests_to_run'], 'existing test')} already {'runs' if s['tests_to_run'] == 1 else 'run'} through it"
+                 if s["tests_to_run"] else "no existing test runs through it")
+        S.append(f"{must}; {reach}; {tests}.")
+    sc = b["scenarios"]
+    if sc:
+        have = sum(1 for x in sc if x["test_exists"])
+        S.append(f"It is done when {_n(len(sc), 'scenario')} pass" + (": " + ", ".join(
+            x for x in ((f"{have} already {'has' if have == 1 else 'have'} a test" if have else ""),
+                        (f"{len(sc) - have} {'needs' if len(sc) - have == 1 else 'need'} a test written" if len(sc) > have else "")) if x)
+                                                                   ) + ".")
+    else:
+        S.append("No scenario says yet what done means.")
+    return " ".join(S)
+
+
 def brief_text(b: dict) -> str:
-    L = [f"# Change brief: {b['title']}", ""]
-    if b["why"]:
-        L += [b["why"], ""]
-    L += ["## 1. What code will be written", ""]
+    d = Path(b["dir"])
+    rel = "/".join(d.parts[-3:]) if d.parent.name == "changes" else d.name
+    L = [f"# {b['title']}", "",
+         f"The one-page plan for the change in `{rel}/`, written by Leyline from the spec files beside it. "
+         "`leyline plan` rewrites it; edit the spec, not this page.", "",
+         _state_line(b), "", _plain_summary(b), "",
+         "## 1. What code will be written", ""]
     if b["tasks"]:
         L += ["| Task | Does | Code |", "| --- | --- | --- |"]
         for t in b["tasks"]:
@@ -429,7 +516,10 @@ def brief_text(b: dict) -> str:
     else:
         s = imp["summary"]
         L.append(f"{s['changed'] + s['added']} things change, {s['must_edit']} more must be edited with them, and {s['reached']} "
-                 f"are reached without needing an edit, across {s['modules']} modules. {s['tests_to_run']} existing tests pass through the change.")
+                 f"are reached without needing an edit, across {s['modules']} modules. {s['tests_to_run']} existing tests run through the change.")
+        L += ["", "*Must be edited*: code that breaks unless it changes too, such as the callers of a function whose parameters "
+                  "change. *Reached*: code that runs into the change, directly or through other calls; it needs no edit but may "
+                  "behave differently.", ""]
         for m in (imp.get("by_module") or [])[:8]:
             bits = [f"{m[k]} {label}" for k, label in (("changed", "changed"), ("must_edit", "to edit"), ("reached", "reached")) if m.get(k)]
             L.append(f"- {m['module']}: {', '.join(bits)}")
@@ -449,12 +539,16 @@ def brief_text(b: dict) -> str:
     rows += [f"- {x['field']} (used by {x['used_by_changed']}) is also used by {_some(x['also_used_by_unchanged'])}" for x in own[:max(2, 8 - len(rows))]]
     more = len(la["beside"]) + len(la["callers"]) + len(la["state"]) - len(rows)
     if rows:
-        L += ["", "**Uses the same things, and no task names it.** Each line is right to leave alone or a missing task:"] + rows
+        L += ["", "**Shares a caller or a field with the change, and no task names it.** Each line is either right to leave "
+                  "alone or a missing task:"] + rows
         if more > 0:
             L.append(f"- and {more} more: `leyline spec facts`")
     if b["patterns"]:
-        L += ["", "**Design it sits in:**"] + [f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]
-    L += ["", "## 3. How you will know it was done", ""]
+        L += ["", "**Design patterns the change sits in** (found from the shape of the code):"] + [
+            f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]
+    L += ["", "## 3. How you will know it was done", "",
+          "Each scenario is proven by a test with the same name. After the change, `leyline check` marks each one from "
+          "the test results.", ""]
     if b["scenarios"]:
         L += ["| Scenario | When | Then | Test |", "| --- | --- | --- | --- |"]
         for s in b["scenarios"]:
@@ -473,15 +567,21 @@ def brief_text(b: dict) -> str:
             L += ["", f"{len(closed)} settled (full text: `leyline spec findings`):"] if opened else [f"{len(closed)} raised, all settled (full text: `leyline spec findings`):"]
             for f in sorted(closed, key=lambda f: order.get(f["severity"], 3)):
                 L.append(f"- {f['status']}, {f['severity']}: {_first_sentence(f['resolution'] or f['claim'])}")
+    elif b.get("reviews"):
+        L.append(f"Reviewed ({', '.join(b['reviews'])}); no findings were filed.")
     else:
         L.append("No review has been run.")
+    st = brief_status(b)
     L += ["", "## Before implementation", ""]
-    if b["gaps"]:
-        L += [f"- {g}" for g in b["gaps"]]
-    elif any(f["severity"] == "high" for f in opened):
-        L.append("A high finding is open.")
+    if st["blocking"]:
+        L += [f"- {g}" for g in st["blocking"]]
     else:
-        L.append("Nothing blocks implementation: every task is tied to code, every must-edit is covered, and every scenario has a test or is marked to be written." if not b["gaps"] else "")
+        L.append("Nothing blocks implementation: every task is tied to code, everything that must be edited has a task, and "
+                 "every scenario has a test or a task to write one.")
+    if st["decide"]:
+        L += ["", "Still to decide, not blocking:"] + [f"- {d}" for d in st["decide"]]
+    if st["notes"]:
+        L += [""] + [f"- {x}" for x in st["notes"]]
     return "\n".join(L) + "\n"
 
 
@@ -533,7 +633,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     cid = "spec-" + parsed["id"]
     review = diff.review(con, cid, before_run, after_run)
     if "error" in review:
-        return {"error": review["error"] + " Run `leyline spec brief` before the change is implemented."}
+        return {"error": review["error"] + " Run `leyline plan` on the change before it is implemented."}
     names = _Names(con)
     g = review["graph"]["nodes"]
     touched = {n["id"] for key in ("added", "resigned", "edited", "types_edited") for n in g[key]}
@@ -609,7 +709,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     if any(s["state"] != "passes" for s in scenarios):
         verdict.append("some scenarios are not proven")
     if drift:
-        verdict.append(f"{len(drift)} edits are outside the spec")
+        verdict.append(f"{_n(len(drift), 'edit is', 'edits are')} outside the spec")
     if review["rules"]["new_violations"]:
         verdict.append("a rule that held now fails")
     if review["graph"]["structure"]["new_dependencies"]:
@@ -622,26 +722,37 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "predicted_not_edited": review["predicted_untouched"], "new_dependencies": review["graph"]["structure"]["new_dependencies"],
            "rules_newly_failing": review["rules"]["new_violations"], "tests": review["tests"], "open_high_findings": open_high,
            "tests_added_or_changed": [n["name"] for n in tests_touched], "helpers_added": helpers,
-           "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings)},
+           "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings),
+                      "kinds": reviews(con, cid)},
            "baseline": review.get("baseline"),
+           "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results)} if results else None,
            "done_as_agreed": not verdict, "why_not": verdict, "view_id": review.get("view_id")}
     if write:
         path = Path(parsed["dir"]) / "leyline.md"
         body = path.read_text() if path.is_file() else ""
         head = body[body.index(BEGIN) + len(BEGIN):body.index(END)].strip() if BEGIN in body and END in body else ""
         head = head.split("\n## 4. Was it done as agreed")[0].rstrip()
+        # The state at the top of the page is now the verdict.
+        head = re.sub(r"^\*\*State:.*$", lambda _: check_state(out), head, count=1, flags=re.M)
         _write(path, head + "\n\n" + verify_text(out))
         out["written"] = str(path)
     return out
 
 
+def check_state(v: dict) -> str:
+    if v["done_as_agreed"]:
+        return "**State: done as agreed.** Every task is done, every scenario is proven, and nothing outside the spec changed."
+    return "**State: not done as agreed yet:** " + "; ".join(v["why_not"]) + ". Details under \"Was it done as agreed\"."
+
+
 def verify_text(v: dict) -> str:
     L = ["## 4. Was it done as agreed", "",
+         "Tasks are marked from what changed in the code since the plan was written; scenarios from the test results.", "",
          "**Yes.** Every task is done, every scenario is proven, and nothing outside the spec changed." if v["done_as_agreed"]
          else "**Not yet:** " + "; ".join(v["why_not"]) + ".", "",
          "| Task | Result | Missing |", "| --- | --- | --- |"]
     for t in v["tasks"]:
-        L.append(f"| {t['key']} {t['text'][:70].replace('|', '/')} | {t['state']}{'' if t['ticked'] or t['state'] != 'done' else ' (box not ticked)'} | {', '.join(t['missing'])} |")
+        L.append(f"| {t['key']} {t['text'][:70].replace('|', '/')} | {t['state']}{'' if t['ticked'] or t['state'] != 'done' else ' (not ticked in tasks.md)'} | {', '.join(t['missing'])} |")
     L += ["", "| Scenario | Result | Evidence |", "| --- | --- | --- |"]
     for s in v["scenarios"]:
         ev = ("measured running the changed code" if s["measured_running_the_change"] else
@@ -663,23 +774,31 @@ def verify_text(v: dict) -> str:
     if t:
         L += ["", f"Tests: {t['before']['passed']} of {t['before']['total']} passed before, {t['after']['passed']} of {t['after']['total']} after."]
         L += [f"- now fails: {x['name']}: {x['message']}" for x in t["newly_failing"]]
+    elif v.get("after_tests"):
+        a = v["after_tests"]
+        L += ["", f"Tests: {a['passed']} of {a['total']} passed after the change. No run from before it was recorded, so a test "
+                  "the change broke cannot be told from one that already failed."]
     else:
-        L += ["", "No test runs were recorded, so scenarios cannot be marked as passing."]
+        L += ["", "No test results were recorded after the change, so scenarios cannot be marked as passing."]
     r = v.get("review") or {}
-    L.append("No review was recorded before implementation." if not r.get("findings")
-             else f"Review: {r['findings']} findings, {r['open']} still open.")
+    L.append(f"Review: {r['findings']} findings, {r['open']} still open." if r.get("findings")
+             else f"Review ({', '.join(r['kinds'])}): no findings." if r.get("kinds")
+             else "No review was recorded before implementation.")
     if v.get("baseline"):
         L.append(f"Compared with the code as it was at {v['baseline']}.")
     return "\n".join(L) + "\n"
 
 
 # -- facts for reviewers ---------------------------------------------------------------------------
-def review_facts(con, change_dir: str | Path) -> dict:
+def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) -> dict:
     """What the graph says about a change, arranged as the questions each reviewer must answer.
-    A reviewer reads this, reads the code behind anything suspicious, and files findings."""
+    A reviewer reads this, reads the code behind anything suspicious, and files findings. Naming the
+    `reviewer` (logic or performance) records that this review ran, so the plan can say so."""
     b = brief(con, change_dir, write=False)
     if "error" in b:
         return b
+    if reviewer:
+        record_review(con, b["change_id"], reviewer)
     names = _Names(con)
     tasked = sorted({i for t in b["tasks"] for i in t["nodes"]})
     fns = [i for i in tasked if names.by_id[i]["kind"] in ("callable", "test")]

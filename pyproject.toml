@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leyline-code"
-version = "0.2.0"
+version = "0.3.0"
 description = "Map a codebase into a layered graph: deterministic facts, LLM inferences, and your intent."
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
