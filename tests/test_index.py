@@ -947,3 +947,72 @@ def test_workspace_links_two_repositories(tmp_path):
     assert "wsapp:ext:python:libpkg" in ids(c, "SELECT id FROM nodes WHERE kind = 'external'")
     assert "workspace" not in query.overview(c)
     c.close()
+
+
+def test_map_plan_check_from_the_command_line(tmp_path, monkeypatch, capsys):
+    """The short path a person types: map the code, plan a change written as an OpenSpec folder, implement it,
+    check it. Real test runner output goes in; the verdict page comes out."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    from leyline.cli import main
+
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE2, work)
+    ch = work / "openspec" / "changes" / "loud-engine"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: Loud engine\n\n## Why\nNames are hard to read in logs.\n\n"
+                                    "## What Changes\n- `Engine.start` returns the name in upper case\n- A new `Engine.shout`\n")
+    (ch / "tasks.md").write_text("- [ ] 1.1 Change `Engine.start` to return the name in upper case\n"
+                                 "- [ ] 1.2 Add `Engine.shout`, the name with an exclamation mark\n"
+                                 "- [ ] 1.3 Add the test \"Shout\"\n")
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        "## ADDED Requirements\n### Requirement: Loud names\nThe engine SHALL report its name loudly.\n\n"
+        "#### Scenario: Start\n- **WHEN** an engine starts\n- **THEN** it returns its name in upper case\n\n"
+        "#### Scenario: Shout\n- **WHEN** an engine shouts\n- **THEN** the name ends with an exclamation mark\n")
+
+    def run_tests(name):   # the person's own test command, with its output saved to a file
+        out = subprocess.run([sys.executable, "-m", "pytest", "-rA", "-q", "-p", "no:cacheprovider", "tests"],
+                             cwd=work / "py", env={**os.environ, "PYTHONPATH": "src"}, capture_output=True, text=True).stdout
+        (tmp_path / name).write_text(out)
+        return str(tmp_path / name)
+
+    monkeypatch.chdir(work)
+    assert main(["map", ".", "--exact", "off"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Mapped repo in ") and "Map page: .leyline/map.html" in out and "Next: " in out
+    assert len(out.splitlines()) <= 10 and (work / ".leyline" / "map.html").exists()
+
+    assert main(["plan", "loud-engine", "--tests", run_tests("before.txt")]) == 0
+    out = capsys.readouterr().out
+    page = (ch / "leyline.md").read_text()
+    assert "**State: ready to implement.** It has not been reviewed." in page
+    assert "The plan has 3 tasks: it changes Engine.start and adds Engine.shout." in page
+    assert page.index("**State:") < page.index("## 1. What code will be written") < page.index("## 3. How you will know")
+    assert "Recorded the tests as they are before the change: 5 pass, 0 fail" in out
+    assert "Next: have the plan reviewed" in out and "record how the tests pass now" not in out
+
+    # Implement the tasks, and update the test the change makes wrong.
+    core = work / "py/src/pkg/core.py"
+    core.write_text(core.read_text().replace("        return self.name\n", "        return self.name.upper()\n\n"
+                                             "    def shout(self):\n        return self.name + \"!\"\n", 1))
+    tests = work / "py/tests/test_engine.py"
+    tests.write_text(tests.read_text().replace('engine.start() == "fixture"', 'engine.start() == "FIXTURE"')
+                     + "\n\ndef test_shout(engine):\n    assert engine.shout().endswith(\"!\")\n")
+    (ch / "tasks.md").write_text((ch / "tasks.md").read_text().replace("- [ ]", "- [x]"))
+
+    # Without test output, check says what is missing and the one command that supplies it.
+    assert main(["check", "loud-engine"]) == 1
+    out = capsys.readouterr().out
+    assert "| Start | test exists, not run |" in out and "Next: run the tests and pass the output" in out
+    assert "--tests -" in out
+
+    assert main(["check", "loud-engine", "--tests", run_tests("after.txt")]) == 0
+    out = capsys.readouterr().out
+    assert "**Yes.**" in out and "Tests: 5 of 5 passed before, 6 of 6 after." in out
+    assert "Next: nothing left to check" in out
+    page = (ch / "leyline.md").read_text()
+    assert "**State: done as agreed.**" in page and "ready to implement" not in page.split("## 1.")[0]
+    assert "| Start | passes |" in page and "| Shout | passes |" in page and page.count("## 4. Was it done as agreed") == 1

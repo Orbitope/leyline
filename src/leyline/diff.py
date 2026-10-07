@@ -221,7 +221,12 @@ def parse_test_output(text: str) -> list[dict]:
                 if sep in rest:
                     name, message = rest.split(sep, 1)
                     break
-        out[name.strip()] = {"name": name.strip(), "status": status, "message": message}
+        name = name.strip()
+        if "::" in name:   # a pytest node id (path::Class::test[param]): the map knows the test by its own name
+            name = re.sub(r"\[.*\]$", "", name.rsplit("::", 1)[1])
+        if name in out and out[name]["status"] == "fail":
+            continue       # the same name twice (two files, two parameters): a failure is not hidden by a pass
+        out[name] = {"name": name, "status": status, "message": message}
     return list(out.values())
 
 

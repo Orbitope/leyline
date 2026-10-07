@@ -1,4 +1,5 @@
-"""MCP server over a Leyline store. Reads facts; writes annotations, views, proposals, rules and test runs."""
+"""MCP server over a Leyline store. map, plan and check first; then reads of the graph, and writes of annotations,
+views, proposals, rules and test runs."""
 
 from __future__ import annotations
 
@@ -12,29 +13,113 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import change, coverage as measured, diff, spec as spec_loop, patterns as pattern_labels, query, rules, store, tours as tour_store
+from . import change, coverage as measured, diff, loop, spec as spec_loop, patterns as pattern_labels, query, rules, store, tours as tour_store
 
 mcp = FastMCP(
     "leyline",
     instructions=(
-        "Leyline is a graph of a codebase. Start with `overview` for the module map, `search` to find a"
-        " node id by name, then `expand` a node to see what it contains and how it connects."
-        " Edges marked heuristic come from syntax alone and can be wrong; exact edges cannot."
-        " To assess a change described in words: find the nodes it touches with `search` and `expand`,"
-        " then call `propose_change`. To show the user any other slice of the code, call `save_view`."
+        "Leyline is a graph of a codebase, used so that a person drives the design of a change and agents write the code."
+        " The usual path is three tools, in this order: `map` (index the code, when it was never mapped), then write the"
+        " change as an OpenSpec folder (openspec/changes/<id>/: proposal.md, specs/, tasks.md) and call `plan` with it"
+        " (repeat until nothing blocks; have it reviewed; the person decides findings), then implement the tasks and"
+        " call `check` with the test output. `plan` and `check` re-map changed code themselves, and each returns"
+        " `next`: what to do after it. To look around: `overview` for the module map, `search` to find a node id by"
+        " name, `expand` to see what a node contains and how it connects. Edges marked heuristic come from syntax"
+        " alone and can be wrong; exact edges cannot. To show the user any other slice of the code, call `save_view`."
     ),
 )
 
 _local = threading.local()
+_lock = threading.Lock()   # one re-index at a time
+_generation = [0]          # bumped on every re-index, so each thread opens the store afresh
+
+
+def _path() -> str:
+    return os.environ.get("LEYLINE_DB", ".leyline/leyline.db")
 
 
 def _db() -> sqlite3.Connection:
     # The server may run each tool call on a different worker thread, and a SQLite connection
     # belongs to the thread that opened it. Keep one per thread.
     con = getattr(_local, "con", None)
-    if con is None:
-        con = _local.con = store.connect(os.environ.get("LEYLINE_DB", ".leyline/leyline.db"))
+    if con is None or getattr(_local, "gen", None) != _generation[0]:
+        con = _local.con = store.connect(_path())
+        _local.gen = _generation[0]
     return con
+
+
+def _results(test_output: Optional[str], test_results: Optional[list[dict]]):
+    """Test results from runner output or from a list: (results or None, error or None)."""
+    if test_results is not None:
+        return test_results, None
+    if test_output is None:
+        return None, None
+    parsed = diff.parse_test_output(test_output)
+    if not parsed:
+        return None, ("found no test results in test_output: it needs one PASS or FAIL line per test (pytest -rA prints"
+                      " them). Pass other formats as test_results.")
+    return parsed, None
+
+
+@mcp.tool(name="map")
+def map_code(paths: Optional[list[str]] = None) -> dict:
+    """Step 1 of 3. Index the code into the store this server reads. `paths` are repository directories;
+    leave it out to map again the repositories already in the store. Returns counts of what was found, where
+    the browsable map page was written, and `next`. `plan` and `check` re-map changed code on their own, so
+    call this only when the code was never mapped or a repository is added."""
+    with _lock:
+        m = loop.map_repos(paths or [], _path())
+        _generation[0] += 1
+    if "error" in m:
+        return m
+    return {**m, "summary": loop.map_text(m), "next": [
+        "Write the change as an OpenSpec folder, openspec/changes/<id>/ (the leyline-spec skill says how), then call plan."]}
+
+
+@mcp.tool()
+def plan(change: str, test_output: Optional[str] = None, test_results: Optional[list[dict]] = None,
+         new_baseline: bool = False) -> dict:
+    """Step 2 of 3, before any code is written. `change` is an OpenSpec change folder or its id under
+    openspec/changes/. Re-maps the code if it changed, ties each task to code and each scenario to a test,
+    and writes the one-page plan, `leyline.md`, into the folder (also returned as `page`). `status.blocking`
+    is what must be fixed in the spec or decided by the person before implementation; `next` is what to do.
+    Pass the test run from before any edit as `test_output` (runner text with one PASS or FAIL line per test,
+    as pytest -rA prints) or `test_results` ([{name, status, message?}]), so `check` can tell a test the
+    change broke from one that already failed. Call it again after every edit to the spec."""
+    folder = loop.find_change(change, _path())
+    if folder is None:
+        return {"error": f"no change folder {change!r}: write it first, as openspec/changes/<id>/"}
+    results, err = _results(test_output, test_results)
+    if err:
+        return {"error": err}
+    with _lock:
+        b = loop.plan(_path(), folder, results, new_baseline)
+        _generation[0] += 1
+    if "error" in b:
+        return b
+    return {**b, "status": spec_loop.brief_status(b), "page": spec_loop.brief_text(b), "next": loop.next_after_plan(b, change)}
+
+
+@mcp.tool()
+def check(change: str, test_output: Optional[str] = None, test_results: Optional[list[dict]] = None) -> dict:
+    """Step 3 of 3, after the tasks are implemented. Re-maps the code, records the test run passed as
+    `test_output` (runner text, one PASS or FAIL line per test) or `test_results`, and says whether the change
+    was done as agreed: each task from what changed in the code, each scenario from its test's result, edits
+    outside the spec, new links between modules, rules newly broken. Appends the result to `leyline.md`.
+    `done_as_agreed` is the verdict and `why_not` the reasons; `next` is what to do. Report this verdict,
+    never your own account of the change."""
+    folder = loop.find_change(change, _path())
+    if folder is None:
+        return {"error": f"no change folder {change!r}"}
+    results, err = _results(test_output, test_results)
+    if err:
+        return {"error": err}
+    with _lock:
+        v = loop.check(_path(), folder, results)
+        _generation[0] += 1
+    if "error" in v:
+        return v
+    return {**v, "next": loop.next_after_check(v, change)}
 
 
 @mcp.tool()
@@ -231,8 +316,8 @@ def coverage(node_id: Optional[str] = None, flow_id: Optional[str] = None, impor
 
 @mcp.tool()
 def spec_brief(change_dir: str, new_baseline: bool = False) -> dict:
-    """Assess a change written as an OpenSpec folder (proposal.md, tasks.md, specs/) before it is
-    implemented. Ties each task to code named in backticks and each scenario to a test of the same name,
+    """The brief step of `plan` alone, with no re-map and no test run; prefer `plan`. Assess a change
+    written as an OpenSpec folder (proposal.md, tasks.md, specs/) before it is implemented. Ties each task to code named in backticks and each scenario to a test of the same name,
     computes the blast radius, and writes `leyline.md` into the folder: what will be written, what it
     affects, how the person will know it was done. Returns the same, with `gaps` to fix in the spec.
     Run it again after every edit to the spec. Once the code has changed, later briefs keep the first
@@ -241,10 +326,11 @@ def spec_brief(change_dir: str, new_baseline: bool = False) -> dict:
 
 
 @mcp.tool()
-def spec_review_facts(change_dir: str) -> dict:
+def spec_review_facts(change_dir: str, reviewer: Optional[str] = None) -> dict:
     """What the graph says about a spec, arranged as the questions a logic reviewer and a performance
-    reviewer must answer. Read it, read the code behind anything suspicious, then file findings."""
-    return spec_loop.review_facts(_db(), change_dir)
+    reviewer must answer. Read it, read the code behind anything suspicious, then file findings. Pass
+    `reviewer` (logic or performance) so the plan records that this review ran, even if it files nothing."""
+    return spec_loop.review_facts(_db(), change_dir, reviewer)
 
 
 @mcp.tool()
@@ -270,7 +356,8 @@ def spec_resolve(finding_id: str, status: str, resolution: str = "") -> dict:
 
 @mcp.tool()
 def spec_verify(change_dir: str, before_run: Optional[str] = None, after_run: Optional[str] = None) -> dict:
-    """After the spec is implemented and the repository re-indexed: was it done as agreed? Marks each
+    """The verify step of `check` alone, with test runs named by label; prefer `check`. After the spec is
+    implemented and the repository re-indexed: was it done as agreed? Marks each
     task done or not from the graph diff, each scenario from its test's result, lists edits outside the
     spec, new links between modules and rules newly broken, and appends the result to `leyline.md`."""
     return spec_loop.verify(_db(), change_dir, before_run, after_run)
