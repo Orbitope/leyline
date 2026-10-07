@@ -209,13 +209,15 @@ def generate(con, repo_id: str) -> dict:
 
     # 5. A path worth tracing: a test that crosses the most modules without being huge.
     best = None
+    length = store.flow_lengths(con)
+    core_set = set(core)
     for f in flows:
-        if flow_kind[f["id"]] != "test":
-            continue
+        if flow_kind[f["id"]] != "test" or not 6 <= length.get(f["id"], 0) <= 80:
+            continue   # read the steps only of flows the size rule lets through
         steps = [r[0] for r in q("SELECT callable_id FROM flow_steps WHERE flow_id = ?", f["id"])]
         if 6 <= len(steps) <= 80:
             ms = {module.get(s) for s in steps} - {None}
-            score = (len(ms & set(core)), -abs(len(steps) - 25))
+            score = (len(ms & core_set), -abs(len(steps) - 25))
             if best is None or score > best[0]:
                 best = (score, f, len(steps), ms)
     if best:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import posixpath
 import json
 import os
@@ -192,6 +193,10 @@ class FlowSteps:
 
     def __len__(self) -> int:
         return len(self.callable)
+
+    def ids(self):
+        """Every flow id, then every callable id, in step order: the ids the rows name, as store._keys takes them."""
+        return itertools.chain((fid for fid, _ in self.flows), self.callable)
 
     def __iter__(self):
         ends = [start for _, start in self.flows[1:]] + [len(self.callable)]
@@ -1820,7 +1825,7 @@ def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, 
         mark = time.perf_counter()
         stats["systems"] = cluster.propose(con, repo)
         with con:
-            store.rebuild_derived(con)
+            store.rebuild_derived(con, systems_of=repo)
         timing["systems"] = round(time.perf_counter() - mark, 3)
         mark = time.perf_counter()
         stats["patterns"] = patterns.run(con, repo)

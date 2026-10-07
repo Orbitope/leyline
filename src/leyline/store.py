@@ -8,7 +8,7 @@ import json
 import sqlite3
 from importlib import resources
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .model import Edge, Node
 
@@ -50,6 +50,12 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 # flow's attrs once per step instead was most of the cost on a large repo.
 TESTED = ("SELECT DISTINCT callable_id FROM flow_steps"
           " WHERE flow_id IN (SELECT id FROM flows WHERE json_extract(attrs, '$.kind') = 'test')")
+
+def flow_lengths(con) -> dict:
+    """Steps per flow. Counted on the keyed table: through the view every step would be joined to its ids."""
+    return dict(con.execute("SELECT k.id, s.n FROM (SELECT flow, COUNT(*) AS n FROM steps GROUP BY flow) s"
+                            " JOIN keys k ON k.k = s.flow").fetchall())
+
 
 VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel")
 _VIA_CASE = "CASE s.via " + " ".join(f"WHEN {i} THEN '{v}'" for i, v in enumerate(VIA)) + " END"
@@ -108,7 +114,10 @@ def _keys(con, ids) -> dict:
 
 
 def _insert_steps(con, steps) -> None:
-    key = _keys(con, itertools.chain((s[0] for s in steps), (s[3] for s in steps)))
+    """steps: (flow id, seq, depth, callable id, via, site line, parent seq) rows. A collection that can list
+    the flow ids and then the callable ids itself (indexer.FlowSteps) saves a pass over millions of rows."""
+    ids = getattr(steps, "ids", None)
+    key = _keys(con, ids() if ids else itertools.chain((s[0] for s in steps), (s[3] for s in steps)))
     via = {v: i for i, v in enumerate(VIA)}
     # Millions of rows on a large repo: the callable index is built once at the end rather than kept up to date
     # row by row, and the rows are made as they are inserted, not held in a second list.
@@ -226,12 +235,22 @@ def write_coverage(con, repo_id, extractor, version, status, commit, stats: dict
     )
 
 
-def rebuild_derived(con: sqlite3.Connection) -> None:
-    """Recompute the ancestry cache and the search index from the node table."""
-    con.execute("DELETE FROM ancestry")
-    con.execute("DELETE FROM search")
+def rebuild_derived(con: sqlite3.Connection, systems_of: Optional[str] = None) -> None:
+    """Recompute the ancestry cache and the search index from the node table. `systems_of` is for after
+    clustering a repo, which removes and adds only that repo's system nodes, the new ones after every other
+    node: the rows of other nodes stay, which gives the same tables as a full rebuild without rewriting every row."""
+    have: set = set()
+    if systems_of is not None:
+        kept = "SELECT id FROM nodes WHERE NOT (kind = 'system' AND repo_id IS ?)"
+        con.execute(f"DELETE FROM ancestry WHERE node_id NOT IN ({kept})", (systems_of,))
+        con.execute(f"DELETE FROM search WHERE node_id NOT IN ({kept})", (systems_of,))
+        have = {r[0] for r in con.execute("SELECT node_id FROM ancestry")}
+    else:
+        con.execute("DELETE FROM ancestry")
+        con.execute("DELETE FROM search")
     rows = con.execute("SELECT id, kind, name, parent_id, path FROM nodes").fetchall()
     by_id = {r["id"]: r for r in rows}
+    rows = [r for r in rows if r["id"] not in have]
     out = []
     for r in rows:
         file_id = module_id = None
