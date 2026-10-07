@@ -251,7 +251,10 @@ The brief ties each task to code and each scenario to a test, by three conventio
 - A task that starts with add, remove, rename or "change the signature" is read that way. Anything
   else is a change in behavior.
 - A scenario is proven by a test with the same name: one on the map, or one made at run time (a name built
-  from a template, a pytest parameter) whose result in the test run carries that name.
+  from a template, a pytest parameter) whose result in the test run carries that name. A scenario that states an
+  invariant ("for any", "for every", "always", "never") is marked "invariant: a property test fits", with the
+  library for its language (Hypothesis, fast-check, FsCheck). When such a test fails, `check` reads the shrunk
+  counterexample from the runner's output and gives it as the reason: "contradicted: fails for amount=-1".
 
 It then lists what the change reaches that no task covers, the patterns it sits in, the gaps that
 block implementation, and the code that uses the same things and that no task names: other callers of
@@ -281,6 +284,10 @@ you, 1 inconclusive"), and given as `verdict` and `verdict_why` in the MCP `chec
 | contradicted | the code it names did not change (or what it adds is missing) while other code did | its test fails after the change |
 | inconclusive | the map cannot place the code it names, or nothing changed at all | no pass or fail was recorded for it |
 | needs a person | it names no code (docs, say) | its test passes, but does not reach the changed code, or Leyline cannot tell whether it does |
+
+A task that removes code is judged by what is left, since edited is not removed: "Remove `X`" is contradicted while
+`X` still exists, partial when `X` is gone but code that called it still does ("`X` is gone but `caller` still
+calls it"), and proven only when it is gone and uncalled. "Rename `X` to `Y`" also needs `Y` there.
 
 Partial, contradicted and inconclusive hold up "done as agreed"; an item that needs a person is listed
 and does not. A project can change that in `openspec/leyline.toml`, committed beside the changes:
@@ -317,9 +324,12 @@ compares each with the map, and prints one page, spec by spec:
 - `Journal.note` has moved: it is now in py/src/pkg/journal.py (was in py/src/pkg/core.py).
 ```
 
-A name is *gone*, *moved* (another file or owner), *signature changed*, *ambiguous* (it now names several
-things) or *changed inside* (same signature; worth a read, not drift by itself). It exits 1 when something
-is gone or changed signature. Names that are not code (`true`, `GET`) are counted and left alone, and so is
+A name is *gone*, *renamed*, *moved* (another file or owner), *signature changed*, *ambiguous* (it now names
+several things) or *changed inside* (same signature; worth a read, not drift by itself). It exits 1 when something
+is gone, renamed or changed signature. *Renamed* is a gone name with one new node beside it (same owner, same file
+or module) that has its body without the name, or its declaration without the name when git or the change's
+baseline shows the node is new; or a file git records as renamed: "`Engine.shout` has been renamed to
+`Engine.yell`". Names that are not code (`true`, `GET`) are counted and left alone, and so is
 code a task removes or renames.
 
 To see a changed signature, Leyline must know what a name meant when it was right. When `check` finds a change

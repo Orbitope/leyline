@@ -66,6 +66,24 @@ why not.
      "counting vehicles slower than ...", is context the plan shows as "mentions" and does not count.
    - Name each scenario so a test can carry the same name. Add a task to write that test, quoting
      the scenario's name: `- [ ] 3.1 Add the test "<scenario name>"`.
+   - A scenario that states an invariant ("for any amount, the balance is never negative"; always,
+     never, for every) gets a property test, not one example: the plan marks it "invariant: a property
+     test fits" and names the library. Name the test like the scenario. The shape, for "Balance is
+     never negative":
+     ```python
+     @given(st.integers(min_value=0), st.integers())               # Hypothesis
+     def test_balance_is_never_negative(balance, amount): assert apply(balance, amount) >= 0
+     ```
+     ```ts
+     it("Balance is never negative", () =>                          // fast-check
+       fc.assert(fc.property(fc.nat(), fc.integer(), (b, a) => apply(b, a) >= 0)));
+     ```
+     ```csharp
+     [Property] public bool Balance_is_never_negative(NonNegativeInt b, int a) => Apply(b.Get, a) >= 0;   // FsCheck
+     ```
+     When it fails, `check` shows the shrunk counterexample: "contradicted: fails for amount=-1".
+   - "Remove `X`" is done when `X` is gone and nothing still calls it; "Rename `X` to `Y`" when `X`
+     is gone, `Y` is there and nothing still calls `X`. Name the callers' edits in tasks too.
 5. **Record the tests as they pass now**, before anyone edits code: run the test suite and pass its
    output to `plan` as `test_output` (TAP from vitest or node --test, `pytest -rA`, or one PASS or FAIL
    line per test; several runners' output can go in one text), or the

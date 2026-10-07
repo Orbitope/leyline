@@ -959,8 +959,9 @@ def drift(path: Annotated[Optional[str], Field(description="The repository or it
                                                     " person says the specs and the code agree.")] = False) -> dict:
     """Specs that no longer match the code: every backticked code name in the living specs (openspec/specs/) and in
     finished changes, compared with the map and with what it meant when the change was checked done. Each name is
-    gone, moved, signature (changed), ambiguous (could now be several things), body (changed inside; not drift by
-    itself) or ok. Re-maps changed code first. `fails` is true when something is gone or changed signature."""
+    gone, renamed (to the name in `renamed.to`), moved, signature (changed), ambiguous (could now be several things),
+    body (changed inside; not drift by itself) or ok. Re-maps changed code first. `fails` is true when something is
+    gone, renamed or changed signature."""
     from . import drift as drift_mod
     with _lock:
         try:
