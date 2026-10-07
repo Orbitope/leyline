@@ -89,8 +89,9 @@ def changed_files(db: str | Path) -> list[str]:
     return sorted(set(out))
 
 
-def refresh(db: str | Path, force: bool = False) -> Optional[dict]:
-    """Re-index the store's repositories when their code has changed. Returns the index stats, or None."""
+def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional[dict]:
+    """Re-index the store's repositories when their code has changed (only what changed is done again, see
+    leyline.incremental; `full` does everything). Returns the index stats, or None."""
     from .indexer import index
 
     if not force and not changed_files(db):
@@ -106,22 +107,22 @@ def refresh(db: str | Path, force: bool = False) -> Optional[dict]:
         return None
     if len(roots) == 1:   # the repo id may not be the directory name (--repo), so pass it
         (rid, root), = roots.items()
-        return index(root, db, rid, exact)
-    return index(list(roots.values()), db, None, exact)
+        return index(root, db, rid, exact, full=full)
+    return index(list(roots.values()), db, None, exact, full=full)
 
 
 # -- map ------------------------------------------------------------------------------------------
 def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str] = None, exact: str = "auto",
-              scip: Optional[list[str]] = None, page: bool = True) -> dict:
+              scip: Optional[list[str]] = None, page: bool = True, full: bool = False) -> dict:
     """Index, write the browsable map page next to the store, and count what was found. With no paths, map
     again the repositories the store already holds."""
     from .indexer import index
 
     began = time.perf_counter()
     if paths:
-        stats = index(paths if len(paths) > 1 else paths[0], db, repo_id, exact, scip or [])
+        stats = index(paths if len(paths) > 1 else paths[0], db, repo_id, exact, scip or [], full=full)
     else:   # map again what the store already holds, the way it was mapped
-        stats = refresh(db, force=True) if Path(db).exists() else None
+        stats = refresh(db, force=True, full=full) if Path(db).exists() else None
         if stats is None:
             return {"error": "nothing is mapped in this store yet: name the repository directories"}
     con = store.connect(db)

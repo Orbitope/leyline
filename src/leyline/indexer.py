@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import itertools
 import posixpath
 import json
 import os
+import pickle
 import re
 import subprocess
 import time
@@ -112,8 +114,19 @@ def _declared(text: list[str], start: Optional[int], end: Optional[int]) -> dict
 
 
 def _parse_one(job):
-    """Parse one file: (path, ext, module dir, module id, lines, sha1, result or None, error or None, declarations).
-    Runs in a worker process on large repositories, so it touches nothing but its arguments."""
+    """Parse one file: (path, ext, module dir, module id, lines, sha1, pickled (result, declarations) or None,
+    error or None, the names the result mentions). Runs in a worker process on large repositories, so it touches
+    nothing but its arguments. The result comes back pickled because that is how it would cross from the worker
+    anyway, and the same bytes are what the parse cache keeps (leyline.incremental)."""
+    from .incremental import mentions
+    out = _parse_file(job)
+    res, decls = out[6], out[8]
+    if res is None:
+        return (*out[:6], None, out[7], b"")
+    return (*out[:6], pickle.dumps((res, decls), protocol=pickle.HIGHEST_PROTOCOL), None, mentions(res, decls))
+
+
+def _parse_file(job):
     root, repo, (f, ext, mod_dir, mod_id) = job
     data = (Path(root) / f).read_bytes()
     loc, sha = data.count(b"\n") + 1, hashlib.sha1(data).hexdigest()
@@ -261,6 +274,7 @@ class Indexer:
         self.scip_paths: list[str] = []
         self.exact_stats: dict[str, dict] = {}
         self.keep_results = True         # False: run() lets go of the adapters' output and the resolvers' caches before writing
+        self.parse_cache = None          # leyline.incremental: parse output kept from the last run, by content hash
 
     def _apply_exact(self) -> None:
         """Let a compiler overrule the syntax resolvers where one is available."""
@@ -357,7 +371,17 @@ class Indexer:
             mod_dir = _module_for(f, module_dirs)
             mod_id = self._module(mod_dir, files, repo)
             work.append((f, ext, mod_dir, mod_id))
-        for f, ext, mod_dir, mod_id, loc, sha, res, failed, decls in _parse_all(root, repo, work):
+        # With a parse cache (leyline.incremental), a file whose content and module are as they were last time is
+        # not parsed again. Either way the files are taken in the listed order, so the index is the same.
+        cache = self.parse_cache
+        cached = cache.lookup(repo, root, work) if cache is not None else {}
+        fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached])
+        for w in work:
+            got = cached.get(w[0]) or next(fresh)
+            f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
+            if cache is not None:
+                cache.keep(f"{repo}:file:{f}", got, w[0] not in cached)
+            res, decls = pickle.loads(blob) if blob is not None else (None, None)
             adapter = BY_EXTENSION[ext]
             file_id = f"{repo}:file:{f}"
             self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
@@ -376,6 +400,7 @@ class Indexer:
             for n in res.nodes:
                 self._add(n)
             self.edges.extend(res.edges)
+        next(fresh, None)   # lets the worker pool, if one was started, shut down
 
     # -- structure -----------------------------------------------------------
     def _add(self, n: Node) -> None:
@@ -1268,6 +1293,8 @@ class Indexer:
     def _resolve_calls(self) -> None:
         self._chain_memo: dict = {}
         self._call = None
+        self._arg_log: list = []    # Python: (function, a call that reaches it), for _py_argument_flow
+        self._pending: list = []    # Python: calls nothing resolved, for _py_argument_flow
         for (tid, fname), method in self.field_calls.items():
             # self.config = self.make_config(): the field holds what that method is declared to return.
             if fname in self.field_type.get(tid, {}):
@@ -1283,7 +1310,7 @@ class Indexer:
         for a in BY_LANGUAGE.values():
             self.outside_names.update((a.LANGUAGE, n) for n in getattr(a, "COMMON_METHODS", ()))
         self._py_fixtures()
-        for fid, res in self.results.items():
+        for fid, res in self._calls_pass(1):
             lang = self.file_lang[fid]
             for call in res.calls:
                 if call.receiver not in (None, "this", "base") and call.name != ".ctor":
@@ -1294,9 +1321,7 @@ class Indexer:
                     tid, known = self._receiver_type(lang, call)
                     if known and tid is None:
                         self.outside_names.add((lang, call.name))
-        incoming: dict[str, list] = defaultdict(list)   # Python: function -> the calls that reach it
-        pending: list = []                               # Python: calls nothing resolved, for _py_argument_flow
-        for fid, res in self.results.items():
+        for fid, res in self._calls_pass(2):
             lang = self.file_lang[fid]
             adapter = BY_LANGUAGE[lang].NAME
             st = self.stats[adapter]
@@ -1332,10 +1357,14 @@ class Indexer:
                 if lang == "python":
                     if targets and not self._guessed:
                         for t in targets:
-                            incoming[t.id].append(call)
+                            self._arg_log.append((t.id, call))
                     elif not targets:
-                        pending.append(call)
-        self._py_argument_flow(incoming, pending)
+                        self._pending.append(call)
+        # Kept as lists on the indexer, so an incremental run records each file's share with its turn and replays it.
+        incoming: dict[str, list] = defaultdict(list)   # Python: function -> the calls that reach it
+        for tid, call in self._arg_log:
+            incoming[tid].append(call)
+        self._py_argument_flow(incoming, self._pending)
 
     def _py_argument_flow(self, incoming: dict, pending: list) -> None:
         """Calls made on a value handed in from outside: `app(environ, start)` on a parameter, `self.repo.save()` on
@@ -1451,6 +1480,12 @@ class Indexer:
                     st["calls_by_argument_flow"] += 1
                     self.calls.append((call.src_id, t.id, "static", "guess", call.line))
                     self.call_col[(call.src_id, t.id, call.line)] = call.col
+
+    def _calls_pass(self, phase: int):
+        """The files whose calls _resolve_calls goes through, in its first pass (names seen on outside types) and
+        its second (the calls themselves). Every file, in order; leyline.incremental narrows it to the files an
+        edit can have changed and fills in the rest from the last run."""
+        return self.results.items()
 
     _DECL = [  # (pattern, group of the name, group of the type): how typed languages write a variable's type
         (re.compile(r"\b([A-Z]\w*)(?:<[^<>;=()]*>)?(?:\[\])?\??\s*[*&]?\s+(\w+)\s*(?=[=;,)]|$)"), 2, 1),      # Foo x  (C#, Java, C++)
@@ -2318,8 +2353,9 @@ class Indexer:
         for n in self.nodes.values():
             if n.kind == "test" or n.attrs.get("is_test"):
                 starts.append((n.id, "test", n.attrs.get("framework")))
+        keep = self._flow_select(out, starts)
         for start, kind, detail in starts:
-            if start not in self.nodes:
+            if start not in self.nodes or (keep is not None and start not in keep):
                 continue
             fid = f"flow:{start}"
             entry_file = self.file_of.get(start)
@@ -2359,6 +2395,11 @@ class Indexer:
                 "modules": sorted(m for m in mods if m)}))
             self.flow_steps.add(fid, steps)
 
+    def _flow_select(self, out: dict, starts: list) -> Optional[set]:
+        """The starts to walk, given the call graph the walk reads (`out`); None for all of them.
+        leyline.incremental walks again only the flows an edit can have changed."""
+        return None
+
     def _py_symbol(self, node_id: str, argc: int) -> Optional[list[Node]]:
         n = self.nodes.get(node_id)
         if n is None:
@@ -2394,58 +2435,78 @@ class Indexer:
         return None  # builtins, star imports, and classes with no constructor
 
     # -- write ---------------------------------------------------------------
+    def _owner(self, node_id: str) -> str:
+        """The repository a node's rows are written under."""
+        r = _repo_of(node_id)
+        return r if r in self.repos else self.repo
+
+    def _final(self) -> tuple[list, list]:
+        """The edges and calls as they are written: edges whose ends both exist, each once, links between
+        repositories marked, and a contains edge per parent; calls whose caller exists, each once, sorted.
+        Made once per run."""
+        got = getattr(self, "_final_rows", None)
+        if got is not None:
+            return got
+        multi, owner = len(self.repos) > 1, self._owner
+        # Drop edges whose endpoints did not survive (defensive) and exact duplicates.
+        seen, edges = set(), []
+        for e in self.edges:
+            key = (e.kind, e.src_id, e.dst_id, tuple(sorted((e.attrs or {}).items(), key=str)).__repr__())
+            if e.src_id in self.nodes and e.dst_id in self.nodes and key not in seen:
+                seen.add(key)
+                if multi and owner(e.dst_id) != owner(e.src_id):
+                    e.attrs = {**(e.attrs or {}), "to_repo": owner(e.dst_id)}   # a link between repositories
+                edges.append(e)
+        for n in self.nodes.values():
+            if n.parent_id:
+                edges.append(Edge("contains", n.parent_id, n.id, "exact"))
+        calls = sorted({c for c in self.calls if c[0] in self.nodes})
+        self._final_rows = (edges, calls)
+        return self._final_rows
+
     def _write(self, con) -> None:
-        multi = len(self.repos) > 1
-        owner = lambda i: _repo_of(i) if _repo_of(i) in self.repos else self.repo
+        owner = self._owner
         with con:
             for repo, root in self.repos.items():
                 store.clear_facts(con, repo)
                 store.write_nodes(con, [n for n in self.nodes.values() if owner(n.id) == repo], repo, SOURCE, self.commits[repo])
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{repo}", str(root)))
-            # Drop edges whose endpoints did not survive (defensive) and exact duplicates.
-            seen, edges = set(), []
-            for e in self.edges:
-                key = (e.kind, e.src_id, e.dst_id, tuple(sorted((e.attrs or {}).items(), key=str)).__repr__())
-                if e.src_id in self.nodes and e.dst_id in self.nodes and key not in seen:
-                    seen.add(key)
-                    if multi and owner(e.dst_id) != owner(e.src_id):
-                        e.attrs = {**(e.attrs or {}), "to_repo": owner(e.dst_id)}   # a link between repositories
-                    edges.append(e)
-            for n in self.nodes.values():
-                if n.parent_id:
-                    edges.append(Edge("contains", n.parent_id, n.id, "exact"))
-            calls = sorted({c for c in self.calls if c[0] in self.nodes})
+            edges, calls = self._final()
             for repo in self.repos:   # each row carries the commit of the repository its source is in
                 store.write_edges(con, [e for e in edges if owner(e.src_id) == repo], SOURCE, self.commits[repo])
                 store.write_calls(con, [c for c in calls if owner(c[0]) == repo], self.commits[repo])
             store.write_flows(con, self.repo, self.flows, self.flow_steps)
-            from .adapters import ADAPTERS
-            # Counts are for the whole run; in a workspace every member repo gets the same rows, marked as such.
-            ws = {"workspace": sorted(self.repos)} if multi else {}
-            for repo in self.repos:
-                commit = self.commits[repo]
-                for a in ADAPTERS:
-                    st = dict(self.stats.get(a.NAME, {}))
-                    status = "ok" if st.get("files") else "no_files"
-                    store.write_coverage(con, repo, a.NAME, a.VERSION, status, commit, {**st, **ws} if st else st)
-                for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
-                    store.write_coverage(con, repo, f"communicates:{channel}", "0.1", "ok", commit,
-                                         dict(self.channel_stats.get(channel, {})))
-                store.write_coverage(con, repo, "flows:static", "0.1", "ok", commit,
-                                     {"flows": len(self.flows), "steps": len(self.flow_steps), **ws})
-                for name in ("exact:roslyn", "exact:scip"):
-                    info = dict(self.exact_stats.get(name, {}))
-                    status = info.pop("status", "not_analyzed")
-                    store.write_coverage(con, repo, name, "1" if status == "ok" else "-",
-                                         status if status in ("ok", "failed") else "not_analyzed", commit, info)
-                kept = con.execute("SELECT format, stats FROM coverage_runs ORDER BY created DESC LIMIT 1").fetchone()
-                if kept:   # an imported coverage file outlives a re-index
-                    store.write_coverage(con, repo, "coverage", kept["format"], "ok", commit, json.loads(kept["stats"] or "{}"))
-                else:
-                    store.write_coverage(con, repo, "coverage", "-", "not_analyzed", commit, {})
-            if multi:
-                con.execute("INSERT OR REPLACE INTO meta VALUES ('workspace', ?)", (json.dumps(list(self.repos)),))
+            self._write_coverage(con, len(self.flows), len(self.flow_steps))
             store.rebuild_derived(con)
+
+    def _write_coverage(self, con, flows: int, steps: int) -> None:
+        """What each extractor did, per repo, with the run's counts."""
+        multi = len(self.repos) > 1
+        from .adapters import ADAPTERS
+        # Counts are for the whole run; in a workspace every member repo gets the same rows, marked as such.
+        ws = {"workspace": sorted(self.repos)} if multi else {}
+        for repo in self.repos:
+            commit = self.commits[repo]
+            for a in ADAPTERS:
+                st = dict(self.stats.get(a.NAME, {}))
+                status = "ok" if st.get("files") else "no_files"
+                store.write_coverage(con, repo, a.NAME, a.VERSION, status, commit, {**st, **ws} if st else st)
+            for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
+                store.write_coverage(con, repo, f"communicates:{channel}", "0.1", "ok", commit,
+                                     dict(self.channel_stats.get(channel, {})))
+            store.write_coverage(con, repo, "flows:static", "0.1", "ok", commit, {"flows": flows, "steps": steps, **ws})
+            for name in ("exact:roslyn", "exact:scip"):
+                info = dict(self.exact_stats.get(name, {}))
+                status = info.pop("status", "not_analyzed")
+                store.write_coverage(con, repo, name, "1" if status == "ok" else "-",
+                                     status if status in ("ok", "failed") else "not_analyzed", commit, info)
+            kept = con.execute("SELECT format, stats FROM coverage_runs ORDER BY created DESC LIMIT 1").fetchone()
+            if kept:   # an imported coverage file outlives a re-index
+                store.write_coverage(con, repo, "coverage", kept["format"], "ok", commit, json.loads(kept["stats"] or "{}"))
+            else:
+                store.write_coverage(con, repo, "coverage", "-", "not_analyzed", commit, {})
+        if multi:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('workspace', ?)", (json.dumps(list(self.repos)),))
 
 
 def _normalize(parts: tuple) -> list[str]:
@@ -2486,34 +2547,45 @@ def workspace(con, roots: list[str | Path], repo_id: Optional[str] = None) -> li
 
 
 def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] = None, exact: str = "off",
-          scip: Optional[list[str]] = None) -> dict:
+          scip: Optional[list[str]] = None, full: bool = False, _verify: bool = True) -> dict:
     """Index a repository, or several as one workspace (`root` a list). `exact` is off, auto, roslyn or scip:
     whether a compiler's view of the references replaces the syntax-based one (see leyline.exact). `scip`
-    lists index.scip files."""
-    from . import cluster, patterns, tours
+    lists index.scip files. When the store was made by an earlier run, only what changed since is done again
+    (leyline.incremental), and the store comes out as a full run would leave it; `full` makes it a full run."""
+    from . import incremental, tours
 
     con = store.connect(db_path)
+    inc = None
     try:
         members = workspace(con, list(root) if isinstance(root, (list, tuple)) else [root], repo_id)
         ix = Indexer(members[0][0], members[0][1], members[1:])
         ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
         ix.keep_results = False
+        inc = incremental.Run(con, db_path, ix, full=full)
         began = time.perf_counter()
-        stats = ix.run(con)
+        # The run makes millions of objects that live until it ends; the cycle collector would scan them over and
+        # over (a third of loading a large repository's cached parse output) and find nothing to free.
+        gc.disable()
+        try:
+            stats = ix.run(con)
+        finally:
+            gc.enable()
         stats.update(ix.exact_stats)
         # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
         # large repo) from adding to what clustering and the pattern matchers hold.
         repo, timing, repos = ix.repo, ix.timing, dict(ix.repos)
+        inc.release()
         del ix
         mark = time.perf_counter()
         multi = len(repos) > 1
-        systems = {r: cluster.propose(con, r) for r in repos}
+        systems = {r: inc.systems(con, r) for r in repos}
         stats["systems"] = systems if multi else systems[repo]
-        with con:   # a workspace re-clusters every repo, so it rebuilds everything
-            store.rebuild_derived(con, systems_of=None if multi else repo)
+        if inc.full:
+            with con:   # a workspace re-clusters every repo, so it rebuilds everything
+                store.rebuild_derived(con, systems_of=None if multi else repo)
         timing["systems"] = round(time.perf_counter() - mark, 3)
         mark = time.perf_counter()
-        stats["patterns"] = patterns.run(con, repo)
+        stats["patterns"] = inc.patterns(con, repo)
         for other in list(repos)[1:]:
             with con:
                 store.write_coverage(con, other, "patterns:structural", "0.1", "ok", None, stats["patterns"])
@@ -2529,13 +2601,20 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         total = round(time.perf_counter() - began, 3)
         stats["timing"] = {"total_seconds": total, **timing, "files": files, "lines": lines,
                            "lines_per_second": round(lines / total) if total else 0}
+        stats["incremental"] = inc.summary()
         with con:  # kept in the store so a later reader can see what the map cost to build
             for r in repos:
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{r}", json.dumps(stats["timing"])))
                 con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
                             (r, "timing", "-", "ok", None, json.dumps(stats["timing"])))
+        inc.finish(con)
+        if _verify and stats["incremental"]["mode"] == "incremental" and os.environ.get("LEYLINE_VERIFY"):
+            stats["incremental"]["differs"] = incremental.verify(db_path, members, exact, scip)
+        inc = None
         return stats
     finally:
+        if inc is not None:
+            inc.abandon()
         con.close()
 
 

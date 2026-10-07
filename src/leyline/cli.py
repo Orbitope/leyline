@@ -135,7 +135,7 @@ def _loop(args) -> int:
             print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
             return 2
         db = args.db or (str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB)
-        print(loop.map_text(loop.map_repos(args.path, db, args.repo, args.exact, args.scip)))
+        print(loop.map_text(loop.map_repos(args.path, db, args.repo, args.exact, args.scip, full=args.full)))
         return 0
     change = loop.find_change(args.change, args.db or DEFAULT_DB)
     if change is None:
@@ -187,6 +187,7 @@ def main(argv=None) -> int:
     p.add_argument("--exact", choices=["auto", "off", "roslyn", "scip"], default="auto",
                    help="let a compiler overrule the syntax-based links (default: auto, whatever is available)")
     p.add_argument("--scip", action="append", default=[], metavar="FILE", help="a SCIP index to read (repeatable)")
+    p.add_argument("--full", action="store_true", help="index everything again, not only what changed since the last map")
     p = sub.add_parser("plan", description="Write and print the one-page plan (leyline.md) for an OpenSpec change folder,"
                                            " re-mapping first if the code changed. Exits 1 while something blocks implementation.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
@@ -212,6 +213,7 @@ def main(argv=None) -> int:
                    help="let a compiler overrule the syntax-based links: the .NET SDK's for C#, a SCIP index for"
                         " other languages. auto (the default) uses whatever is available")
     p.add_argument("--scip", action="append", default=[], metavar="FILE", help="a SCIP index to read (repeatable)")
+    p.add_argument("--full", action="store_true", help="index everything again, not only what changed since the last index")
     p = sub.add_parser("overview", description="the module map")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("expand", description="one node in detail")
@@ -279,7 +281,7 @@ def main(argv=None) -> int:
             return 2
         # One repository keeps its store inside it; a workspace's store is in the current directory.
         db = args.db if explicit else str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB
-        stats = index(args.path if len(args.path) > 1 else args.path[0], db, args.repo, args.exact, args.scip)
+        stats = index(args.path if len(args.path) > 1 else args.path[0], db, args.repo, args.exact, args.scip, full=args.full)
         t = stats.get("timing", {})
         print(f"indexed into {db}: {t.get('files', 0):,} files, {t.get('lines', 0):,} lines in {t.get('total_seconds', 0)} s"
               f" ({t.get('lines_per_second', 0):,} lines/s)")

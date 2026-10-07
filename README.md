@@ -180,11 +180,13 @@ the WSGI app a test client calls.
 ## How the pieces fit
 
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
-read and write it, and none of them runs unless you start it.
+read and write it, and none of them runs unless you start it. Beside it, `leyline.cache.db` holds what the
+next index needs to do again only what an edit changed: each file's parse output under its content hash,
+and fingerprints of the last run. Deleting it only makes the next index a full one.
 
 | Piece | Started by | Reads | Writes |
 | --- | --- | --- | --- |
-| `leyline map` or `index` | You, a git hook or CI; `plan` and `check` when the code changed | The working tree | Facts, flows and system proposals. Replaces the previous facts. |
+| `leyline map` or `index` | You, a git hook or CI; `plan` and `check` when the code changed | The working tree | Facts, flows and system proposals. Replaces the previous facts: after the first run only what changed is redone, and the store comes out as a full run would leave it (`--full` forces one). |
 | `leyline serve` (MCP) | Your coding agent, when it starts | The store | Annotations, change proposals and saved views |
 | `leyline view` or `export` | You | The store | Nothing |
 
