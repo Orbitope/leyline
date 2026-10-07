@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -101,8 +102,8 @@ def scip(path: str | Path, root: Optional[str | Path] = None) -> list[dict]:
     definition: dict[str, tuple] = {}
     for doc in index.documents:
         for occ in doc.occurrences:
-            if occ.symbol_roles & 1 and not occ.symbol.startswith("local "):
-                definition[occ.symbol] = (doc.relative_path, occ.range[0] + 1)
+            if occ.symbol_roles & 1 and not occ.symbol.startswith("local ") and occ_range(occ):
+                definition[occ.symbol] = (doc.relative_path, occ_range(occ)[0] + 1)
     # Some indexers (scip-python) mark every reference as a read. Then the roles say nothing about field access.
     roles_mean_something = any(occ.symbol_roles & 4 and not occ.symbol_roles & 1 for doc in index.documents for occ in doc.occurrences)
     out = []
@@ -114,19 +115,21 @@ def scip(path: str | Path, root: Optional[str | Path] = None) -> list[dict]:
             sym = occ.symbol
             if occ.symbol_roles & 1 or sym.startswith("local ") or sym not in definition:
                 continue
+            row, col, end = occ_range(occ) or (-1, 0, 0)
+            if row < 0:
+                continue
             name = _scip_name(sym)
             if not name:
                 continue
             tf, tl = definition[sym]
             if sym.endswith(")."):
                 kind = "call"
-                if lines is not None and occ.range[0] < len(lines):
+                if lines is not None and row < len(lines):
                     # SCIP marks a mention, not a call. Keep it when the name is followed by "(", is used as a
                     # decorator, or is read like an attribute (a property); drop imports and methods passed as values.
-                    text = lines[occ.range[0]]
-                    end = occ.range[2] if len(occ.range) == 3 else occ.range[3]
+                    text = lines[row]
                     after = text[end:].lstrip()
-                    before = text[:occ.range[1]].strip()
+                    before = text[:col].strip()
                     called = after.startswith("(") or before.endswith("@") or before == "@"
                     if not called:
                         if before.startswith(("import ", "from ")) or " import " in before:
@@ -139,9 +142,24 @@ def scip(path: str | Path, root: Optional[str | Path] = None) -> list[dict]:
                 kind = "readwrite" if write and read else "write" if write else "read"
             else:
                 continue
-            out.append({"k": kind, "f": doc.relative_path, "l": occ.range[0] + 1, "n": name, "s": "ok",
+            out.append({"k": kind, "f": doc.relative_path, "l": row + 1, "n": name, "s": "ok",
                         "tf": tf, "tl": tl, "tn": name})
     return out
+
+
+def occ_range(occ) -> tuple:
+    """(line, start column, end column) of an occurrence, 0-based. Newer indexers (scip-java) write the typed
+    single_line_range / multi_line_range fields instead of the packed `range` list; None when there is neither."""
+    r = list(occ.range)
+    if r:
+        return (r[0], r[1], r[2] if len(r) == 3 else r[3])
+    if occ.HasField("single_line_range"):
+        x = occ.single_line_range
+        return (x.line, x.start_character, x.end_character)
+    if occ.HasField("multi_line_range"):
+        x = occ.multi_line_range
+        return (x.start_line, x.start_character, x.end_character)
+    return None
 
 
 def _scip_name(symbol: str) -> str:
@@ -151,7 +169,8 @@ def _scip_name(symbol: str) -> str:
         tail = tail[: tail.rfind("(")]
     for sep in ("#", "/", ".", " "):
         tail = tail.rsplit(sep, 1)[-1]
-    return tail.strip("`")
+    # rust-analyzer names an impl's method `impl#[Type][Trait]method`
+    return re.sub(r"^(\[[^\]]*\])+", "", tail).strip("`")
 
 
 # -- applying ----------------------------------------------------------------------------------

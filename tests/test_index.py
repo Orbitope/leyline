@@ -566,6 +566,40 @@ def test_scip_index_confirms_and_adds_python_links(tmp_path):
     assert stats["exact:scip"]["status"] == "ok" and stats["exact:scip"]["calls_confirmed"] == 1
 
 
+def test_grade_reads_typed_ranges_impl_methods_and_macros(tmp_path):
+    """What rust-analyzer and scip-java write: typed single_line_range fields, `impl#[Type]method` symbols,
+    an associated `new` called as Type::new(), and a macro called with its bang."""
+    pb = pytest.importorskip("leyline.scip_pb2")
+    from leyline.grade import grade
+
+    root = Path(__file__).parent / "fixture4"
+    idx = pb.Index()
+    files = {"rs/src/geo.rs": [], "rs/src/main.rs": []}
+    texts = {p: (root / p).read_text().splitlines() for p in files}
+
+    def occ(path, text, word, sym, roles):
+        row = next(i for i, s in enumerate(texts[path]) if text in s)
+        col = texts[path][row].index(word, texts[path][row].index(text))
+        files[path].append((sym, roles, row, col, col + len(word)))
+
+    new, shout = "rust-analyzer cargo fx 0.1.0 geo/impl#[Circle]new().", "rust-analyzer cargo fx 0.1.0 geo/shout!"
+    occ("rs/src/geo.rs", "pub fn new", "new", new, 1)
+    occ("rs/src/geo.rs", "macro_rules! shout", "shout", shout, 1)
+    occ("rs/src/main.rs", "let c = Circle::new", "new", new, 0)
+    occ("rs/src/main.rs", "shout!(s)", "shout", shout, 0)
+    for path, occs in files.items():
+        doc = idx.documents.add()
+        doc.relative_path = path
+        for sym, roles, row, start, end in occs:
+            o = doc.occurrences.add()
+            o.symbol, o.symbol_roles = sym, roles
+            o.single_line_range.line, o.single_line_range.start_character, o.single_line_range.end_character = row, start, end
+    scip_file = tmp_path / "rs.scip"
+    scip_file.write_bytes(idx.SerializeToString())
+    g = grade(str(root), str(scip_file), db=str(tmp_path / "g.db"))
+    assert g["compiler_links"] == 2 and g["recall"] == 1.0 and g["precision"] == 1.0
+
+
 def test_measured_coverage_is_set_against_static_paths(tmp_path):
     import sqlite3
 
@@ -778,7 +812,29 @@ def test_generic_languages(tmp_path):
     assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.Counter~2") in calls
     assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.add") in calls
     assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.get") in calls
-    tests = {r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'test' OR json_extract(attrs, '$.is_test') = 1")}
+    # Go: a call in a struct literal's value is not made on the key; a method's bare call is never on its receiver
+    assert ("go.main.main", "go.main.validate") in calls
+    assert ("go.shapes.shape.Square.Scale", "go.shapes.shape.Scale") in calls
+    # Rust: calls inside a macro's arguments; the type's own method before one from `impl Trait for`;
+    # a module-qualified call reaches the module's function, not a method of that name
+    assert ("rs.src.main.area_is_positive", "rs.src.geo.Circle.new") in calls
+    assert ("rs.src.main.area_is_positive", "rs.src.geo.Circle.area") in calls
+    assert ("rs.src.main.area_is_positive", "rs.src.geo.Circle.area~2") not in calls
+    assert ("rs.src.main.measure", "rs.src.geo.Circle.area") in calls          # c: &geo::Circle
+    assert ("rs.src.main.measure", "rs.src.geo.Circle.area~2") not in calls
+    assert ("rs.src.main.main", "rs.src.geo.describe") in calls
+    assert ("rs.src.main.main", "rs.src.geo.Circle.describe") not in calls
+    # Java: overloads told apart by argument types; a call on what another call returns; an anonymous
+    # class's method is not one of the outer type's
+    assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.add~2") not in calls
+    assert ("java.com.acme.App.App.words", "java.com.acme.Counter.Counter.add~2") in calls     # add(String)
+    assert ("java.com.acme.App.App.words", "java.com.acme.Counter.Counter.add~3") in calls     # add(Counter)
+    assert ("java.com.acme.App.App.words", "java.com.acme.Counter.Counter.add") not in calls
+    assert ("java.com.acme.App.App.chained", "java.com.acme.Counter.Counter.plus") in calls
+    assert ("java.com.acme.App.App.chained", "java.com.acme.Counter.Counter.get") in calls
+    assert ("java.com.acme.App.App.again", "java.com.acme.Counter.Counter.run~2") in calls
+    assert ("java.com.acme.App.App.again", "java.com.acme.Counter.Counter.run") not in calls
+    tests ={r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'test' OR json_extract(attrs, '$.is_test') = 1")}
     assert {"TestReport", "prints the area", "area_is_positive"} <= tests
     entries = {r[0] for r in c.execute("SELECT path FROM nodes WHERE kind = 'entry_point'")}
     assert {"go/main.go", "rs/src/main.rs", "java/com/acme/App.java"} <= entries

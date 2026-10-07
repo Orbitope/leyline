@@ -1006,10 +1006,13 @@ class Indexer:
 
     _DECL = [  # (pattern, group of the name, group of the type): how typed languages write a variable's type
         (re.compile(r"\b([A-Z]\w*)(?:<[^<>;=()]*>)?(?:\[\])?\??\s*[*&]?\s+(\w+)\s*(?=[=;,)]|$)"), 2, 1),      # Foo x  (C#, Java, C++)
-        (re.compile(r"\b(\w+)\s*:\s*&?(?:mut\s+|readonly\s+)?\(?([A-Z]\w*)"), 1, 2),                          # x: Foo  (TS, Kotlin, Swift, Rust, Python)
+        (re.compile(r"\b(\w+)\s*:\s*&?(?:mut\s+|readonly\s+)?\(?(?:[a-z_]\w*(?:::|\.))*([A-Z]\w*)"), 1, 2),                          # x: Foo, x: &mod::Foo  (TS, Kotlin, Swift, Rust, Python)
         (re.compile(r"\b(\w+)\s*(?::=|=)\s*(?:new\s+|&|await\s+)?([A-Z]\w*)(?:<[^<>]*>)?(?:::new)?\s*[({]"), 1, 2),  # x = new Foo( / Foo{ / Foo::new(
         (re.compile(r"\b(\w+)\s+\*?([A-Z]\w*)\s*[,)]"), 1, 2),                                                     # (x *Foo)  (Go parameters)
         (re.compile(r"\bvar\s+(\w+)\s+\*?([A-Z]\w*)"), 1, 2),                                                      # var x Foo  (Go)
+        # built-in types, which tell an overload apart: int x, boolean b[], x int, err error
+        (re.compile(r"\b(byte|short|int|long|float|double|boolean|bool|char|string|str|rune)(?:\[\])?\s+(\w+)\s*(?=[=;,)])"), 2, 1),
+        (re.compile(r"\b(\w+)\s+(byte|int|int32|int64|uint|float32|float64|bool|string|rune|error)\s*[,)]"), 1, 2),
     ]
 
     def _generic_var_type(self, lang: str, src_id: str, var: str, enclosing_type: Optional[str]) -> Optional[str]:
@@ -1019,25 +1022,180 @@ class Indexer:
         for holder in (src_id, enclosing_type):
             if not holder or holder not in self.nodes:
                 continue
-            decls = self._decl_cache.get(holder)
-            if decls is None:
-                n = self.nodes[holder]
-                fid = self.file_of.get(holder)
-                text = self._file_text(fid) if fid else []
-                body = "\n".join(text[(n.span_start or 1) - 1:n.span_end or n.span_start or 1])
-                decls = {}
-                for pat, gn, gt in self._DECL:
-                    for m in pat.finditer(body):
-                        name, tname = m.group(gn), m.group(gt)
-                        if name not in decls and tname not in ("String", "Self", "None", "Some", "Ok", "Err") or (
-                                name in decls and decls[name] is None and self.types_by_name.get((lang, tname))):
-                            decls[name] = tname if self.types_by_name.get((lang, tname)) else None
-                self._decl_cache[holder] = decls
+            decls = self._generic_decls(lang, holder)[0]
             if var in decls:
                 if decls[var] is None:
                     return "external"     # declared with a type that is not in the repo
                 return self._type(lang, decls[var], src_id) or (self.types_by_name.get((lang, decls[var])) or [None])[0]
         return None
+
+    def _generic_decls(self, lang: str, holder: str) -> tuple:
+        """({variable: repo type name, or None for a type from outside}, {variable: type name as written})."""
+        got = self._decl_cache.get(holder)
+        if got is None:
+            n = self.nodes[holder]
+            fid = self.file_of.get(holder)
+            text = self._file_text(fid) if fid else []
+            body = "\n".join(text[(n.span_start or 1) - 1:n.span_end or n.span_start or 1])
+            decls, raw = {}, {}
+            for pat, gn, gt in self._DECL:
+                for m in pat.finditer(body):
+                    name, tname = m.group(gn), m.group(gt)
+                    raw.setdefault(name, tname)
+                    if name not in decls and tname not in ("String", "Self", "None", "Some", "Ok", "Err") or (
+                            name in decls and decls[name] is None and self.types_by_name.get((lang, tname))):
+                        decls[name] = tname if self.types_by_name.get((lang, tname)) else None
+            got = self._decl_cache[holder] = (decls, raw)
+        return got
+
+    _INTS = re.compile(r"(?i)^(int|long|short|byte|integer|bigint|biginteger|[iu](8|16|32|64|128|size)|u?int(8|16|32|64)?|rune)$")
+    _FLOATS = re.compile(r"(?i)^(float|double|f32|f64|float32|float64|decimal|bigdecimal|number)$")
+    _STRS = re.compile(r"(?i)^(string|str|charsequence)$")
+    _BOOLS = re.compile(r"(?i)^(bool|boolean)$")
+    _PRIMS = {"int", "long", "short", "byte", "float", "double", "boolean", "char", "bool"}
+    _ANY = {"Object", "object", "any", "Any", "AnyObject", "dynamic", "interface", "unknown"}
+
+    def _supers(self, tid: str) -> set:
+        out, queue = set(), [tid]
+        while queue:
+            t = queue.pop()
+            if t not in out:
+                out.add(t)
+                queue.extend(self.bases.get(t, []))
+        return out
+
+    def _arg_fits(self, lang: str, hint: str, ptype: str) -> int:
+        """How well an argument fits a declared parameter type: 2 the same, 1 compatible, 0 cannot tell, -1 cannot be."""
+        p = ptype.rstrip(".")
+        if not p or not hint or hint == "fn":
+            return 0
+        repo_p = self.types_by_name.get((lang, p))
+        kinds = {"string": self._STRS, "int": self._INTS, "float": self._FLOATS, "bool": self._BOOLS}
+        boxed, named = False, hint
+        if hint not in kinds and hint not in ("char", "null") and not self.types_by_name.get((lang, hint)):
+            # a built-in type by name (int, Integer, String): the same as the literal of that kind
+            kind = "char" if hint.lower() in ("char", "character") else \
+                next((k for k, pat in kinds.items() if pat.match(hint) and hint.lower() not in ("number", "decimal")), None)
+            if kind:
+                boxed, hint = hint[:1].isupper() and kind != "string", kind
+        if hint in kinds or hint == "char":
+            # a literal is the built-in type exactly (int, bool); its boxed or wider form takes it too
+            exact = 2 if p[:1].islower() != boxed or hint == "string" else 1
+            if hint == "char" and p.lower() in ("char", "character", "rune"):
+                return exact
+            if hint in kinds and kinds[hint].match(p):
+                if named.lower() == p.lower() and named != hint:
+                    return 3    # the very type named: Float.NaN to float rather than double
+                if named == "float" and re.fullmatch(r"(?i)float|f32|float32", p):
+                    return 1    # a decimal literal is a double unless marked otherwise
+                return exact if p.lower() not in ("number", "decimal", "bigdecimal", "biginteger", "bigint") else 1
+            if hint in ("int", "char") and self._FLOATS.match(p) or hint == "char" and self._INTS.match(p):
+                return 1   # widened
+            other = any(k.match(p) for k in kinds.values()) or p in self._PRIMS
+            return -1 if other or repo_p else 0
+        if hint == "null":
+            return -1 if p in self._PRIMS else 0
+        if any(k.match(p) for k in kinds.values()) or p in self._PRIMS:
+            return -1      # a type that is not a built-in one passed where a built-in one is taken
+        if hint == p:
+            return 2
+        repo_h = self.types_by_name.get((lang, hint))
+        if repo_h and repo_p:
+            return 1 if any(t in self._supers(h) for h in repo_h for t in repo_p) else -1
+        if repo_h and (p in self._PRIMS or any(k.match(p) for k in kinds.values())):
+            return -1
+        if repo_p and not repo_h and (len(hint) > 2 or not hint.isupper()):
+            return -1   # a type from outside cannot be one of ours (a one-letter name is a type parameter)
+        if repo_h and not repo_p and p not in self._ANY and (len(p) > 2 or not p.isupper()):
+            # one of ours passed where a type from outside is taken: only if it says it extends that type
+            said = " ".join(self.nodes[t].attrs.get("signature") or "" for h in repo_h for t in self._supers(h) if t in self.nodes)
+            return 1 if re.search(rf"\b{re.escape(p)}\b", said) else -1
+        return 0
+
+    def _generic_returns(self, lang: str, inner: CallSite) -> Optional[tuple]:
+        """_returned_type for the generic resolver, without the edges resolving the inner call would record twice."""
+        if inner.receiver is None and self.types_by_name.get((lang, inner.name)):
+            return (self.types_by_name[(lang, inner.name)][0], True)    # Foo(): a constructor called by the type's name
+        n_edges = len(self.edges)
+        out = self._returned_type(lang, inner)
+        del self.edges[n_edges:]
+        return out
+
+    def _generic_return_name(self, lang: str, inner: CallSite) -> Optional[str]:
+        """The type name a call's target declares it returns, from outside the repo or not (None when the call
+        does not resolve, or when what it returns is a type parameter)."""
+        key = ("ret", id(inner))
+        if key in self._chain_memo:
+            return self._chain_memo[key]
+        self._chain_memo[key] = None
+        if inner.receiver is None and self.types_by_name.get((lang, inner.name)):
+            out = inner.name
+        else:
+            saved = (getattr(self, "_guessed", False), getattr(self, "_call", None))
+            stats_before = {k: dict(v) for k, v in self.stats.items()}
+            n_edges = len(self.edges)
+            self._guessed = False
+            fid = self.file_of.get(inner.src_id)
+            targets = self._resolve_call(lang, fid, inner) if fid else None
+            guessed = self._guessed
+            self._guessed, self._call = saved
+            for k, v in stats_before.items():
+                self.stats[k].clear()
+                self.stats[k].update(v)
+            del self.edges[n_edges:]
+            names = {(t.attrs.get("returns_names") or [None])[0] for t in targets or ()
+                     if (t.attrs.get("returns_names") or [None])[0] not in (t.attrs.get("type_params") or ())}
+            out = names.pop() if targets and not guessed and len(names) == 1 else None
+        self._chain_memo[key] = out
+        return out
+
+    def _hint_type(self, lang: str, call: CallSite, h) -> Optional[str]:
+        """The type name an argument hint stands for: `$x` a variable, `$a.b` a field, a call its return type."""
+        if isinstance(h, CallSite):
+            return self._generic_return_name(lang, h)
+        if not isinstance(h, str) or not h.startswith("$"):
+            return h if isinstance(h, str) else None
+        var, _, field = h[1:].partition(".")
+        if field:
+            if not self.types_by_name.get((lang, var)) and any(k.match(var) for k in (self._INTS, self._FLOATS, self._BOOLS)):
+                return var      # Integer.MAX_VALUE, Double.NaN: a constant of that built-in type
+            if var in ("this", "self"):
+                tids = [call.enclosing_type] if call.enclosing_type else []
+            else:
+                tids = self.types_by_name.get((lang, var)) or []
+                if not tids:
+                    tid = self._generic_var_type(lang, call.src_id, var, call.enclosing_type)
+                    tids = [tid] if tid and tid != "external" else []
+            for tid in tids:
+                for t in self._chain(tid):
+                    if field in self.field_type.get(t, {}):
+                        return self.field_type[t][field]
+            return None
+        for holder in (call.src_id, call.enclosing_type):
+            if holder and holder in self.nodes:
+                raw = self._generic_decls(lang, holder)[1]
+                if var in raw:
+                    return raw[var]
+        return None
+
+    def _by_arg_types(self, lang: str, call: CallSite, fns: list) -> list:
+        """Overloads with as many parameters: keep those whose parameter types fit what the arguments show."""
+        hints = [self._hint_type(lang, call, h) for h in call.args]
+        if not any(hints):
+            return fns
+        scored = []
+        for f in fns:
+            types, score = f.attrs.get("param_types") or [], 0
+            for i, h in enumerate(hints):
+                p = types[i] if i < len(types) else (types[-1] if types and types[-1].endswith("...") else "")
+                v = self._arg_fits(lang, h, p) if h else 0
+                if v < 0:
+                    score = -1
+                    break
+                score += v
+            scored.append((score, f))
+        best = max(sc for sc, _ in scored)
+        return [f for sc, f in scored if sc == best] if best >= 0 else fns
 
     def _file_text(self, fid: str) -> list[str]:
         if fid not in self._text_cache:
@@ -1069,6 +1227,8 @@ class Indexer:
         def by_args(fns):
             """Overloads: keep those declared with as many parameters as the call passes, when that narrows it."""
             fns = list(fns)
+            if len(fns) > 1:
+                fns = [f for f in fns if not f.attrs.get("via_base")] or fns
             if len(fns) > 1 and call.argc >= 0:
                 # A declaration with fewer parameters than the call passes cannot take it; of the rest, the one
                 # with the fewest is likeliest (the others' extra parameters would need defaults).
@@ -1076,6 +1236,8 @@ class Indexer:
                 if fit and all(f.attrs.get("params_seen") is not None for f in fit):
                     least = min(f.attrs["params_seen"] for f in fit)
                     fit = [f for f in fit if f.attrs["params_seen"] == least]
+                if len(fit) > 1 and call.args:
+                    fit = self._by_arg_types(lang, call, fit)
                 return fit or fns
             return fns
 
@@ -1089,6 +1251,9 @@ class Indexer:
         here = self.nodes[fid].path.rpartition("/")[0]
         if r in (None, "this", "base"):
             chain = self._chain(call.enclosing_type)
+            caller = self.nodes.get(call.src_id)
+            if r is None and caller is not None and caller.attrs.get("explicit_self"):
+                chain = []      # Go, Rust, Python: a member is reached only through the receiver
             for t in chain[1:] if r == "base" else chain:
                 found = self.members.get(t, {}).get(name)
                 if found:
@@ -1124,6 +1289,19 @@ class Indexer:
                     found = self.members.get(t, {}).get(name)
                     if found:
                         return by_args(found)
+        if r == "?" and (call.receiver_type or call.chain is not None):
+            # made on `new Foo()` or on what another call returns
+            tid = (self.types_by_name.get((lang, call.receiver_type)) or [None])[0] if call.receiver_type else None
+            if call.chain is not None and not call.receiver_type:
+                rt = self._generic_returns(lang, call.chain)
+                if rt and rt[0] is None and rt[1]:
+                    return None     # a type from outside the repo
+                tid = rt[0] if rt else None
+            if tid:
+                for t in self._chain(tid):
+                    found = self.members.get(t, {}).get(name)
+                    if found:
+                        return by_args(found)
         if r == "?":
             pool = [c for c in cands if c.attrs.get("type_id")]
             if not pool:
@@ -1139,6 +1317,8 @@ class Indexer:
                 return in_dir[:1]
             in_file = [c for c in cands if c.id in self.file_of and
                        self.nodes[self.file_of[c.id]].name.rsplit(".", 1)[0] == r]
+            # module.f() reaches the module's own functions before any method of that name in it
+            in_file = [c for c in in_file if not c.attrs.get("type_id")] or in_file
             if in_file:
                 return in_file[:1]
             if types and r not in self.types_by_name.get((lang, r), ()) and self._generic_var_type(lang, call.src_id, r, call.enclosing_type) is None:
@@ -1153,7 +1333,7 @@ class Indexer:
         near = [c for c in pool if self.file_of.get(c.id) in near_files or self.file_of.get(c.id) == fid]
         if near and len({c.parent_id for c in near}) == 1 and r == "?":
             self._guessed = True
-            return near
+            return by_args(near)
         if (lang, name) in self.outside_names or len(name) <= 2:
             self.stats[BY_LANGUAGE[lang].NAME]["calls_guess_declined"] += 1
             return None
