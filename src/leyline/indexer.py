@@ -254,11 +254,13 @@ class Indexer:
         self.channel_stats: dict[str, Counter] = defaultdict(Counter)
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
+        self._sets: dict[tuple, set] = {}        # see _file_set
         self._name_ix: dict[tuple, dict] = {}
         self._loose_reach: dict[str, set] = {}
         self.exact_mode = "off"          # off | auto | roslyn | scip
         self.scip_paths: list[str] = []
         self.exact_stats: dict[str, dict] = {}
+        self.keep_results = True         # False: run() lets go of the adapters' output and the resolvers' caches before writing
 
     def _apply_exact(self) -> None:
         """Let a compiler overrule the syntax resolvers where one is available."""
@@ -330,6 +332,12 @@ class Indexer:
             self._resolve_endpoints()
         self._timed("channels", channels)
         self._timed("flows", self._build_flows)
+        if not self.keep_results:
+            # Only the write is left, which reads nodes, edges, calls and flows. What the resolvers held (a GB on
+            # a large repository) is let go first, so the write's own lists reuse that memory instead of adding to it.
+            for held in (self.results, self._read_decls, self._decl_cache, self._name_ix, self._sets, self._vis_cache,
+                         self._text_cache, self.call_col, getattr(self, "_chain_memo", {})):
+                held.clear()
         self._timed("write", self._write, con)
         return {k: dict(v) for k, v in self.stats.items()}
 
@@ -868,10 +876,24 @@ class Indexer:
             self._vis_cache[mod] = seen
         return self._vis_cache[mod]
 
+    def _file_set(self, key: tuple) -> Optional[set]:
+        """A set kept for the file whose calls are being resolved. Calls are resolved a file at a time, so only the
+        last few files' sets are kept: keeping one per file held millions of members on a large repository (every
+        Go file sees each file of every package it imports). Import targets are settled before any of these is
+        asked for, so a set made again is the same set."""
+        return self._sets.get(key)
+
+    def _keep_set(self, key: tuple, value: set) -> set:
+        if len(self._sets) >= 16:
+            self._sets.clear()
+        self._sets[key] = value
+        return value
+
     def _reach(self, fid: str) -> set:
         """Files reachable through imports. A name found nowhere else in that set is a fair guess."""
         key = ("reach", fid)
-        if key not in self._vis_cache:
+        got = self._file_set(key)
+        if got is None:
             out, queue = set(), [fid]
             while queue:
                 cur = queue.pop()
@@ -879,8 +901,8 @@ class Indexer:
                     continue
                 out.add(cur)
                 queue.extend(t for t in self.import_targets.get(cur, ()) if t not in out)
-            self._vis_cache[key] = out
-        return self._vis_cache[key]
+            got = self._keep_set(key, out)
+        return got
 
     def _can_see(self, fid: str, node_id: str) -> bool:
         vis = self._visible(fid)
@@ -1400,10 +1422,11 @@ class Indexer:
     def _near(self, fid: str) -> set:
         """Files this one imports, and the files those import in turn (a package's index re-exporting its parts)."""
         key = ("near", fid)
-        if key not in self._vis_cache:
+        got = self._file_set(key)
+        if got is None:
             first = set(self.import_targets.get(fid, ()))
-            self._vis_cache[key] = first | {t for f in first for t in self.import_targets.get(f, ())}
-        return self._vis_cache[key]
+            got = self._keep_set(key, first | {t for f in first for t in self.import_targets.get(f, ())})
+        return got
 
     def _name_index(self, lang: str, name: str) -> dict:
         """Where the callables of one name are declared, looked up by file and directory. A common name (get, run)
@@ -2209,6 +2232,7 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         members = workspace(con, list(root) if isinstance(root, (list, tuple)) else [root], repo_id)
         ix = Indexer(members[0][0], members[0][1], members[1:])
         ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
+        ix.keep_results = False
         began = time.perf_counter()
         stats = ix.run(con)
         stats.update(ix.exact_stats)

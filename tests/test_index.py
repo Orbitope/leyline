@@ -869,8 +869,8 @@ def test_parse_workers_do_not_change_the_index(tmp_path, monkeypatch):
 
 
 def test_older_store_is_moved_to_keyed_tables_on_open(tmp_path):
-    """A store whose calls and flow steps are plain tables is moved to the keyed tables when opened, and the
-    move holds even when whoever opened it only reads."""
+    """A store whose calls, edges and flow steps are plain tables is moved to the keyed tables when opened, and
+    the move holds even when whoever opened it only reads."""
     import sqlite3
     db = tmp_path / "old.db"
     index(Path(__file__).parent / "fixture4", db, "f4")
@@ -880,16 +880,35 @@ def test_older_store_is_moved_to_keyed_tables_on_open(tmp_path):
         CREATE TABLE old_calls AS SELECT * FROM calls; DROP VIEW calls; ALTER TABLE old_calls RENAME TO calls;
         CREATE TABLE old_steps AS SELECT * FROM flow_steps; DROP VIEW flow_steps;
         ALTER TABLE old_steps RENAME TO flow_steps;
-        DELETE FROM call_sites; DELETE FROM steps; DELETE FROM keys;""")
+        CREATE TABLE old_edges AS SELECT * FROM edges; DROP VIEW edges; ALTER TABLE old_edges RENAME TO edges;
+        DELETE FROM call_sites; DELETE FROM steps; DELETE FROM links; DELETE FROM keys;""")
     raw.close()
     c = store.connect(db)
     c.execute("SELECT COUNT(*) FROM calls").fetchone()
     c.close()   # read only: nothing committed by the caller
     raw = sqlite3.connect(db)
-    kinds = dict(raw.execute("SELECT name, type FROM sqlite_master WHERE name IN ('calls', 'flow_steps')").fetchall())
+    kinds = dict(raw.execute("SELECT name, type FROM sqlite_master WHERE name IN ('calls', 'flow_steps', 'edges')").fetchall())
     raw.close()
-    assert kinds == {"calls": "view", "flow_steps": "view"}
+    assert kinds == {"calls": "view", "flow_steps": "view", "edges": "view"}
     assert _facts(db) == want
+
+
+def test_edges_view_takes_inserts_and_deletes(tmp_path):
+    """Code that writes to `edges` directly keeps working on the keyed table behind it."""
+    db = tmp_path / "e.db"
+    index(Path(__file__).parent / "fixture4", db, "f4")
+    c = store.connect(db)
+    a, b = [r[0] for r in c.execute("SELECT id FROM nodes ORDER BY id LIMIT 2")]
+    n = c.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+    with c:
+        c.execute("INSERT INTO edges (kind, src_id, dst_id, precision, source) VALUES ('notes', ?, 'not-a-node-yet', 'heuristic', 't')", (a,))
+    row = c.execute("SELECT kind, src_id, dst_id, layer FROM edges WHERE kind = 'notes'").fetchone()
+    assert tuple(row) == ("notes", a, "not-a-node-yet", "fact")
+    with c:
+        c.execute("DELETE FROM edges WHERE kind = 'notes' AND src_id = ?", (a,))
+    assert c.execute("SELECT COUNT(*) FROM edges").fetchone()[0] == n
+    assert c.execute("SELECT COUNT(*) FROM edges WHERE src_id = ? OR dst_id = ?", (b, b)).fetchone()[0] > 0
+    c.close()
 
 
 FIXTURE_WS = Path(__file__).parent / "fixture_ws"

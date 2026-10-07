@@ -1,4 +1,7 @@
-"""Language-neutral records that adapters emit and the indexer resolves."""
+"""Language-neutral records that adapters emit and the indexer resolves.
+
+The records have slots: a large repository holds millions of them at once, and without a dict each one is
+about half the size."""
 
 from __future__ import annotations
 
@@ -6,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-@dataclass
+@dataclass(slots=True)
 class Node:
     id: str
     kind: str  # repo, module, file, type, callable, field, entry_point, external, test
@@ -20,7 +23,7 @@ class Node:
     attrs: dict = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True)
 class Edge:
     kind: str
     src_id: str
@@ -29,7 +32,7 @@ class Edge:
     attrs: dict = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True)
 class TypeRef:
     """A use of a type by name, to be resolved against the workspace."""
 
@@ -39,7 +42,7 @@ class TypeRef:
     line: Optional[int] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class CallSite:
     """An unresolved call, with whatever the adapter could tell about its receiver."""
 
@@ -57,7 +60,7 @@ class CallSite:
     ref: bool = False  # not a call: the function is handed over by name (onClick={save}) for someone else to call
 
 
-@dataclass
+@dataclass(slots=True)
 class EventUse:
     """A place where an event is raised or subscribed to."""
 
@@ -71,7 +74,7 @@ class EventUse:
     enclosing_type: Optional[str] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class FieldUse:
     """A place where a member that may be a field is read or assigned."""
 
@@ -85,7 +88,7 @@ class FieldUse:
     chain: Optional[CallSite] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class Endpoint:
     """One end of a channel that is not a call: an HTTP route or request, a file read or written."""
 
@@ -98,7 +101,7 @@ class Endpoint:
     literals: list[str] = field(default_factory=list)  # string literals in the call
 
 
-@dataclass
+@dataclass(slots=True)
 class Spawn:
     """A place where another program is launched."""
 
@@ -109,7 +112,7 @@ class Spawn:
     line: int
 
 
-@dataclass
+@dataclass(slots=True)
 class ImportRef:
     src_id: str  # file id
     target: str  # namespace or module path as written
@@ -118,7 +121,7 @@ class ImportRef:
     is_static: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class FileResult:
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)

@@ -38,6 +38,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     try:
         _flow_steps_view(con)
         _calls_view(con)
+        _edges_view(con)
         con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
         con.commit()
     except BaseException:
@@ -106,6 +107,42 @@ def _calls_view(con) -> None:
             FROM call_sites c JOIN keys sk ON sk.k = c.src JOIN keys dk ON dk.k = c.dst""")
 
 
+EDGE_COLUMNS = "id, kind, src_id, dst_id, precision, layer, source, commit_sha, attrs"
+
+
+def _edges_view(con) -> None:
+    """`edges` as readers and writers know it, over `links`, which holds the two ends as keys. A store written
+    before the change has a real `edges` table: its rows are moved across once, keeping their ids. Inserts
+    into and deletes from the view go to `links` through triggers."""
+    kind = con.execute("SELECT type FROM sqlite_master WHERE name = 'edges'").fetchone()
+    if kind is not None and kind[0] == "table":
+        rows = con.execute(f"SELECT {EDGE_COLUMNS} FROM edges ORDER BY id").fetchall()
+        con.execute("DROP TABLE edges")
+        insert_edges(con, rows)
+        kind = None
+    if kind is None:
+        con.execute("""CREATE VIEW edges AS
+            SELECT l.id, l.kind, sk.id AS src_id, dk.id AS dst_id, l.precision, l.layer, l.source, l.commit_sha, l.attrs
+            FROM links l JOIN keys sk ON sk.k = l.src JOIN keys dk ON dk.k = l.dst""")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS edges_insert INSTEAD OF INSERT ON edges BEGIN
+            INSERT OR IGNORE INTO keys (id) VALUES (NEW.src_id);
+            INSERT OR IGNORE INTO keys (id) VALUES (NEW.dst_id);
+            INSERT INTO links (id, kind, src, dst, precision, layer, source, commit_sha, attrs)
+            VALUES (NEW.id, NEW.kind, (SELECT k FROM keys WHERE id = NEW.src_id), (SELECT k FROM keys WHERE id = NEW.dst_id),
+                    NEW.precision, COALESCE(NEW.layer, 'fact'), NEW.source, NEW.commit_sha, NEW.attrs);
+            END""")
+        con.execute("CREATE TRIGGER IF NOT EXISTS edges_delete INSTEAD OF DELETE ON edges BEGIN"
+                    " DELETE FROM links WHERE id = OLD.id; END")
+
+
+def insert_edges(con, rows) -> None:
+    """rows: (id or None, kind, src_id, dst_id, precision, layer, source, commit_sha, attrs). Straight into `links`,
+    which is quicker for many rows than the view's trigger."""
+    key = _keys(con, itertools.chain.from_iterable((r[2], r[3]) for r in rows))
+    con.executemany("INSERT INTO links (id, kind, src, dst, precision, layer, source, commit_sha, attrs)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)", ((r[0], r[1], key[r[2]], key[r[3]], *r[4:]) for r in rows))
+
+
 def _insert_calls(con, rows) -> None:
     """rows: (src_id, dst_id, dispatch, precision, site_start, site_end, hit_count, commit_sha)"""
     key = _keys(con, itertools.chain.from_iterable((r[0], r[1]) for r in rows))
@@ -142,7 +179,7 @@ def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
     """Drop every fact row for a repo. Inferred and intent rows are left alone."""
     ids = "SELECT id FROM nodes WHERE repo_id = ? AND layer = 'fact'"
     con.execute(f"DELETE FROM call_sites WHERE src IN (SELECT k FROM keys WHERE id IN ({ids}))", (repo_id,))
-    con.execute(f"DELETE FROM edges WHERE layer = 'fact' AND src_id IN ({ids})", (repo_id,))
+    con.execute(f"DELETE FROM links WHERE layer = 'fact' AND src IN (SELECT k FROM keys WHERE id IN ({ids}))", (repo_id,))
     con.execute(f"DELETE FROM ancestry WHERE node_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM search WHERE node_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM steps WHERE flow IN (SELECT k FROM keys WHERE id IN (SELECT id FROM flows WHERE entry_id IN ({ids})))",
@@ -153,33 +190,30 @@ def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
 
 
 def write_nodes(con, nodes: Iterable[Node], repo_id: str, source: str, commit: str | None) -> None:
+    # Rows are made as they are inserted, not held in a list: on a large repository that list was hundreds of MB.
     con.executemany(
         "INSERT OR IGNORE INTO nodes (id, kind, name, parent_id, repo_id, language, path,"
         " span_start, span_end, content_hash, layer, source, commit_sha, attrs)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,'fact',?,?,?)",
-        [
-            (n.id, n.kind, n.name, n.parent_id, repo_id, n.language, n.path, n.span_start,
-             n.span_end, n.content_hash, source, commit, json.dumps(n.attrs) if n.attrs else None)
-            for n in nodes
-        ],
-    )
+        ((n.id, n.kind, n.name, n.parent_id, repo_id, n.language, n.path, n.span_start,
+          n.span_end, n.content_hash, source, commit, json.dumps(n.attrs) if n.attrs else None)
+         for n in nodes))
 
 
 def write_edges(con, edges: Iterable[Edge], source: str, commit: str | None) -> None:
-    con.executemany(
-        "INSERT INTO edges (kind, src_id, dst_id, precision, layer, source, commit_sha, attrs)"
-        " VALUES (?,?,?,?,'fact',?,?,?)",
-        [
-            (e.kind, e.src_id, e.dst_id, e.precision, source, commit,
-             json.dumps(e.attrs) if e.attrs else None)
-            for e in edges
-        ],
-    )
+    edges = edges if isinstance(edges, list) else list(edges)
+    key = _keys(con, itertools.chain.from_iterable((e.src_id, e.dst_id) for e in edges))
+    con.executemany("INSERT INTO links (kind, src, dst, precision, layer, source, commit_sha, attrs) VALUES (?,?,?,?,'fact',?,?,?)",
+                    ((e.kind, key[e.src_id], key[e.dst_id], e.precision, source, commit,
+                      json.dumps(e.attrs) if e.attrs else None) for e in edges))
 
 
 def write_calls(con, rows: Iterable[tuple], commit: str | None) -> None:
     """rows: (src_id, dst_id, dispatch, precision, line)"""
-    _insert_calls(con, [(s, d, disp, prec, line, line, 0, commit) for (s, d, disp, prec, line) in rows])
+    rows = rows if isinstance(rows, list) else list(rows)
+    key = _keys(con, itertools.chain.from_iterable((r[0], r[1]) for r in rows))
+    con.executemany("INSERT INTO call_sites (src, dst, dispatch, precision, site_start, site_end, hit_count, commit_sha)"
+                    " VALUES (?,?,?,?,?,?,0,?)", ((key[s], key[d], disp, prec, line, line, commit) for s, d, disp, prec, line in rows))
 
 
 def write_flows(con, repo_id: str, flows, steps) -> None:
