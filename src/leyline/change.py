@@ -317,9 +317,11 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
 
 
 def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, depth: int = 4,
-            source: str = "mcp", change_id: Optional[str] = None, keep_baseline: bool = False) -> dict:
+            source: str = "mcp", change_id: Optional[str] = None, keep_baseline: bool = True) -> dict:
     """Assess a change, store it as a draft proposal, and save a view of its blast radius.
-    `change_id` keeps one id across revisions (a spec folder's name); without it the id follows the content."""
+    `change_id` keeps one id across revisions (a spec folder's name); without it the id follows the content.
+    The first proposal of a change keeps a baseline of the code to compare with later; a revision keeps that
+    baseline, unless `keep_baseline` is False, which takes a new one from the code as it is."""
     report = assess(con, intent, targets, depth)
     if "error" in report:
         return report
@@ -329,7 +331,8 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
     # A revised proposal for code that has already moved on keeps the first picture of the code and the
     # first prediction's ids, so what was done can still be compared with what the code was.
     from . import diff
-    kept = keep_baseline and diff.moved_on(con, cid)
+    have = keep_baseline and diff.snapshot_path(con, cid).exists()
+    kept = have and diff.moved_on(con, cid)
     old = con.execute("SELECT base_commit FROM change_proposals WHERE id = ?", (cid,)).fetchone() if kept else None
     base = old[0] if old else (commit[0] if commit else None)
     with con:
@@ -353,6 +356,8 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
                      view_id="view-" + cid)
     if kept:
         report["snapshot"] = "kept"
+    elif have:   # the baseline is still the code as it is: nothing to copy
+        report["snapshot"] = "same"
     else:
         try:  # keep the graph as it was when the change was proposed, to compare against later
             diff.snapshot(con, cid)
