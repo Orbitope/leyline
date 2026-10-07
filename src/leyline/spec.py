@@ -1311,6 +1311,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     # only next to that code, or to import or register it.
     spans, code_names = diff._spans(con, sorted(in_spec | declared | {h["id"] for h in helpers}))
     drift = [n for n in drift if not (n.get("own") and diff.explained(n, spans.get(n.get("path"), []), code_names))]
+    from . import affected   # with per-test coverage: did each passing scenario's test run the code its tasks changed?
+    affected.mark_scenarios(con, scenarios, ((in_spec | declared | {h["id"] for h in helpers}) & touched) or touched,
+                            after_run, test_names, cid)
     # One verdict per task and scenario; which of them hold up "done as agreed" is the project's to set.
     judged = verdicts.judge(con, cid, parsed["dir"], tasks, scenarios, names, touched, removed, before_run, after_run)
     verdict = list(judged.pop("holds_up"))
@@ -1401,6 +1404,7 @@ def verify_text(v: dict) -> str:
     L += ["", "| Scenario | Result | Verdict | Evidence |", "| --- | --- | --- | --- |"]
     for s in v["scenarios"]:
         ev = ("measured running the changed code" if s["measured_running_the_change"] else
+              "passed without running the changed code" if s.get("ran_changed_code") is False else
               "proven by the test run (the test is generated, so it is not on the map)"
               if s["generated"] and s["state"] == "passes" else
               f"proven by the test run (a check in {s['script']}, which runs as a script; the test is not on the map)"

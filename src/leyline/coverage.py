@@ -9,6 +9,9 @@ Formats read:
 - coverage.py's data file (`.coverage`). Run the tests with `--cov-context=test` (pytest-cov) or
   `dynamic_context = test_function` and each function is tied to the tests that ran it.
 - Cobertura XML (coverlet, `coverage xml`, many others). No per-test detail: a function ran or did not.
+- Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`, c8, nyc). It
+  is one file per run, not per test. Run one test file at a time and import each result with `test` naming the file,
+  and every function is tied to the test file that ran it (not to the single test inside it).
 """
 
 from __future__ import annotations
@@ -96,12 +99,30 @@ def _test_node(con, context: str, cache: dict, home: str = "") -> Optional[str]:
     return node
 
 
-def import_file(con, path: str | Path, run: str = "default") -> dict:
-    """Read a coverage file into the store, replacing any earlier import under the same run name."""
+def _test_file_node(con, test: str, roots: dict) -> Optional[str]:
+    """The map's node for a test file named on the command line (relative to anywhere, or absolute)."""
+    files = {(r["repo_id"], r["path"]): r["id"] for r in con.execute(
+        "SELECT id, repo_id, path FROM nodes WHERE kind = 'file' AND path IS NOT NULL")}
+    whole = str(Path(test).resolve()) if Path(test).exists() else test
+    rel = _relative(whole, roots, set(files)) or _relative(test.replace("\\", "/").lstrip("./"), roots, set(files))
+    return files.get(rel) if rel else None
+
+
+def _istanbul(data) -> bool:
+    return isinstance(data, dict) and bool(data) and all(
+        isinstance(v, dict) and "statementMap" in v and "s" in v for v in list(data.values())[:5])
+
+
+def import_file(con, path: str | Path, run: str = "default", test: Optional[str] = None) -> dict:
+    """Read a coverage file into the store, replacing any earlier import under the same run name. `test` names the
+    test file a run-wide report (Istanbul, Cobertura) came from when only that file ran; such an import is kept
+    under its own run name (`test:<file>`) unless `run` names one."""
     path = Path(path)
     if not path.is_file():
         return {"error": f"no file at {path}"}
     head = path.read_bytes()[:64]
+    if test and run == "default":
+        run = "test:" + test
     roots = {k: str(v) for k, v in store.roots(con).items()}
     funcs = _functions(con)
     known = set(funcs)
@@ -157,12 +178,49 @@ def import_file(con, path: str | Path, run: str = "default") -> dict:
         for file, lines in per_file.items():
             for node, n in _owners(funcs[file], lines).items():
                 rows.append((run, "", None, node, n))
+    elif head.lstrip().startswith(b"{"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except ValueError:
+            data = None
+        if not _istanbul(data):
+            return {"error": "a JSON file, but not Istanbul's coverage-final.json (vitest --coverage.reporter=json,"
+                             " jest --coverageReporters=json). V8's raw output is not read: convert it with c8 or vitest."}
+        fmt = "istanbul"
+        per_file = defaultdict(set)
+        for key, f in data.items():
+            rel = _relative(f.get("path") or key, roots, known)
+            if not rel:
+                files_unknown += 1
+                continue
+            smap, fmap = f.get("statementMap") or {}, f.get("fnMap") or {}
+            # v8's conversion counts a declaration or closing-brace line as run when the file loads: a line inside a
+            # function that never ran did not run.
+            fns = [((loc.get("start") or {}).get("line") or 0, (loc.get("end") or {}).get("line") or 0, (f.get("f") or {}).get(k, 0))
+                   for k, m in fmap.items() for loc in [m.get("loc") or m.get("decl") or {}]]
+            for sid, count in (f.get("s") or {}).items():
+                line = ((smap.get(sid) or {}).get("start") or {}).get("line")
+                if not count or not line:
+                    continue
+                inner = [x for x in fns if x[0] <= line <= x[1]]
+                if inner and not max(inner, key=lambda x: (x[0], -x[1]))[2]:
+                    continue
+                per_file[rel].add(int(line))
+        files_matched = len(per_file)
+        for file, lines in per_file.items():
+            for node, n in _owners(funcs[file], lines).items():
+                rows.append((run, "", None, node, n))
     else:
-        return {"error": "not a coverage.py data file or a Cobertura XML report"}
+        return {"error": "not a coverage.py data file, a Cobertura XML report or Istanbul's coverage-final.json"}
+    if test and fmt != "coverage.py":   # a run of one test file: everything that ran, ran under that file
+        tid = _test_file_node(con, test, roots)
+        rows = [(r[0], test, tid, r[3], r[4]) for r in rows]
+        tests_seen, tests_matched = {test}, ({test} if tid else set())
     head_commit = con.execute("SELECT commit_sha FROM nodes WHERE kind = 'repo' LIMIT 1").fetchone()
     ran = {r[3] for r in rows}
     stats = {"functions_ran": len(ran), "tests": len(tests_seen), "tests_matched_to_the_map": len(tests_matched),
-             "files_matched": files_matched, "files_not_on_the_map": files_unknown, "per_test": bool(tests_seen)}
+             "files_matched": files_matched, "files_not_on_the_map": files_unknown, "per_test": bool(tests_seen),
+             **({"per": "test file"} if test and fmt != "coverage.py" else {})}
     with con:
         con.execute("DELETE FROM covered WHERE run = ?", (run,))
         con.executemany("INSERT INTO covered VALUES (?,?,?,?,?)", rows)

@@ -122,6 +122,26 @@ def _pr(args) -> int:
     return 0
 
 
+def _affected(args) -> int:
+    from . import affected, loop
+    folder = loop.find_change(args.change, args.db or DEFAULT_DB)
+    db = args.db or (loop.find_store(folder) if folder else None) or DEFAULT_DB
+    if not Path(db).exists():
+        print("leyline: no map of this code yet. Run `leyline map <repo>` first.", file=sys.stderr)
+        return 2
+    loop.refresh(db)   # new code since the plan counts as changed
+    con = store.connect(db)
+    try:
+        r = affected.select(con, affected.change_id_for(con, args.change, folder))
+    finally:
+        con.close()
+    if "error" in r:
+        print(f"leyline: {r['error']}", file=sys.stderr)
+        return 1
+    _print(r) if args.json else print(affected.text(r))
+    return 0
+
+
 def _short(con, i: str) -> str:
     """A node as a person reads it: its name, after its owner's when it has one that is not a file."""
     n = query._node(con, i)
@@ -229,7 +249,8 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   tour          a guided walk through the repository
   coverage      import measured test coverage, or show it
   rules         check the architecture rules
-  spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
+  affected-tests  the tests to run for a change, as a command
+  spec         the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
   record-tests  store a test run under a label
   review        compare an implemented change with a proposal made through MCP
   view          serve the map on localhost
@@ -296,7 +317,7 @@ def _loop(args) -> int:
         print(loop.plan_text(r, name))
         from . import spec
         return 0 if spec.brief_status(r)["ready"] else 1
-    r = loop.check(db, change, results)
+    r = loop.check(db, change, results, args.coverage)
     if "error" in r:
         print(f"leyline: {r['error']}", file=sys.stderr)
         return 1
@@ -374,6 +395,14 @@ def _main(argv=None) -> int:
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
     p.add_argument("--tests", metavar="FILE", help="test runner output from after the change (- for stdin); one PASS or"
                                                   " FAIL line per test, as pytest -rA prints")
+    p.add_argument("--coverage", metavar="FILE", help="coverage measured on that same run (pytest --cov=<package>"
+                                                     " --cov-context=test writes .coverage): says whether each scenario's"
+                                                     " test ran the changed code")
+    p = sub.add_parser("affected-tests", description="The tests to run for a change, and a command that runs them: the"
+                                                     " tests measured running the changed code when per-test coverage is"
+                                                     " imported, else those whose path on the map passes through it.")
+    p.add_argument("change", help="the change folder or its id, or a review id such as pr-123")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("pr", description="Review a branch or pull request someone else wrote: map the commit it left"
                                          " its base at, compare it with the checkout, and print what the change reaches"
                                          " and did not change, with no spec needed. Findings are filed against pr-<id>.")
@@ -461,8 +490,11 @@ def _main(argv=None) -> int:
     p.add_argument("--before", help="verify: label of the test run recorded before the change")
     p.add_argument("--after", help="verify: label of the test run recorded after it")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")
-    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage) or a Cobertura XML report")
+    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report or Istanbul's"
+                                           " coverage-final.json")
     p.add_argument("--run", default="default", help="a name for this import")
+    p.add_argument("--test", metavar="PATH", help="the one test file that ran, for a report with no per-test detail"
+                                                  " (Istanbul, Cobertura): ties what ran to that file")
     p = sub.add_parser("state", description="fields assigned from outside the type that declares them")
     p.add_argument("scope", nargs="?", help="a module id or an id prefix")
     p = sub.add_parser("tour", description="print a tour of the repository")
@@ -475,6 +507,8 @@ def _main(argv=None) -> int:
         return _loop(args)
     if args.cmd == "pr":
         return _pr(args)
+    if args.cmd == "affected-tests":
+        return _affected(args)
     explicit, args.db = args.db is not None, args.db or DEFAULT_DB
     if args.cmd == "index":
         if len(args.path) > 1 and args.repo:
@@ -548,7 +582,7 @@ def _main(argv=None) -> int:
     elif args.cmd == "coverage":
         from . import coverage
         if args.file:
-            _print(coverage.import_file(con, args.file, args.run))
+            _print(coverage.import_file(con, args.file, args.run, args.test))
         r = coverage.summary(con)
         if not r["imported"]:
             print(r["how"])

@@ -216,10 +216,14 @@ def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str
             return INCONCLUSIVE, "it has no test, and no result carries its name"
         return INCONCLUSIVE, "no result for its test was recorded"
     measured, static = s.get("measured_running_the_change"), s.get("reaches_the_change")
+    ran = s.get("ran_changed_code")   # per-test coverage from the run after the change (leyline.affected)
+    if ran is False:
+        return PERSON, ("its test passes, but measured per-test coverage shows it never ran the changed code, so it"
+                        " would pass whatever the change did")
     if before is not None and (not before or any(r["status"] == "fail" for r in before)):
         return PROVEN, ("its test failed before the change and passes now" if before
                         else "its test is new since the plan, and passes")
-    if measured or (measured is None and static):
+    if ran or measured or (measured is None and static):
         return PROVEN, "its test passes and runs the changed code" + (", as it did before" if before else "")
     if measured is False or (s.get("test") and not static):
         return PERSON, ("its test passes, but " + ("measured coverage shows it never runs the changed code"
