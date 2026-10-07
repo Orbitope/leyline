@@ -1,11 +1,12 @@
 <title>Leyline map of __LEYLINE_REPO__</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-/* Layout: a survey sheet. Map canvas left, inspector right; one header row of navigation above. */
+/* Layout: a survey sheet. Map canvas left, inspector right; one header row of navigation above.
+   No web fonts: the page fetches nothing, so it uses the faces already on the machine. */
 :root {
   --bg: #ecf0ed; --surface: #f8faf8; --sunken: #e2e8e4; --ink: #15201c; --muted: #586860;
   --line: #c6d0ca; --grid: #e2e8e4; --edge: #7c8c84; --accent: #0b6a5b; --accent-soft: #d3e9e3; --mark: #b0561a;
   --mark-soft: #f4dfcd; --cs: #5b4fb3; --py: #8f6410; --warn: #a3341f; --warn-soft: #f3d9d2; --chan: #1f62ad;
+  --cross: #a2387f; --ok: #2f7a3d; --ok-soft: #d8ecd9;
   --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -13,11 +14,13 @@
   --bg: #0f1513; --surface: #161e1b; --sunken: #0b100e; --ink: #e2e9e5; --muted: #8d9d95;
   --line: #2a3631; --grid: #141c19; --edge: #6e7f77; --accent: #55c4ab; --accent-soft: #173a33; --mark: #e8a15c;
   --mark-soft: #40291a; --cs: #a99df2; --py: #ddb155; --warn: #f08a75; --warn-soft: #43201a; --chan: #7db5f2;
+  --cross: #e48cc8; --ok: #7fcf8c; --ok-soft: #1b3520;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #0f1513; --surface: #161e1b; --sunken: #0b100e; --ink: #e2e9e5; --muted: #8d9d95;
   --line: #2a3631; --grid: #141c19; --edge: #6e7f77; --accent: #55c4ab; --accent-soft: #173a33; --mark: #e8a15c;
   --mark-soft: #40291a; --cs: #a99df2; --py: #ddb155; --warn: #f08a75; --warn-soft: #43201a; --chan: #7db5f2;
+  --cross: #e48cc8; --ok: #7fcf8c; --ok-soft: #1b3520;
   color-scheme: dark }
 
 html, body { height: 100%; }
@@ -41,6 +44,14 @@ button { cursor: pointer; }
 .tabs { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .tabs button { background: none; border: 0; padding: 5px 12px; color: var(--muted); }
 .tabs button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
+.tabs .count { font: 11px var(--mono); color: var(--muted); margin-left: 4px; }
+.morewrap { position: relative; display: flex; }
+.menu { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; min-width: 210px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgb(0 0 0 / 0.18); padding: 4px 0; }
+.menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 7px 12px; }
+.menu button small { display: block; color: var(--muted); font-size: 12px; }
+.menu button:hover, .menu button:focus-visible { background: var(--accent-soft); }
+.menu button[aria-pressed="true"] { box-shadow: inset 3px 0 0 var(--accent); }
 .search { position: relative; flex: 0 1 240px; min-width: 150px; }
 .search input { width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--bg); }
@@ -98,7 +109,10 @@ button { cursor: pointer; }
 .edge.near text { fill: var(--ink); }
 .edge.sel path.vis { stroke: var(--mark); }
 .edge.sel text { fill: var(--mark); font-weight: 500; }
-#arrow path { fill: var(--edge); } #arrow-a path { fill: var(--accent); } #arrow-m path { fill: var(--mark); }
+#arrow path { fill: var(--edge); } #arrow-a path { fill: var(--accent); } #arrow-m path { fill: var(--mark); } #arrow-x path { fill: var(--cross); }
+.edge.cross path.vis { stroke: var(--cross); }
+.edge.cross text { fill: var(--cross); }
+.node.other rect:first-child { stroke: var(--cross); stroke-dasharray: 2 3; }
 .group-label { font: 11px var(--sans); fill: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
 
 .matrix-wrap { height: 100%; overflow: auto; padding: 56px 16px 40px; }
@@ -170,12 +184,23 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
 .node.role-c3 rect:first-child { stroke: var(--warn); stroke-width: 2; fill: var(--warn-soft); }
 .node.role-c4 rect:first-child { stroke: var(--cs); stroke-width: 2; }
 .node.role-c5 rect:first-child { stroke: var(--py); stroke-width: 2; }
+.node.role-done rect:first-child { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 2.4; }
+.node.role-done_new rect:first-child { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 2.2; stroke-dasharray: 5 3; }
+.node.role-helper rect:first-child { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 1.4; stroke-dasharray: 2 3; }
+.node.role-test_changed rect:first-child { stroke: var(--chan); stroke-width: 2; }
+.node.role-drift rect:first-child { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 2.4; }
+.node.role-missed rect:first-child { fill: var(--mark-soft); stroke: var(--mark); stroke-width: 2; stroke-dasharray: 6 3; }
+.node.picked rect:first-child { stroke-width: 3.4; }
+.node .pin { fill: var(--ink); font: 600 11px var(--sans); }
 .key { display: inline-flex; align-items: center; gap: 6px; }
 .key b { width: 14px; height: 10px; border-radius: 2px; border: 2px solid var(--line); display: inline-block; }
 .key .k-changed, .key .k-c1, .key .k-new { background: var(--mark-soft); border-color: var(--mark); }
 .key .k-must_edit, .key .k-contract, .key .k-c3 { background: var(--warn-soft); border-color: var(--warn); }
 .key .k-direct, .key .k-c0 { background: var(--accent-soft); border-color: var(--accent); }
-.key .k-test, .key .k-c2 { border-color: var(--chan); } .key .k-c4 { border-color: var(--cs); } .key .k-c5 { border-color: var(--py); }
+.key .k-test, .key .k-c2, .key .k-test_changed { border-color: var(--chan); } .key .k-c4 { border-color: var(--cs); } .key .k-c5 { border-color: var(--py); }
+.key .k-done, .key .k-done_new, .key .k-helper { background: var(--ok-soft); border-color: var(--ok); }
+.key .k-drift { background: var(--warn-soft); border-color: var(--warn); } .key .k-missed { background: var(--mark-soft); border-color: var(--mark); border-style: dashed; }
+.key .k-direct, .key .k-indirect { border-color: var(--accent); } .key .k-indirect { border-color: var(--line); }
 .tools select { font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--edge);
   border-radius: 6px; padding: 4px 8px; max-width: min(100%, 460px); }
 .flow-wrap { height: 100%; overflow: auto; padding: 14px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
@@ -209,6 +234,44 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
 .steps .mod { color: var(--muted); font: 11.5px var(--sans); margin-left: auto; padding-left: 24px; }
 .steps .via { font: 11px var(--sans); color: var(--chan); border: 1px solid var(--chan); border-radius: 4px; padding: 0 5px; }
 
+.state { border-radius: 6px; padding: 8px 10px; margin: 12px 0 0; border: 1px solid var(--line); background: var(--sunken); }
+.state.ok { border-color: var(--ok); background: var(--ok-soft); } .state.todo { border-color: var(--mark); background: var(--mark-soft); }
+.state.ready { border-color: var(--accent); background: var(--accent-soft); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.seg button { background: none; border: 0; padding: 4px 11px; font-size: 13px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
+.onmap { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.keylist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.keylist li { display: flex; align-items: center; gap: 8px; }
+.keylist .key b { flex: none; }
+.keylist .n { font: 12px var(--mono); color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+.md { font-size: 13.5px; }
+.md h3 { margin-top: 22px; }
+.md p { margin: 8px 0 0; max-width: 64ch; }
+.md ul { margin: 6px 0 0; padding-left: 18px; }
+.md li { margin: 2px 0; }
+.md code { font: 12px var(--mono); background: var(--sunken); border-radius: 3px; padding: 0 3px; overflow-wrap: anywhere; }
+.md .tbl { overflow-x: auto; margin-top: 8px; }
+.md table { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.md th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--line); padding: 4px 6px 4px 0; }
+.md td { border-top: 1px solid var(--line); padding: 5px 6px 5px 0; vertical-align: top; overflow-wrap: anywhere; }
+.md tr[data-task], .md tr[data-scenario] { cursor: pointer; }
+.md tr[data-task]:hover td, .md tr[data-scenario]:hover td { background: var(--accent-soft); }
+.md tr[aria-current="true"] td { background: var(--mark-soft); }
+.md td.res-done, .md td.res-passes { color: var(--ok); font-weight: 500; }
+.md td.res-not-done, .md td.res-fails, .md td.res-partly, .md td.res-no-test { color: var(--warn); font-weight: 500; }
+.changes { list-style: none; margin: 8px 0 0; padding: 0; }
+.changes button { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 6px; padding: 9px 11px; margin-top: 8px; }
+.changes button:hover { border-color: var(--accent); }
+.changes b { display: block; font-weight: 600; }
+.changes small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.banner { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; justify-content: flex-end; border: 1px solid var(--accent);
+  background: var(--accent-soft); border-radius: 6px; padding: 6px 10px; margin-bottom: 14px; font-size: 12.5px; }
+.banner span { flex: 1 1 100%; }
+.banner button { font: 12.5px var(--sans); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; flex: none; }
+.loading { padding: 24px 16px; color: var(--muted); }
+
 @media (max-width: 820px) {
   html, body { height: auto; }
   #app { height: auto; }
@@ -216,6 +279,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
   .stage { height: 62vh; min-height: 340px; }
   .side { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
   .search { flex: 1 1 100%; }
+  .crumbs { flex-basis: 100%; order: 3; }
 }
 @media (prefers-reduced-motion: no-preference) { .node rect, .edge path.vis { transition: stroke 0.12s, opacity 0.12s; } }
 </style>
@@ -226,10 +290,16 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
     <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
     <div class="tabs" role="group" aria-label="View">
       <button id="tab-map" aria-pressed="true">Map</button>
-      <button id="tab-matrix" aria-pressed="false">Matrix</button>
-      <button id="tab-flows" aria-pressed="false">Flows</button>
-      <button id="tab-views" aria-pressed="false">Views</button>
-      <button id="tab-tour" aria-pressed="false">Tour</button>
+      <button id="tab-change" aria-pressed="false">Changes<span class="count" id="change-count"></span></button>
+      <div class="morewrap">
+        <button id="tab-more" aria-pressed="false" aria-haspopup="true" aria-expanded="false">More</button>
+        <div class="menu" id="menu" hidden>
+          <button id="tab-flows" aria-pressed="false">Flows<small>what a test or an entry point runs through</small></button>
+          <button id="tab-matrix" aria-pressed="false">Matrix<small>dependencies as a grid, cycles tinted</small></button>
+          <button id="tab-views" aria-pressed="false">Saved views<small>marked sets of code, design patterns</small></button>
+          <button id="tab-tour" aria-pressed="false">Tour<small>a guided walk through the code</small></button>
+        </div>
+      </div>
     </div>
     <div class="search">
       <input id="q" type="search" placeholder="Find a type, function or file" autocomplete="off" aria-label="Search">
@@ -244,6 +314,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
           <marker id="arrow-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
           <marker id="arrow-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
           <marker id="arrow-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+          <marker id="arrow-x" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
         </defs>
         <g id="world"><g id="edges"></g><g id="nodes"></g></g>
       </svg>
@@ -256,18 +327,32 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
         <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 4"/></svg>worked out from syntax</i>
         <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="1.5 4" stroke-linecap="round"/></svg>guessed by name</i>
         <i><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--chan)" stroke-width="1.5" stroke-dasharray="9 3 2 3"/></svg>event or process, in the direction data moves</i>
+        <i id="hint-cross" hidden><svg viewBox="0 0 30 8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--cross)" stroke-width="1.5"/></svg>into another repository</i>
         <i>Other arrows point at what is depended on. Double-click a box to open it.</i>
       </div>
     </section>
-    <aside class="side" id="side" aria-live="polite"></aside>
+    <aside class="side" id="side" aria-live="polite"><p class="loading">Loading the map.</p></aside>
   </div>
 </div>
 
 <script id="leyline-data" type="application/json">__LEYLINE_DATA__</script>
 <script>
-(() => {
+(async () => {
 "use strict";
-const D = JSON.parse(document.getElementById("leyline-data").textContent);
+// A big map is embedded gzipped (export.py says when); the browser unpacks it, with no fetch.
+async function load() {
+  const box = document.getElementById("leyline-data");
+  if (box.type === "application/json") return JSON.parse(box.textContent);
+  const bin = atob(box.textContent.trim()), bytes = new Uint8Array(bin.length);
+  for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+  const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  return JSON.parse(text);
+}
+let D;
+try { D = await load(); } catch (err) {
+  document.getElementById("side").innerHTML = `<p class="loading">This page could not read its own data (${String(err).replace(/[<&]/g, "")}). A browser from 2023 or later is needed for large maps.</p>`;
+  throw err;
+}
 const N = D.nodes;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -285,6 +370,13 @@ N.forEach((n, i) => { n.idx = i; if (n.p != null) kids[n.p].push(i); });
 const up = (i, test) => { for (let c = i; c != null; c = N[c].p) if (test(N[c])) return c; return null; };
 const moduleOf = N.map((n, i) => up(i, (m) => m.k === "module"));
 const fileOf = N.map((n, i) => up(i, (m) => m.k === "file"));
+const repoOf = N.map((n, i) => up(i, (m) => m.k === "repo"));
+// A workspace: several repositories in one store. Then the repositories are the top of the map.
+const REPOS = N.map((n, i) => i).filter((i) => N[i].k === "repo");
+const WS = REPOS.length > 1;
+const repoMeta = (r) => D.repos.find((x) => x.id === N[r].i) || {};
+const otherRepo = (i, home) => WS && home != null && repoOf[i] != null && repoOf[i] !== repoOf[home];
+const srcKey = (i) => (WS ? N[repoOf[i]].i + "/" : "") + N[i].f;
 // The unit a node belongs to: its outermost type, or its file when it sits loose in one.
 const unitOf = N.map((n, i) => {
   if (n.k === "module" || n.k === "repo" || n.k === "external" || n.k === "system") return null;
@@ -368,9 +460,14 @@ function accessHtml(i) {
 }
 const patternsOf = (i) => { const out = []; for (const [k, p] of PATTERN_AT) if (p.marks.some((m) => m.i === i || (N[m.i] && N[m.i].p === i))) out.push(k); return out; };
 const patternRows = (ks) => ks.length ? `<h3>Design patterns <span>${ks.length}</span></h3><ul class="list">${ks.slice(0, 12).map((k) => `<li><button data-view="${k}"><span class="nm">${esc(VIEWS[k].title)}<small>${esc(VIEWS[k].narrative)}</small></span><span class="ct">${Math.round(PATTERN_AT.get(k).c * 100)}%</span></button></li>`).join("")}</ul>${ks.length > 12 ? `<div class="more">and ${ks.length - 12} more</div>` : ""}` : "";
-const ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect"];
+// Box roles, strongest first. The first group is what a check found; the rest is what a plan expects.
+const ROLE_ORDER = ["drift", "missed", "done", "done_new", "helper", "test_changed", "changed", "new", "contract", "must_edit", "test", "direct", "indirect"];
 const REVIEW_CLS = { "edited as predicted": "c0", "new, as declared": "c2", "edited, not predicted": "c3", "predicted, not edited": "c1" };
-const ROLE_LABEL = { changed: "changed", new: "new", contract: "interface that must change", must_edit: "must be edited", direct: "calls it directly", test: "test to run", indirect: "reached further out" };
+// In the words leyline.md uses for the same things.
+const ROLE_LABEL = { changed: "will change", new: "new code goes in here", contract: "must be edited with it (an interface)", must_edit: "must be edited with it",
+  direct: "reached, no edit needed", test: "existing test that runs through it", indirect: "reached further out, no edit needed",
+  done: "changed, as planned", done_new: "new, as planned", helper: "helper added, only planned code calls it", test_changed: "test added or changed",
+  drift: "changed, but not in the spec", missed: "expected to change, and did not" };
 const FLOWS = D.flows || [];
 const flowsOf = new Map();
 FLOWS.forEach((f, fi) => { for (const st of f.steps) { if (!flowsOf.has(st[0])) flowsOf.set(st[0], []); flowsOf.get(st[0]).push(fi); } });
@@ -378,7 +475,7 @@ const entryTargets = new Set(D.edges.filter((e) => e[0] === "exposes").map((e) =
 const entryOf = new Map(D.edges.filter((e) => e[0] === "exposes").map((e) => [e[2], e[1]]));
 const hasEntry = new Set();
 for (const [t, e] of entryOf) if ((N[e].x || {}).trigger !== "lifecycle") for (let c = t; c != null; c = N[c].p) hasEntry.add(c);
-const repoIdx = N.findIndex((n) => n.k === "repo");
+const repoIdx = REPOS[0];
 const count = (root, kind) => { let c = 0; const st = [root]; while (st.length) { const i = st.pop(); if (i !== root && N[i].k === kind) c++; st.push(...kids[i]); } return c; };
 const linesOf = (i) => { let c = 0; const st = [i]; while (st.length) { const j = st.pop(); if (N[j].k === "file") c += N[j].b || 0; else st.push(...kids[j]); } return c; };
 const isBody = (i) => N[i].n === "<module>" || N[i].n === "<top-level>";
@@ -392,21 +489,23 @@ const short = (i) => {
 const langOf = (i) => { const n = N[i]; if (n.l) return n.l; if (n.k === "module") { const ls = new Set(kids[i].map((f) => N[f].l).filter(Boolean)); return ls.size === 1 ? [...ls][0] : "none"; } return "none"; };
 
 /* ---------- state ---------- */
-const S = { level: "repo", focus: null, sel: null, hover: null, mode: "map", externals: false, view: null,
-  filters: { repo: { calls: true, types: true, inherit: true, imports: true, channels: true },
+const S = { level: WS ? "ws" : "repo", focus: WS ? null : repoIdx, sel: null, hover: null, mode: "map", externals: false, view: null,
+  change: null, phase: "plan", pick: null,
+  filters: { ws: { calls: true, types: true, inherit: true, imports: true, channels: true },
+             repo: { calls: true, types: true, inherit: true, imports: true, channels: true },
              module: { calls: true, types: false, inherit: true, imports: false, channels: true },
              system: { calls: true, types: false, inherit: true, imports: false, channels: true },
              unit: { calls: true, types: false, inherit: true, imports: false, channels: true },
              view: { calls: true, types: false, inherit: true, imports: false, channels: true } },
   flow: 0, viewIdx: 0, prev: null,
-  outside: { module: false, system: true, unit: true, view: true } };
+  outside: { repo: true, module: false, system: true, unit: true, view: true } };
 const cam = { x: 0, y: 0, k: 1 };
 
 /* ---------- build the graph for the current level ---------- */
 // The current saved view: which box each marked node falls in, and that box's strongest role.
 let VW = null;
 function viewSetup() {
-  const v = VIEWS[S.viewIdx]; VW = { boxes: new Map(), marksIn: new Map(), roles: [] };
+  const v = curView(); VW = { boxes: new Map(), marksIn: new Map(), roles: [] };
   if (!v) return;
   const custom = [...new Set(v.marks.map((m) => m.role))].filter((r) => !ROLE_ORDER.includes(r));
   VW.roles = [...ROLE_ORDER.filter((r) => v.marks.some((m) => m.role === r)), ...custom];
@@ -420,7 +519,12 @@ function viewSetup() {
 function rep(i) {
   const n = N[i];
   if (S.level === "view") { const b = unitOf[i] != null ? unitOf[i] : i; return VW.boxes.has(b) ? b : null; }
-  if (S.level === "repo") return n.k === "external" ? (S.externals ? i : null) : n.k === "module" ? i : moduleOf[i];
+  if (S.level === "ws") return n.k === "external" ? null : repoOf[i];
+  if (S.level === "repo") {
+    if (n.k === "external") return S.externals && repoOf[i] === S.focus ? i : null;
+    const m = n.k === "module" ? i : moduleOf[i];
+    return m != null && (repoOf[m] === S.focus || S.outside.repo) ? m : null;
+  }
   if (n.k === "external") return null;
   if (n.k === "system") return null;
   if (S.level === "module") return moduleOf[i] === S.focus ? (unitOf[i] == null ? null : grp(unitOf[i])) : (n.k === "module" ? i : moduleOf[i]);
@@ -431,7 +535,8 @@ function rep(i) {
 }
 function inside(i) {
   if (S.level === "view") return VW.boxes.has(i);
-  if (S.level === "repo") return N[i].k === "module" || N[i].k === "external";
+  if (S.level === "ws") return N[i].k === "repo";
+  if (S.level === "repo") return (N[i].k === "module" || N[i].k === "external") && repoOf[i] === S.focus;
   if (S.level === "module") return N[i].k === "system" ? N[i].p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i);
   if (S.level === "system") return unitOf[i] === i && sysOf.get(i) === S.focus;
   return unitOf[i] === S.focus && memberOf(i) === i;
@@ -445,11 +550,11 @@ function buildView() {
     if (a == null || b == null || a === b) continue;
     const ia = inside(a), ib = inside(b);
     if (!ia && !ib) continue;
-    if (S.level !== "repo" && !S.outside[S.level] && !(ia && ib)) continue;
+    if (S.level !== "ws" && !S.outside[S.level] && !(ia && ib)) continue;
     const comm = L[0] === "communicates";
     const key = a + ">" + b + (comm ? ">c" : "");
     let e = edges.get(key);
-    if (!e) edges.set(key, e = { key, a, b, n: 0, exact: 0, guess: 0, kinds: {}, links: [], comm, chans: new Set() });
+    if (!e) edges.set(key, e = { key, a, b, n: 0, exact: 0, guess: 0, kinds: {}, links: [], comm, chans: new Set(), cross: WS && repoOf[a] !== repoOf[b] });
     e.n += L[4]; if (L[3] === 2) e.exact += L[4]; if (L[3] === 0) e.guess += L[4];
     if (comm) e.chans.add(L[6].channel);
     e.kinds[linkLabel(L)] = (e.kinds[linkLabel(L)] || 0) + L[4];
@@ -458,7 +563,8 @@ function buildView() {
   }
   const nodes = [];
   if (S.level === "view") { for (const b of VW.boxes.keys()) nodes.push(b); }
-  else if (S.level === "repo") { N.forEach((n, i) => { if (n.k === "module" || (S.externals && n.k === "external" && used.has(i))) nodes.push(i); }); }
+  else if (S.level === "ws") { for (const r of REPOS) nodes.push(r); }
+  else if (S.level === "repo") { N.forEach((n, i) => { if (repoOf[i] === S.focus && (n.k === "module" || (S.externals && n.k === "external" && used.has(i)))) nodes.push(i); }); }
   else if (S.level === "module") { N.forEach((n, i) => { if (n.k === "system" ? n.p === S.focus : moduleOf[i] === S.focus && unitOf[i] === i && !sysOf.has(i) && (n.k === "type" || kids[i].some((c) => N[c].k === "callable"))) nodes.push(i); }); }
   else if (S.level === "system") { for (const u of unitsOf.get(S.focus) || []) nodes.push(u); }
   else { for (const c of kids[S.focus]) if (N[c].k === "callable" || N[c].k === "type") nodes.push(c); }
@@ -467,7 +573,7 @@ function buildView() {
   const weight = new Map();
   for (const e of edges.values()) for (const s of [e.a, e.b]) if (!own.has(s)) weight.set(s, (weight.get(s) || 0) + e.n);
   const stubs = [...weight.entries()].sort((x, y) => y[1] - x[1]);
-  const keep = new Set(stubs.slice(0, 12).map((s) => s[0]));
+  const keep = new Set(stubs.slice(0, S.level === "repo" ? 24 : 12).map((s) => s[0]));
   for (const [key, e] of edges) if ((!own.has(e.a) && !keep.has(e.a)) || (!own.has(e.b) && !keep.has(e.b))) edges.delete(key);
   for (const s of keep) nodes.push(s);
   return { nodes, own, edges: [...edges.values()], hiddenStubs: Math.max(0, stubs.length - keep.size) };
@@ -476,17 +582,24 @@ function buildView() {
 /* ---------- layout: layered, dependents above what they depend on ---------- */
 const meter = document.createElement("canvas").getContext("2d");
 function measure(text, font) { meter.font = font; return meter.measureText(text).width; }
+// The level's key in the remembered layout export.py writes; levels without one are laid out here.
+const levelKey = () => (S.level === "ws" ? "ws" : S.level === "repo" ? "repo:" + N[S.focus].i : S.level === "module" ? "module:" + N[S.focus].i : null);
+const MONO = '500 12.5px "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace', SANS = '11px "IBM Plex Sans", "Segoe UI", system-ui, sans-serif';
 function layout(view) {
-  const two = S.level === "repo" || S.level === "view" || (S.level === "module" && view.nodes.some((i) => N[i].k === "system"));
+  const two = S.level === "ws" || S.level === "repo" || S.level === "view" || (S.level === "module" && view.nodes.some((i) => N[i].k === "system"));
   const boxes = new Map();
-  const homeMod = S.level === "module" ? S.focus : S.level === "repo" || S.level === "view" ? null : moduleOf[S.focus];
+  const homeMod = S.level === "module" ? S.focus : S.level === "repo" || S.level === "view" || S.level === "ws" ? null : moduleOf[S.focus];
+  const homeRepo = S.level === "repo" ? S.focus : homeMod;
   for (const i of view.nodes) {
     const far = homeMod != null && N[i].k !== "module" && moduleOf[i] !== homeMod;
-    const label = (far ? N[moduleOf[i]].n + " / " : "") + short(i);
+    const away = S.level !== "view" && otherRepo(i, homeRepo);
+    const label = (away ? N[repoOf[i]].n + " / " : "") + (far ? N[moduleOf[i]].n + " / " : "") + short(i);
     const meta = two ? metaLine(i) : "";
-    const w = Math.max(measure(label, "500 12.5px IBM Plex Mono, monospace") + 34, two ? measure(meta, "11px IBM Plex Sans, sans-serif") + 32 : 0, 70);
-    boxes.set(i, { i, w: Math.ceil(w), h: two ? 46 : 30, label, meta, x: 0, y: 0, stub: !view.own.has(i) });
+    const w = Math.max(measure(label, MONO) + 34, two ? measure(meta, SANS) + 32 : 0, 70);
+    boxes.set(i, { i, w: Math.ceil(w), h: two ? 46 : 30, label, meta, x: 0, y: 0, stub: !view.own.has(i), away });
   }
+  const fixed = D.layout && levelKey() ? D.layout[levelKey()] : null;
+  if (fixed && view.nodes.some((i) => fixed[i])) return placeFixed(view, boxes, fixed, two);
   const out = new Map(), inn = new Map();
   for (const i of view.nodes) { out.set(i, []); inn.set(i, []); }
   // A handler depends on whatever raises its event, so event arrows are layered against their direction.
@@ -550,8 +663,55 @@ function layout(view) {
   }
   return { boxes, back, looseY, hasLinked: linked.length > 0 };
 }
+// Rows and places from the remembered layout. A box keeps its place unless a wider neighbour needs the room;
+// boxes it does not know (outside packages, other modules) go in a row above what they depend on or below
+// what depends on them; a long edge passes through each row it crosses at a gap between boxes.
+function placeFixed(view, boxes, fixed, two) {
+  const GX = 26, GY = two ? 84 : 62, rowH = two ? 46 : 30;
+  const at = new Map();
+  for (const i of view.nodes) if (fixed[i]) at.set(i, fixed[i]);
+  const known = [...at.values()].map((f) => f[0]);
+  const top = Math.min(...known), bottom = Math.max(...known);
+  for (const i of view.nodes) {
+    if (at.has(i)) continue;
+    let into = 0, from = 0; const xs = [];
+    for (const e of view.edges) { if (e.b === i && fixed[e.a]) { into++; xs.push(fixed[e.a][1]); } if (e.a === i && fixed[e.b]) { from++; xs.push(fixed[e.b][1]); } }
+    at.set(i, [from > into ? top - 1 : bottom + 1, xs.length ? xs.reduce((t, x) => t + x, 0) / xs.length : 0]);
+  }
+  const rowNums = [...new Set([...at.values()].map((f) => f[0]))].sort((a, b) => a - b);
+  const rowAt = new Map(rowNums.map((r, k) => [r, k]));
+  const rows = rowNums.map(() => []);
+  for (const i of view.nodes) rows[rowAt.get(at.get(i)[0])].push(i);
+  rows.forEach((list, k) => {
+    list.sort((a, b) => at.get(a)[1] - at.get(b)[1] || a - b);
+    let right = -Infinity, moved = 0;
+    for (const i of list) { const b = boxes.get(i), want = at.get(i)[1] - b.w / 2, left = Math.max(want, right + GX); moved += left - want; b.x = left + b.w / 2; b.y = k * (rowH + GY); right = left + b.w; }
+    if (moved && list.every((i) => !fixed[i])) for (const i of list) boxes.get(i).x -= moved / list.length;   // a row of newcomers stays centred
+  });
+  const busy = rows.map((list) => list.map((i) => { const b = boxes.get(i); return [b.x - b.w / 2, b.x + b.w / 2]; }));
+  const rowOf = new Map(); rows.forEach((list, k) => list.forEach((i) => rowOf.set(i, k)));
+  const taken = new Map();
+  for (const e of view.edges) {
+    e.chain = [];
+    const ra = rowOf.get(e.a), rb = rowOf.get(e.b);
+    if (Math.abs(ra - rb) < 2) continue;
+    const A = boxes.get(e.a), B = boxes.get(e.b), ids = [];
+    for (let r = Math.min(ra, rb) + 1; r < Math.max(ra, rb); r++) {
+      let x = A.x + (B.x - A.x) * (r - ra) / (rb - ra);
+      for (const [l, rr] of busy[r]) if (x > l - 8 && x < rr + 8) x = x - l < rr - x ? l - 9 : rr + 9;
+      const slot = r + ":" + Math.round(x / 8), n = taken.get(slot) || 0; taken.set(slot, n + 1);
+      x += (n % 2 ? -1 : 1) * Math.ceil(n / 2) * 4;
+      const id = "~" + e.key + "~" + r;
+      boxes.set(id, { i: id, w: 2, h: rowH, x, y: r * (rowH + GY), dummy: true });
+      ids.push(id);
+    }
+    e.chain = ra < rb ? ids : ids.reverse();
+  }
+  return { boxes, back: new Set(), looseY: null, hasLinked: true };
+}
 function metaLine(i) {
   const n = N[i];
+  if (n.k === "repo") { const ms = N.filter((m, k) => m.k === "module" && repoOf[k] === i).length; return `${ms} module${ms === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines`; }
   if (S.level === "view") { const ms = VW.marksIn.get(i) || []; const where = n.k === "module" ? "module" : N[moduleOf[i]] ? N[moduleOf[i]].n : ""; return `${where}${ms.length > 1 ? " · " + ms.length + " marked" : ""}`; }
   if (n.k === "external") return (n.x && (n.x.category || n.x.ecosystem)) || "external";
   if (n.k === "system") { const us = unitsOf.get(i) || []; return `${us.length} types and files · ${us.reduce((t, u) => t + count(u, "callable"), 0)} functions`; }
@@ -561,8 +721,9 @@ function metaLine(i) {
 }
 
 /* ---------- draw ---------- */
-let L = null;
+let L = null, OVER = null;
 function draw() {
+  OVER = S.change != null && S.level !== "view" ? overlay() : null;
   S.view = buildView();
   L = layout(S.view);
   const gE = $("edges"), gN = $("nodes");
@@ -583,18 +744,19 @@ function draw() {
   for (const [k, list] of ports) { list.sort((p, q) => p[0] - q[0]); const box = L.boxes.get(isNaN(+k.split("|")[0]) ? k.split("|")[0] : +k.split("|")[0]); const span = Math.min(box.w * 0.7, 18 * (list.length - 1)); list.forEach(([, key], j) => off.set(key, list.length > 1 ? -span / 2 + (span * j) / (list.length - 1) : 0)); }
   for (const e of S.view.edges) {
     const A = L.boxes.get(e.a), B = L.boxes.get(e.b);
-    const g = el("g", { class: "edge" + (e.comm ? " comm" : e.guess === e.n ? " guess" : e.exact < e.n ? " heur" : ""), "data-key": e.key, "data-comm": e.comm ? 1 : 0 }, gE);
+    const g = el("g", { class: "edge" + (e.comm ? " comm" : e.guess === e.n ? " guess" : e.exact < e.n ? " heur" : "") + (e.cross ? " cross" : ""), "data-key": e.key, "data-comm": e.comm ? 1 : 0, "data-cross": e.cross ? 1 : 0 }, gE);
     const d = route(A, B, e.chain.map((id) => L.boxes.get(id)), ends.get(e.key), off.get(e.key + "|a") || 0, off.get(e.key + "|b") || 0);
-    el("path", { class: "vis", d: d.path, "stroke-width": e.comm ? 1.8 : (1 + 2.2 * Math.log(1 + e.n) / Math.log(1 + maxN)).toFixed(2), "marker-end": `url(#arrow${e.comm ? "-c" : ""})` }, g);
+    el("path", { class: "vis", d: d.path, "stroke-width": e.comm ? 1.8 : (1 + 2.2 * Math.log(1 + e.n) / Math.log(1 + maxN)).toFixed(2), "marker-end": `url(#arrow${e.comm ? "-c" : e.cross ? "-x" : ""})` }, g);
     el("path", { class: "hit", d: d.path }, g);
-    if (e.comm || S.level === "repo" || S.view.edges.length <= 14) { const t = el("text", { x: d.mx, y: d.my + 4, "text-anchor": "middle" }, g); t.textContent = e.comm ? [...e.chans].join(", ") : e.n; }
+    if (e.comm || S.level === "repo" || S.level === "ws" || S.view.edges.length <= 14) { const t = el("text", { x: d.mx, y: d.my + 4, "text-anchor": "middle" }, g); t.textContent = e.comm ? [...e.chans].join(", ") : e.n; }
     g.addEventListener("click", (ev) => { ev.stopPropagation(); select({ edge: e.key }); });
   }
   if (L.looseY != null && L.hasLinked) { const t = el("text", { class: "group-label", x: 0, y: L.looseY, "text-anchor": "middle" }, gN); t.textContent = "No links in this view"; }
   for (const b of L.boxes.values()) {
     if (b.dummy) continue;
     const n = N[b.i];
-    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (S.level === "view" && VW.boxes.has(b.i) ? " role-" + VW.cls(VW.boxes.get(b.i)) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
+    const role = S.level === "view" ? VW.boxes.get(b.i) : OVER ? OVER.get(b.i) : null;
+    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (b.away ? " other" : "") + (role ? " role-" + (S.level === "view" ? VW.cls(role) : role) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
     el("rect", { width: b.w, height: b.h, rx: 5 }, g);
     el("rect", { class: "lang-" + langOf(b.i), x: 0, y: 0, width: 4, height: b.h, rx: 2, style: "stroke:none" }, g);
     const t = el("text", { x: 14, y: b.meta ? 19 : 19.5 }, g); t.textContent = b.label;
@@ -603,7 +765,7 @@ function draw() {
     g.addEventListener("click", (ev) => { ev.stopPropagation(); select({ node: b.i }); });
     g.addEventListener("pointerenter", () => { S.hover = b.i; mark(); });
     g.addEventListener("pointerleave", () => { S.hover = null; mark(); });
-    g.addEventListener("dblclick", (ev) => { ev.stopPropagation(); if (S.mode === "views") goTo(b.i); else open(b.i); });
+    g.addEventListener("dblclick", (ev) => { ev.stopPropagation(); if (S.mode === "views" || S.mode === "change") goTo(b.i); else open(b.i); });
     g.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.shiftKey ? open(b.i) : select({ node: b.i }); } });
   }
   mark();
@@ -639,17 +801,21 @@ function mark() {
   if (ref != null) for (const e of S.view.edges) if (e.a === ref || e.b === ref) { near.add(e.a); near.add(e.b); nearE.add(e.key); }
   if (sel.edge && S.hover == null) { const e = S.view.edges.find((x) => x.key === sel.edge); if (e) { near.add(e.a); near.add(e.b); } }
   const focusOn = (ref != null && L.boxes.has(ref)) || (!!sel.edge && S.hover == null);
+  // A task or scenario picked on the change page: its boxes stand out, the rest fade.
+  const pick = picked(), pickOn = !focusOn && pick && [...L.boxes.keys()].some((i) => pick.has(i));
   for (const g of $("nodes").querySelectorAll(".node")) {
     const i = +g.dataset.i;
     g.classList.toggle("sel", sel.node === i);
     g.classList.toggle("near", sel.node !== i && (near.has(i) || ref === i));
-    g.classList.toggle("dim", focusOn && ref !== i && sel.node !== i && !near.has(i));
+    g.classList.toggle("picked", !!pickOn && pick.has(i));
+    g.classList.toggle("dim", focusOn ? ref !== i && sel.node !== i && !near.has(i) : !!pickOn && !pick.has(i));
   }
   for (const g of $("edges").querySelectorAll(".edge")) {
     const k = g.dataset.key, isSel = sel.edge === k, isNear = nearE.has(k);
+    const e = pickOn ? S.view.edges.find((x) => x.key === k) : null;
     g.classList.toggle("sel", isSel); g.classList.toggle("near", isNear);
-    g.classList.toggle("dim", focusOn && !isSel && !isNear);
-    g.querySelector(".vis").setAttribute("marker-end", `url(#arrow${isSel ? "-m" : g.dataset.comm === "1" ? "-c" : isNear ? "-a" : ""})`);
+    g.classList.toggle("dim", focusOn ? !isSel && !isNear : !!e && !pick.has(e.a) && !pick.has(e.b));
+    g.querySelector(".vis").setAttribute("marker-end", `url(#arrow${isSel ? "-m" : g.dataset.comm === "1" ? "-c" : g.dataset.cross === "1" ? "-x" : isNear ? "-a" : ""})`);
   }
   for (const td of $("matrix").querySelectorAll("td.on")) td.classList.toggle("sel", td.dataset.key === sel.edge);
 }
@@ -689,6 +855,7 @@ function select(sel) { S.sel = sel; mark(); side(); }
 function setLevel(level, focus, sel) { S.level = level; S.focus = focus; S.sel = sel || null; render(true); }
 function open(i) {
   const n = N[i];
+  if (n.k === "repo") return setLevel("repo", i);
   if (n.k === "module") return setLevel("module", i);
   if (n.k === "system") return setLevel("system", i);
   if (n.k === "external") return;
@@ -700,29 +867,36 @@ function open(i) {
 function goTo(i) {
   const n = N[i];
   if (n.k === "test") { const fi = FLOWS.findIndex((f) => f.entry === i); if (fi >= 0) return openFlow(fi, null); }
-  if (S.mode === "views") setMode("map");
+  if (S.mode === "views" || S.mode === "change") setMode("map");
   if (S.mode === "flows") { if (FLOWS[S.flow] && FLOWS[S.flow].steps.some((s) => s[0] === i)) { S.sel = { node: i }; drawFlow(); side(); const cur = $("flowview").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "center" }); return; } setMode("map"); }
-  if (n.k === "repo") return setLevel("repo", null);
-  if (n.k === "module") return setLevel("repo", null, { node: i });
-  if (n.k === "external") { S.externals = true; return setLevel("repo", null, { node: i }); }
+  if (n.k === "repo") return setLevel("repo", i);
+  if (n.k === "module") return setLevel("repo", repoOf[i], { node: i });
+  if (n.k === "external") { S.externals = true; return setLevel("repo", repoOf[i], { node: i }); }
   if (n.k === "entry_point") { const t = D.edges.find((e) => e[0] === "exposes" && e[1] === i); if (t) return goTo(t[2]); }
   if (n.k === "system") return setLevel("module", n.p, { node: i });
   const u = unitOf[i];
   if (u === i) return sysOf.has(i) ? setLevel("system", sysOf.get(i), { node: i }) : setLevel("module", moduleOf[i], { node: i });
   return setLevel("unit", u, { node: i });
 }
-function render(refit) { crumbs(); tools(); draw(); side(); if (refit) requestAnimationFrame(fit); }
+const top = () => (WS ? setLevel("ws", null) : setLevel("repo", repoIdx));
+function render(refit) {
+  const r = S.level === "ws" || S.level === "view" ? null : S.level === "repo" ? S.focus : repoOf[S.focus];
+  $("commit").textContent = r != null && repoMeta(r).commit ? repoMeta(r).commit.slice(0, 7) : "";
+  crumbs(); tools(); draw(); side(); if (refit) requestAnimationFrame(fit);
+}
 function crumbs() {
   if (S.level === "view") { $("crumbs").textContent = ""; return; }
-  const parts = [[repoIdx, () => setLevel("repo", null)]];
-  if (S.level !== "repo") { const m = S.level === "module" ? S.focus : moduleOf[S.focus]; parts.push([m, () => setLevel("module", m)]); }
+  const parts = WS ? [["Workspace", () => setLevel("ws", null)]] : [];
+  const r = S.level === "ws" ? null : S.level === "repo" ? S.focus : repoOf[S.focus];
+  if (r != null) parts.push([N[r].n, () => setLevel("repo", r)]);
+  if (S.level !== "repo" && S.level !== "ws") { const m = S.level === "module" ? S.focus : moduleOf[S.focus]; parts.push([N[m].n, () => setLevel("module", m)]); }
   const sy = S.level === "system" ? S.focus : S.level === "unit" ? sysOf.get(S.focus) : null;
-  if (sy != null) parts.push([sy, () => setLevel("system", sy)]);
-  if (S.level === "unit") parts.push([S.focus, () => setLevel("unit", S.focus)]);
+  if (sy != null) parts.push([N[sy].n, () => setLevel("system", sy)]);
+  if (S.level === "unit") parts.push([N[S.focus].n, () => setLevel("unit", S.focus)]);
   const c = $("crumbs"); c.textContent = "";
-  parts.forEach(([i, fn], j) => {
+  parts.forEach(([label, fn], j) => {
     if (j) { const s = document.createElement("span"); s.className = "sep"; s.textContent = "/"; c.appendChild(s); }
-    const b = document.createElement("button"); b.textContent = N[i].n; b.onclick = fn;
+    const b = document.createElement("button"); b.textContent = label; b.onclick = fn;
     if (j === parts.length - 1) b.setAttribute("aria-current", "page");
     c.appendChild(b);
   });
@@ -730,7 +904,18 @@ function crumbs() {
 function tools() {
   const t = $("tools"); t.textContent = "";
   const chip = (label, on, fn, cls) => { const b = document.createElement("button"); b.className = "chip" + (cls ? " " + cls : ""); b.textContent = label; if (on != null) b.setAttribute("aria-pressed", on); b.onclick = fn; t.appendChild(b); };
+  const zoom = () => { chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom"); };
   if (S.mode === "flows") return;
+  if (S.mode === "change") {
+    const c = CHANGES[S.change];
+    if (c && c.after) {
+      const seg = document.createElement("div"); seg.className = "seg"; seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Show");
+      for (const [ph, label] of [["plan", "The plan"], ["after", "What was done"]]) { const b = document.createElement("button"); b.textContent = label; b.dataset.phase = ph; b.setAttribute("aria-pressed", S.phase === ph); b.onclick = () => setPhase(ph); seg.appendChild(b); }
+      t.appendChild(seg);
+    }
+    if (c) zoom();
+    return;
+  }
   if (S.mode === "views") {
     if (VIEWS.length) { const sel = document.createElement("select"); sel.id = "view-pick"; sel.setAttribute("aria-label", "Saved view"); const groups = [["Changes and views", (v) => v.kind !== "pattern"], ["Design patterns", (v) => v.kind === "pattern" && !v.pattern.tests], ["Design patterns in test code", (v) => v.kind === "pattern" && v.pattern.tests]]; for (const [label, want] of groups) { const ks = VIEWS.map((v, i) => i).filter((i) => want(VIEWS[i])); if (!ks.length) continue; const g = document.createElement("optgroup"); g.label = `${label} (${ks.length})`; ks.filter((i, n) => n < 300 || i === S.viewIdx).forEach((i) => { const v = VIEWS[i], o = document.createElement("option"); o.value = i; o.textContent = (v.kind === "change" ? "Change: " : v.kind === "custom" ? "View: " : "") + v.title; o.selected = i === S.viewIdx; g.appendChild(o); }); sel.appendChild(g); } sel.onchange = () => { S.viewIdx = +sel.value; S.sel = null; viewSetup(); render(true); viewKey(); }; t.appendChild(sel); }
     chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom");
@@ -738,16 +923,18 @@ function tools() {
   }
   for (const [k, label] of [["calls", "Calls"], ["types", "Type use"], ["inherit", "Inheritance"], ["imports", "Imports"], ["channels", "Events and processes"]]) {
     if (k === "channels" && S.mode === "matrix") continue;
-    if (k === "imports" && S.level !== "repo") continue;
+    if (k === "imports" && S.level !== "repo" && S.level !== "ws") continue;
     const f = S.filters[S.level];
     chip(label, f[k], () => { f[k] = !f[k]; S.sel = S.sel && S.sel.node != null ? S.sel : null; render(true); });
   }
+  if (S.level === "repo" && WS) chip("Other repositories", S.outside.repo, () => { S.outside.repo = !S.outside.repo; render(true); });
   if (S.level === "repo") chip("Outside packages", S.externals, () => { S.externals = !S.externals; render(true); });
-  else chip(S.level === "module" ? "Other modules" : S.level === "system" ? "Neighbouring systems" : "Outside callers", S.outside[S.level], () => { S.outside[S.level] = !S.outside[S.level]; render(true); });
-  if (S.mode === "map") { chip("+", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.3); }, "zoom"); chip("−", null, () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.3); }, "zoom"); chip("Fit", null, fit, "zoom"); }
+  else if (S.level !== "ws") chip(S.level === "module" ? "Other modules" : S.level === "system" ? "Neighbouring systems" : "Outside callers", S.outside[S.level], () => { S.outside[S.level] = !S.outside[S.level]; render(true); });
+  if (S.mode === "map") zoom();
 }
 
 /* ---------- inspector ---------- */
+const LANG = { csharp: "C#", python: "Python", typescript: "TypeScript", javascript: "JavaScript", go: "Go", rust: "Rust", java: "Java", bash: "shell" };
 const KIND = { system: "System", module: "Module", file: "File", type: "Type", callable: "Function", field: "Field", external: "Outside package", repo: "Repository" };
 function kindName(i) { const n = N[i], x = n.x || {}; if (n.k === "test") return "test"; if (n.k === "type") return x.native_kind || "type"; if (n.k === "callable") return x.native_kind === "constructor" ? "constructor" : x.native_kind === "local_function" ? "local function" : x.native_kind || "function"; if (n.k === "field") return x.native_kind || "field"; return KIND[n.k] || n.k; }
 function where(i) { const n = N[i]; if (!n.f && n.k !== "module") return ""; return n.k === "module" ? (n.f || ".") + "/" : n.a && n.k !== "file" ? `${n.f}:${n.a}–${n.b}` : n.f; }
@@ -794,12 +981,15 @@ const byMember = (j) => (N[j].k === "external" ? null : N[j].k === "callable" ||
 function side() {
   const s = $("side"), sel = S.sel || {};
   let html = "";
-  if (S.mode === "views") html = sel.edge ? edgeHtml(sel.edge) : sel.node != null ? viewNodeHtml(sel.node) : viewHtml();
+  if (S.mode === "change") html = S.change != null && sel.edge ? backHtml() + edgeHtml(sel.edge) : S.change != null && sel.node != null ? backHtml() + viewNodeHtml(sel.node) : changeHtml();
+  else if (S.mode === "views") html = sel.edge ? edgeHtml(sel.edge) : sel.node != null ? viewNodeHtml(sel.node) : viewHtml();
   else if (S.mode === "flows") html = sel.node != null ? nodeHtml(sel.node) : flowHtml();
   else if (sel.edge) html = edgeHtml(sel.edge);
   else if (sel.node != null) html = nodeHtml(sel.node);
-  else if (S.level === "repo") html = repoHtml();
+  else if (S.level === "ws") html = wsHtml();
+  else if (S.level === "repo") html = repoHtml(S.focus);
   else html = nodeHtml(S.focus, true);
+  if (S.mode === "map" && S.change != null) html = shownHtml() + html;
   s.innerHTML = tourHtml() + html; s.scrollTop = 0;
   if (S.tour) {
     const move = (d) => { S.tour.stop = Math.max(0, Math.min(TOURS[S.tour.idx].stops.length - 1, S.tour.stop + d)); tourShow(); };
@@ -813,23 +1003,27 @@ function side() {
   for (const b of s.querySelectorAll("[data-view]")) b.onclick = () => { S.viewIdx = +b.dataset.view; S.sel = null; if (S.mode === "views") { viewSetup(); render(true); viewKey(); } else setMode("views"); };
   for (const b of s.querySelectorAll("[data-open]")) b.onclick = () => open(+b.dataset.open);
   for (const b of s.querySelectorAll("[data-flow]")) b.onclick = () => openFlow(+b.dataset.flow, b.dataset.at ? +b.dataset.at : null);
+  for (const b of s.querySelectorAll("[data-edge]")) b.onclick = () => select({ edge: b.dataset.edge });
+  wireChange(s);
 }
-function repoHtml() {
-  const r = D.repos[0] || {};
-  const mods = N.filter((n) => n.k === "module").length;
-  const facts = [[mods, "modules"], [N.filter((n) => n.k === "file").length, "files"], [big(linesOf(repoIdx)), "lines"], [N.filter((n) => n.k === "type").length, "types"], [N.filter((n) => n.k === "callable").length, "functions"]];
-  const entries = [...entryOf.entries()].filter(([t, e]) => (N[e].x || {}).trigger === "cli").map(([t, e]) => ({ go: t, name: qual(t), sub: isBody(t) ? N[moduleOf[t]].n + " · script" : N[t].f, ct: "" }));
-  const ok = D.coverage.filter((c) => c.status === "ok"), na = D.coverage.filter((c) => c.status !== "ok");
+function repoHtml(ri) {
+  const r = repoMeta(ri), mine = (k) => repoOf[k] === ri, here = (kind) => N.filter((n, k) => n.k === kind && mine(k)).length;
+  const mods = here("module");
+  const facts = [[mods, "modules"], [here("file"), "files"], [big(linesOf(ri)), "lines"], [here("type"), "types"], [here("callable"), "functions"]];
+  const entries = [...entryOf.entries()].filter(([t, e]) => (N[e].x || {}).trigger === "cli" && mine(t)).map(([t, e]) => ({ go: t, name: qual(t), sub: isBody(t) ? N[moduleOf[t]].n + " · script" : N[t].f, ct: "" }));
+  const cov = D.coverage.filter((c) => !WS || c.repo === N[ri].i);
+  const ok = cov.filter((c) => c.status === "ok"), na = cov.filter((c) => c.status !== "ok");
   const stat = ok.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: ").replace("flows:static", "flows (static)").replace("systems:louvain", "systems (clustering)"))}<small>${esc(describe(c))}</small></span><span class="status ok">ran</span></div></li>`).join("");
   const nas = na.map((c) => `<li><div class="plain"><span class="nm">${esc(c.extractor.replace("communicates:", "channel: "))}</span><span class="status na">not analyzed</span></div></li>`).join("");
   function describe(c) { const st = c.stats || {}; if (c.extractor.startsWith("tree-sitter")) { const tot = st.calls_total || 0; return `${st.files || 0} files · ${tot.toLocaleString()} call sites: ${(st.calls_resolved || 0).toLocaleString()} linked (${(st.calls_by_unique_name || 0).toLocaleString()} by guess), ${(st.calls_external || 0).toLocaleString()} to outside code, ${(st.calls_unresolved || 0).toLocaleString()} unresolved`; } if (c.extractor === "timing") return `indexed in ${st.total_seconds} s: ${(st.lines || 0).toLocaleString()} lines at ${(st.lines_per_second || 0).toLocaleString()} lines a second${st.compiler ? ` (compiler pass ${st.compiler} s)` : ""}`; if (c.extractor.startsWith("exact:")) return `a compiler confirmed ${(st.calls_confirmed || 0).toLocaleString()} call links, removed ${(st.calls_removed || 0).toLocaleString()} and added ${(st.calls_added || 0).toLocaleString()}; ${((st.field_links_confirmed || 0) + (st.field_links_added || 0)).toLocaleString()} field links are exact${st.files_with_binding_errors ? `; ${st.files_with_binding_errors} files did not bind cleanly (missing packages)` : ""}`; if (c.extractor === "coverage") return `${(st.functions_ran || 0).toLocaleString()} functions ran${st.per_test ? ` under ${st.tests} tests` : ""}`; if (c.extractor === "communicates:http") return `${st.routes || 0} routes, ${st.requests || 0} requests, ${st.links || 0} linked${st.ambiguous ? `, ${st.ambiguous} ambiguous` : ""}`; if (c.extractor === "communicates:file") return `${st.write_sites || 0} writes, ${st.read_sites || 0} reads, ${st.links || 0} linked by matching path fragments`; if (c.extractor === "communicates:event") return `${st.events_declared || 0} events declared, ${st.links || 0} raiser-to-handler links, ${st.subscriptions_to_outside_events || 0} subscriptions to outside events`; if (c.extractor === "communicates:process") return `${st.launch_sites || 0} launch sites, ${st.links || 0} linked to a program in this repository`; if (c.extractor === "systems:louvain") return Object.entries(st).map(([m, v]) => `${m}: ${v.systems ? v.systems + " groups" : "no clear split"}`).join(" · ") || "no module is large enough to split"; if (c.extractor === "flows:static") return `${st.flows || 0} flows, ${(st.steps || 0).toLocaleString()} steps`; return ""; }
-  return `<div class="eyebrow">Repository</div><h2>${esc(N[repoIdx].n)}</h2>
+  return `<div class="eyebrow">Repository${WS ? ` <span class="tag">1 of ${REPOS.length} in this workspace</span>` : ""}</div><h2>${esc(N[ri].n)}</h2>
     <div class="where">${esc(r.url || "")}</div>
     <div class="facts">${facts.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("")}</div>
-    <p class="note">Each box is a module. An arrow from A to B means A depends on B, and its number counts the links behind it. Select a box or an arrow for detail.</p>
-    ${(() => { const by = new Map(); for (const [k, p] of PATTERN_AT) if (!p.tests) (by.get(p.pattern) || by.set(p.pattern, []).get(p.pattern)).push(k); return by.size ? `<h3>Design patterns <span>${[...by.values()].reduce((a, b) => a + b.length, 0)}</span></h3><ul class="list">${[...by.entries()].sort((a, b) => b[1].length - a[1].length).map(([name, ks]) => `<li><button data-view="${ks[0]}"><span class="nm">${esc(name)}<small>${esc(PATTERN_AT.get(ks[0]).about)}</small></span><span class="ct">${ks.length}</span></button></li>`).join("")}</ul>` : ""; })()}
-    ${listHtml("State assigned from several places", (D.state || []).slice(0, 8).map((f) => ({ go: f.i, name: qual(f.i), sub: "assigned from " + f.from.slice(0, 4).join(", ") + (f.from.length > 4 ? " and " + (f.from.length - 4) + " more" : ""), ct: `${f.w} set · ${f.r} read` })), (D.state || []).length)}
-    ${listHtml("Systems", N.map((m, k) => k).filter((k) => N[k].k === "system").map((k) => ({ go: k, name: N[k].n, sub: "in " + N[N[k].p].n + (NOTES[k] && NOTES[k].responsibility ? " · " + NOTES[k].responsibility.v : ""), ct: (unitsOf.get(k) || []).length + " types" })), N.filter((m) => m.k === "system").length)}
+    <p class="note">Each box is a module. An arrow from A to B means A depends on B, and its number counts the links behind it. Select a box or an arrow for detail.${WS ? " Modules of other repositories that this one links to are drawn dashed, named with their repository, and their arrows are in the colour of the key below the map." : ""}</p>
+    ${CHANGES.length && S.change == null ? `<p class="note">${CHANGES.length === 1 ? "One change is" : CHANGES.length + " changes are"} planned for this code. Open <b>Changes</b> to see on the map what ${CHANGES.length === 1 ? "it" : "each"} will write.</p>` : ""}
+    ${(() => { const by = new Map(); for (const [k, p] of PATTERN_AT) if (!p.tests && mine(p.marks[0].i)) (by.get(p.pattern) || by.set(p.pattern, []).get(p.pattern)).push(k); return by.size ? `<h3>Design patterns <span>${[...by.values()].reduce((a, b) => a + b.length, 0)}</span></h3><ul class="list">${[...by.entries()].sort((a, b) => b[1].length - a[1].length).map(([name, ks]) => `<li><button data-view="${ks[0]}"><span class="nm">${esc(name)}<small>${esc(PATTERN_AT.get(ks[0]).about)}</small></span><span class="ct">${ks.length}</span></button></li>`).join("")}</ul>` : ""; })()}
+    ${listHtml("State assigned from several places", (D.state || []).filter((f) => mine(f.i)).slice(0, 8).map((f) => ({ go: f.i, name: qual(f.i), sub: "assigned from " + f.from.slice(0, 4).join(", ") + (f.from.length > 4 ? " and " + (f.from.length - 4) + " more" : ""), ct: `${f.w} set · ${f.r} read` })), (D.state || []).filter((f) => mine(f.i)).length)}
+    ${listHtml("Systems", N.map((m, k) => k).filter((k) => N[k].k === "system" && mine(k)).map((k) => ({ go: k, name: N[k].n, sub: "in " + N[N[k].p].n + (NOTES[k] && NOTES[k].responsibility ? " · " + NOTES[k].responsibility.v : ""), ct: (unitsOf.get(k) || []).length + " types" })), here("system"))}
     ${listHtml("Where execution starts", entries.slice(0, 12), entries.length)}
     <h3>What was analyzed</h3><ul class="list">${stat}${nas}</ul>
     <p class="note">A channel that was not analyzed may still exist in the code. Dependency injection, HTTP, queues, databases and shared files are not on this map yet.</p>`;
@@ -841,7 +1035,8 @@ function nodeHtml(i, isFocus) {
   if (x.is_static && n.k !== "module") tags.push(`<span class="tag">static</span>`);
   if (x.is_abstract && x.native_kind !== "interface") tags.push(`<span class="tag">abstract</span>`);
   if (entryTargets.has(i)) tags.push(`<span class="tag entry">entry point: ${esc((N[entryOf.get(i)].x || {}).trigger || "")}</span>`);
-  if (n.l) tags.push(`<span class="tag">${n.l === "csharp" ? "C#" : "Python"}</span>`);
+  if (n.l) tags.push(`<span class="tag">${esc(LANG[n.l] || n.l)}</span>`);
+  if (WS && repoOf[i] != null && n.k !== "repo") tags.push(`<span class="tag">${esc(N[repoOf[i]].n)}</span>`);
   let h = `<div class="eyebrow">${esc(kindName(i))} ${tags.join("")}</div><h2>${esc(n.k === "callable" || n.k === "field" ? qual(i) : n.n)}</h2>`;
   if (x.signature && n.k !== "file") h += `<div class="sig">${esc(x.signature)}</div>`;
   if (n.k === "field" && x.declared_type) h += `<div class="sig">${esc(x.declared_type)} ${esc(n.n)}</div>`;
@@ -922,7 +1117,7 @@ function nodeHtml(i, isFocus) {
     else if (FLOWS.length) h += `<h3>Flows through here</h3><p class="note">None. No entry point or test reaches it through calls the indexer could resolve.</p>`;
     if (fl.length && !tests.length) h += `<p class="note">No test reaches this function.</p>`;
   }
-  const src = D.sources[n.f];
+  const src = n.f ? D.sources[srcKey(i)] : null;
   if (src && n.a) {
     let lines = src.split("\n").slice(n.a - 1, Math.min(n.b, n.a + 399)).map((ln) => ln.replace(/\t/g, "    "));
     const indent = Math.min(...lines.filter((ln) => ln.trim()).map((ln) => ln.length - ln.trimStart().length));
@@ -934,7 +1129,7 @@ function nodeHtml(i, isFocus) {
 }
 function edgeHtml(key) {
   const e = S.view.edges.find((x) => x.key === key);
-  if (!e) return repoHtml();
+  if (!e) return S.level === "ws" ? wsHtml() : repoHtml(S.focus != null && N[S.focus].k === "repo" ? S.focus : repoOf[S.focus] ?? repoIdx);
   const kinds = Object.entries(e.kinds).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ name: k, ct: v }));
   const pairs = new Map();
   for (const Lk of e.links) { const k = Lk[1] + ">" + Lk[2] + ">" + Lk[0]; const p = pairs.get(k); if (p) p.n += Lk[4]; else pairs.set(k, { s: Lk[1], d: Lk[2], k: linkLabel(Lk), n: Lk[4], g: Lk[3] === 0, x: Lk[6] }); }
@@ -1095,7 +1290,7 @@ function tourShow() {
   if (st.kind === "flow") { const fi = FLOWS.findIndex((f) => f.id === st.ref); if (fi >= 0) return openFlow(fi, null); }
   if (st.kind === "pattern" || st.kind === "view") { const vi = VIEWS.findIndex((v) => v.id === st.ref); if (vi >= 0) { S.viewIdx = vi; S.sel = null; if (S.mode === "views") { viewSetup(); render(true); viewKey(); } else setMode("views"); return; } }
   if (S.mode !== "map") setMode("map");
-  if (st.kind === "repo" || st.i == null) return setLevel("repo", null);
+  if (st.kind === "repo" || st.i == null) return top();
   goTo(st.i);
 }
 function reviewHtml(v) {
@@ -1135,23 +1330,187 @@ function viewNodeHtml(i) {
   return `<div class="eyebrow">In this view</div>` + listHtml("Why it is here", rows, rows.length).replace("<h3>", `<h3 style="margin-top:4px">`) + `<div style="height:14px"></div>` + nodeHtml(i);
 }
 function openFlow(fi, node) { S.flow = fi; S.sel = node != null ? { node } : null; setMode("flows"); const cur = $("flowview").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "center" }); }
+// Map and Changes are on the first screen; the rest sits behind More.
+const MORE = { flows: "Flows", matrix: "Matrix", views: "Saved views" };
+const usesView = (mode) => mode === "views" || (mode === "change" && S.change != null);
 function setMode(mode) {
-  S.mode = mode;
-  for (const m of ["map", "matrix", "flows", "views"]) $("tab-" + m).setAttribute("aria-pressed", mode === m);
-  const onMap = mode === "map" || mode === "views";
-  $("map").toggleAttribute("hidden", !onMap); $("matrix").hidden = mode !== "matrix"; $("flowview").hidden = mode !== "flows"; $("hint").hidden = mode !== "map"; $("viewkey").hidden = mode !== "views";
-  $("crumbs").style.visibility = mode === "flows" || mode === "views" ? "hidden" : "";
-  if (mode === "views" && S.level !== "view") { S.prev = { level: S.level, focus: S.focus }; S.level = "view"; S.focus = null; S.sel = null; viewSetup(); viewKey(); draw(); }
-  else if (mode !== "views" && S.level === "view") { S.level = S.prev ? S.prev.level : "repo"; S.focus = S.prev ? S.prev.focus : null; S.sel = null; crumbs(); draw(); }
+  S.mode = mode; menu(false);
+  $("tab-map").setAttribute("aria-pressed", mode === "map"); $("tab-change").setAttribute("aria-pressed", mode === "change");
+  for (const m in MORE) $("tab-" + m).setAttribute("aria-pressed", mode === m);
+  $("tab-more").setAttribute("aria-pressed", mode in MORE); $("tab-more").textContent = mode in MORE ? "More: " + MORE[mode] : "More";
+  const onMap = mode === "map" || mode === "views" || mode === "change";
+  $("map").toggleAttribute("hidden", !onMap); $("matrix").hidden = mode !== "matrix"; $("flowview").hidden = mode !== "flows";
+  $("hint").hidden = mode !== "map"; $("viewkey").hidden = mode !== "views";
+  $("crumbs").style.visibility = mode === "flows" || usesView(mode) ? "hidden" : "";
+  if (usesView(mode)) { if (S.level !== "view") { S.prev = { level: S.level, focus: S.focus }; S.level = "view"; S.focus = null; } S.sel = null; viewSetup(); viewKey(); draw(); }
+  else if (S.level === "view") { S.level = S.prev ? S.prev.level : WS ? "ws" : "repo"; S.focus = S.prev ? S.prev.focus : WS ? null : repoIdx; S.sel = null; crumbs(); draw(); }
+  else if (mode === "map") draw();
   tools();
   if (mode === "matrix") drawMatrix(); else if (mode === "flows") drawFlow(); else requestAnimationFrame(fit);
   side();
 }
-$("tab-map").onclick = () => setMode("map"); $("tab-matrix").onclick = () => setMode("matrix");
+function menu(open) { $("menu").hidden = !open; $("tab-more").setAttribute("aria-expanded", open); }
+$("tab-map").onclick = () => setMode("map");
+$("tab-change").onclick = () => { if (S.mode === "change" && CHANGES.length > 1) S.change = null; else if (S.change == null && CHANGES.length === 1) return openChange(0); setMode("change"); };
+$("tab-more").onclick = (e) => { e.stopPropagation(); menu($("menu").hidden); };
+$("tab-matrix").onclick = () => setMode("matrix");
 $("tab-flows").onclick = () => { if (S.sel && S.sel.edge) S.sel = null; setMode("flows"); };
 $("tab-views").onclick = () => setMode("views");
-$("tab-tour").onclick = () => { if (!TOURS.length) return; if (!S.tour) S.tour = { idx: 0, stop: 0 }; tourShow(); };
+$("tab-tour").onclick = () => { menu(false); if (!TOURS.length) return; if (!S.tour) S.tour = { idx: 0, stop: 0 }; tourShow(); };
 if (!TOURS.length) $("tab-tour").hidden = true;
+document.addEventListener("click", (e) => { if (!e.target.closest(".morewrap")) menu(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") menu(false); });
+
+/* ---------- changes ---------- */
+// A change planned with `leyline plan`: its page (leyline.md), its tasks tied to code, the view of what it
+// is expected to touch and, after `leyline check`, what it did touch.
+const CHANGES = D.changes || [];
+const viewById = (id) => VIEWS.find((v) => v.id === id);
+function changeView(c, phase) {
+  if (phase === "after" && c.after) return { kind: "change", title: c.title, marks: c.after, legend: {} };
+  const v = viewById(c.plan_view) || { marks: [] };
+  const marks = v.marks.slice();
+  // Code that is not written yet has no box: mark where it goes.
+  for (const t of c.tasks) for (const nw of t.new) if (nw.pi != null) marks.push({ i: nw.pi, role: "new", note: "new: " + nw.name });
+  // A test that runs through the change is shown as a test, as leyline.md counts it, not only as code it reaches.
+  const tests = new Set((v.tests_to_run || []).map((t) => t.i).filter((i) => i != null));
+  return { ...v, kind: "change", marks: marks.map((m) => (tests.has(m.i) && (m.role === "direct" || m.role === "indirect") ? { ...m, role: "test" } : m)) };
+}
+function curView() { return S.mode === "change" && S.change != null ? changeView(CHANGES[S.change], S.phase) : VIEWS[S.viewIdx]; }
+function openChange(k) {
+  S.change = k; S.phase = CHANGES[k].after ? "after" : "plan"; S.pick = null;
+  try { history.replaceState(null, "", "#change=" + encodeURIComponent(CHANGES[k].name)); } catch (e) { /* a sandboxed page */ }
+  setMode("change"); crumbs();
+}
+function setPhase(ph) { S.phase = ph; S.sel = null; viewSetup(); draw(); tools(); side(); requestAnimationFrame(fit); }
+// Every box that holds a marked node, with the strongest role inside it: the change drawn over the ordinary map.
+let overKey = null, overMap = null;
+function overlay() {
+  const key = S.change + ":" + S.phase;
+  if (key === overKey) return overMap;
+  const rank = (r) => { const k = ROLE_ORDER.indexOf(r); return k < 0 ? 99 : k; }, m = new Map();
+  const put = (c, r) => { if (!m.has(c) || rank(r) < rank(m.get(c))) m.set(c, r); };
+  for (const mk of changeView(CHANGES[S.change], S.phase).marks) for (let c = mk.i; c != null; c = N[c].p) { put(c, mk.role); if (sysOf.has(c)) put(sysOf.get(c), mk.role); }
+  overKey = key; overMap = m;
+  return m;
+}
+const normName = (x) => String(x).toLowerCase().replace(/test_/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+const scenarioTest = (c, name) => { const sc = c.scenarios.find((x) => x.name === name); if (sc && sc.test != null) return sc.test; const k = N.findIndex((n) => (n.k === "test" || (n.k === "callable" && /^test/i.test(n.n))) && normName(n.n) === normName(name)); return k >= 0 ? k : null; };
+function pickNodes(c, p) {
+  if (!p) return [];
+  if (p.task) { const t = c.tasks.find((x) => x.key === p.task); return t ? [...t.nodes, ...t.into, ...t.new.map((x) => x.pi).filter((x) => x != null)] : []; }
+  const t = scenarioTest(c, p.scenario); return t != null ? [t] : [];
+}
+function picked() {
+  if (S.change == null || !S.pick) return null;
+  const set = new Set();
+  for (const i of pickNodes(CHANGES[S.change], S.pick)) for (let c = i; c != null; c = N[c].p) { set.add(c); if (sysOf.has(c)) set.add(sysOf.get(c)); }
+  return set;
+}
+// leyline.md as blocks. It is generated, so a small reader covers it: headings, paragraphs, lists, tables.
+function mdBlocks(text) {
+  const lines = text.replace(/<!--[\s\S]*?-->/g, "").split("\n"), out = [];
+  let k = 0, section = "";
+  while (k < lines.length) {
+    const ln = lines[k];
+    if (!ln.trim()) { k++; continue; }
+    if (ln.startsWith("# ")) { out.push({ t: "title", text: ln.slice(2) }); k++; continue; }
+    if (ln.startsWith("## ")) { section = ln.slice(3); out.push({ t: "h", text: section }); k++; continue; }
+    if (ln.startsWith("|")) { const rows = []; while (k < lines.length && lines[k].startsWith("|")) rows.push(lines[k++]); out.push({ t: "table", rows: rows.map((r) => r.split("|").slice(1, -1).map((c) => c.trim())), section }); continue; }
+    if (/^\s*- /.test(ln)) { const items = []; while (k < lines.length && /^\s*- /.test(lines[k])) items.push(lines[k++].replace(/^\s*- /, "")); out.push({ t: "ul", items }); continue; }
+    const para = []; while (k < lines.length && lines[k].trim() && !/^(#|\||\s*- )/.test(lines[k])) para.push(lines[k++]);
+    out.push({ t: "p", text: para.join(" ") });
+  }
+  return out;
+}
+const inline = (t) => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^*\w])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
+function tableHtml(b) {
+  const [head, , ...body] = b.rows;
+  const isTask = head[0] === "Task", isScen = head[0] === "Scenario", result = head[1] === "Result";
+  const cur = S.pick || {};
+  return `<div class="tbl"><table><thead><tr>${head.map((h) => `<th>${inline(h)}</th>`).join("")}</tr></thead><tbody>${body.map((r) => {
+    const key = isTask ? r[0].split(" ")[0] : isScen ? r[0] : null;
+    const on = key != null && (isTask ? cur.task === key : cur.scenario === key);
+    const attr = isTask ? ` data-task="${esc(key)}"` : isScen ? ` data-scenario="${esc(key)}"` : "";
+    return `<tr${attr}${on ? ` aria-current="true"` : ""}${attr ? ' tabindex="0"' : ""}>${r.map((c, j) => `<td${result && j === 1 ? ` class="res-${esc(c.split(" (")[0].replace(/\s+/g, "-"))}"` : ""}>${inline(c)}</td>`).join("")}</tr>`;
+  }).join("")}</tbody></table></div>`;
+}
+function keyHtml(c) {
+  const have = new Set(changeView(c, S.phase).marks.map((m) => m.role));
+  return `<ul class="keylist">${ROLE_ORDER.filter((r) => have.has(r)).map((r) => `<li><span class="key"><b class="k-${r}"></b></span>${esc(ROLE_LABEL[r])}</li>`).join("")}</ul>`;
+}
+function pickHtml(c) {
+  if (!S.pick) return `<p class="note">Select a task or a scenario below to outline its code on the map. Double-click a box to open it on the full map.</p>`;
+  const ns = pickNodes(c, S.pick), shown = picked(), onMap = [...L.boxes.keys()].some((i) => shown && shown.has(i));
+  const what = S.pick.task ? "Task " + S.pick.task : "Scenario " + S.pick.scenario;
+  const fi = S.pick.scenario && ns.length ? FLOWS.findIndex((f) => f.entry === ns[0]) : -1;
+  const t = S.pick.task ? c.tasks.find((x) => x.key === S.pick.task) : null;
+  const newOnly = t && !t.nodes.length && !t.into.length;
+  const why = !ns.length ? (S.pick.scenario ? "Its test is not on the map yet: it is to be written, with this name." : "It names no code on the map.") : !onMap ? (newOnly ? "Its code is new, so it is not on the map; its box shows where it goes once the plan is followed." : "Its code is not in this picture; open it on the full map.") : "";
+  return `<p class="note"><b>${esc(what)}</b> is outlined on the map. ${why} ${ns.length ? `<button class="chip" data-go="${ns[0]}">Show on the full map</button>` : ""} ${fi >= 0 ? `<button class="chip" data-flow="${fi}">Trace what the test runs</button>` : ""} <button class="chip" id="unpick">Clear</button></p>`;
+}
+function stateClass(text) { return /done as agreed\./.test(text) ? "ok" : /ready to implement\./.test(text) ? "ready" : "todo"; }
+function changeHtml() {
+  if (!CHANGES.length) return `<div class="eyebrow">Changes</div><h2>No change is planned yet</h2>
+    <p class="note">A change is planned as an OpenSpec folder, <code>openspec/changes/&lt;id&gt;/</code>, whose tasks say what code will be written and whose scenarios say how you will know it works. Ask your agent to write one (the leyline-spec skill says how), then run <code>leyline plan &lt;id&gt;</code>.</p>
+    <p class="note">The map page is then rewritten with the change on it: what will be written, what else must be edited with it, and which tests run through it. After <code>leyline check</code> it also shows what was done.</p>`;
+  if (S.change == null) return `<div class="eyebrow">Changes</div><h2>${CHANGES.length} planned changes</h2>
+    <p class="note">Pick one to see on the map what it will write and, once it has been checked, what was done.</p>
+    <ul class="changes">${CHANGES.map((c, k) => { const st = c.page && (c.page.match(/\*\*State:([^*]+)\*\*/) || [])[1]; return `<li><button data-change="${k}"><b>${esc(c.title)}</b><small>${st ? "State:" + esc(st) : c.after ? "checked" : "planned"}</small><small>${esc(c.folder || c.id)}</small></button></li>`; }).join("")}</ul>`;
+  const c = CHANGES[S.change];
+  let h = CHANGES.length > 1 ? `<div class="banner"><span>Change ${S.change + 1} of ${CHANGES.length}</span><button id="all-changes">All changes</button></div>` : "";
+  h += `<div class="eyebrow">Change <span class="tag">${esc(c.folder || c.id)}</span></div><h2>${esc(c.title)}</h2>`;
+  const onmap = `<section class="onmap" aria-label="On the map"><div class="eyebrow">On the map: ${S.phase === "after" ? "what was done, from the last check" : "what the plan will change"}</div>${keyHtml(c)}${pickHtml(c)}</section>`;
+  if (!c.page) {
+    const v = viewById(c.plan_view) || {};
+    return h + `<p class="note">${esc(v.narrative || "")}</p><p class="note">This change was assessed without a spec folder, so it has no leyline.md page.</p>` + onmap + `<div class="md">${listHtml("Tests to run", (v.tests_to_run || []).slice(0, 30).map((t) => ({ go: t.i, name: t.name, ct: "" })), (v.tests_to_run || []).length)}</div>`;
+  }
+  let body = "", placed = false;
+  for (const b of mdBlocks(c.page)) {
+    if (b.t === "title") continue;
+    if (b.t === "p" && b.text.startsWith("**State:")) { h += `<p class="state ${stateClass(b.text)}">${inline(b.text)}</p>`; continue; }
+    if (b.t === "p" && /^The one-page plan for/.test(b.text)) continue;
+    if (b.t === "h" && !placed) { body += onmap; placed = true; }
+    body += b.t === "h" ? `<h3>${inline(b.text)}</h3>` : b.t === "p" ? `<p>${inline(b.text)}</p>` : b.t === "ul" ? `<ul>${b.items.map((x) => `<li>${inline(x)}</li>`).join("")}</ul>` : tableHtml(b);
+  }
+  if (!placed) body += onmap;
+  return h + `<div class="md">${body}<p class="note">This is <code>${esc(c.folder)}leyline.md</code>, written by <code>leyline plan</code> and <code>leyline check</code>. To change the plan, edit the spec files beside it and run <code>leyline plan ${esc(c.name)}</code> again.</p></div>`;
+}
+const backHtml = () => `<div class="banner"><span>${esc(CHANGES[S.change].title)}</span><button id="to-change">Back to the change</button></div>`;
+const shownHtml = () => `<div class="banner"><span>The map shows the change <b>${esc(CHANGES[S.change].title)}</b>: ${S.phase === "after" ? "what was done" : "what the plan will change"}.</span><button id="to-change">Back to the change</button><button id="hide-change">Hide</button></div>`;
+function wireChange(s) {
+  for (const b of s.querySelectorAll("[data-change]")) b.onclick = () => openChange(+b.dataset.change);
+  if ($("all-changes")) $("all-changes").onclick = () => { S.change = null; S.pick = null; setMode("change"); };
+  if ($("to-change")) $("to-change").onclick = () => { S.sel = null; if (S.mode === "change") { mark(); side(); } else setMode("change"); };
+  if ($("hide-change")) $("hide-change").onclick = () => { S.change = null; S.pick = null; draw(); side(); };
+  if ($("unpick")) $("unpick").onclick = () => { S.pick = null; mark(); side(); };
+  const choose = (p) => { const same = S.pick && S.pick.task === p.task && S.pick.scenario === p.scenario; S.pick = same ? null : p; mark(); const top = s.scrollTop; side(); s.scrollTop = top; };
+  for (const r of s.querySelectorAll("[data-task]")) { r.onclick = () => choose({ task: r.dataset.task }); r.onkeydown = (e) => { if (e.key === "Enter") r.click(); }; }
+  for (const r of s.querySelectorAll("[data-scenario]")) { r.onclick = () => choose({ scenario: r.dataset.scenario }); r.onkeydown = (e) => { if (e.key === "Enter") r.click(); }; }
+}
+/* ---------- workspace ---------- */
+function wsHtml() {
+  const pairs = new Map(), called = new Map();
+  for (const Lk of LINKS) {
+    const a = repoOf[Lk[1]], b = repoOf[Lk[2]];
+    if (a == null || b == null || a === b) continue;
+    const key = a + ">" + b; let p = pairs.get(key); if (!p) pairs.set(key, p = { a, b, n: 0, kinds: {} });
+    p.n += Lk[4]; p.kinds[linkLabel(Lk)] = (p.kinds[linkLabel(Lk)] || 0) + Lk[4];
+    if (Lk[0] === "calls") { const c = called.get(Lk[2]) || new Set(); c.add(Lk[1]); called.set(Lk[2], c); }
+  }
+  const crossing = FLOWS.filter((f) => f.steps.some((st) => repoOf[st[0]] !== repoOf[f.entry])).length;
+  const facts = [[REPOS.length, "repositories"], [N.filter((n) => n.k === "module").length, "modules"], [N.filter((n) => n.k === "file").length, "files"], [big(REPOS.reduce((t, r) => t + linesOf(r), 0)), "lines"]];
+  const prs = [...pairs.values()].sort((x, y) => y.n - x.n);
+  const top = [...called.entries()].sort((x, y) => y[1].size - x[1].size).slice(0, 12);
+  return `<div class="eyebrow">Workspace</div><h2>${REPOS.map((r) => esc(N[r].n)).join(" + ")}</h2>
+    <div class="facts">${facts.map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("")}</div>
+    <p class="note">One store holds ${REPOS.length} repositories, indexed together so that a call from one into another links to the code it reaches. Each box is a repository; an arrow from A to B means code in A uses code in B, and its number counts the links. Double-click a repository to see its modules; links into the others stay on that map, dashed and in their own colour.</p>
+    ${CHANGES.length && S.change == null ? `<p class="note">${CHANGES.length === 1 ? "One change is" : CHANGES.length + " changes are"} planned. Open <b>Changes</b> to see on the map what ${CHANGES.length === 1 ? "it" : "each"} will write.</p>` : ""}
+    ${listHtml("Repositories", REPOS.map((r) => ({ go: r, name: N[r].n, sub: repoMeta(r).url || "", ct: big(linesOf(r)) + " lines" })), REPOS.length)}
+    <h3>Links between repositories <span>${prs.length}</span></h3>${prs.length ? `<ul class="list">${prs.map((p) => `<li><button data-edge="${p.a}>${p.b}"><span class="nm">${esc(N[p.a].n)} → ${esc(N[p.b].n)}<small>${esc(Object.entries(p.kinds).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v.toLocaleString()}`).join(" · "))}</small></span><span class="ct">${p.n.toLocaleString()}</span></button></li>`).join("")}</ul>` : `<p class="note">None found: no code in one repository uses code in another.</p>`}
+    ${listHtml("Most used from another repository", top.map(([d, cs]) => ({ go: d, name: qual(d), sub: "in " + N[repoOf[d]].n + " · called from " + [...new Set([...cs].map((c) => N[repoOf[c]].n))].join(", "), ct: cs.size + " callers" })), called.size)}
+    <h3>Flows that cross</h3><p class="note">${crossing.toLocaleString()} of ${FLOWS.length.toLocaleString()} flows (what a test or an entry point runs through) pass into another repository. Find them under More, Flows.</p>`;
+}
 
 /* ---------- search ---------- */
 const searchable = N.filter((n) => ["system", "module", "file", "type", "callable", "field", "test"].includes(n.k) && n.n !== "<module>" && n.n !== "<top-level>");
@@ -1168,16 +1527,19 @@ $("q").addEventListener("input", () => {
     hits.push([(name === q ? -2 : name.includes(q) && words.length > 1 ? -1 : name === last ? 0 : name.startsWith(last) ? 1 : name.includes(last) ? 2 : 3) * 10 + rank[n.k], n.i.length, n]);
   }
   hits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  box.innerHTML = hits.slice(0, 14).map(([, , n]) => `<button data-go="${n.idx}"><b>${esc(n.k === "callable" || n.k === "field" ? qual(n.idx) : n.n)}</b><span>${esc(kindName(n.idx))} · ${esc(where(n.idx))}</span></button>`).join("") || `<button disabled><span>Nothing matches “${esc(q)}”.</span></button>`;
+  box.innerHTML = hits.slice(0, 14).map(([, , n]) => `<button data-go="${n.idx}"><b>${esc(n.k === "callable" || n.k === "field" ? qual(n.idx) : n.n)}</b><span>${esc(kindName(n.idx))}${WS && repoOf[n.idx] != null ? " · " + esc(N[repoOf[n.idx]].n) : ""} · ${esc(where(n.idx))}</span></button>`).join("") || `<button disabled><span>Nothing matches “${esc(q)}”.</span></button>`;
   box.hidden = false;
-  for (const b of box.querySelectorAll("[data-go]")) b.onclick = () => { box.hidden = true; $("q").value = ""; if (S.mode === "matrix" || S.mode === "views") setMode("map"); goTo(+b.dataset.go); };
+  for (const b of box.querySelectorAll("[data-go]")) b.onclick = () => { box.hidden = true; $("q").value = ""; if (S.mode === "matrix" || S.mode === "views" || S.mode === "change") setMode("map"); goTo(+b.dataset.go); };
 });
 $("q").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("results").hidden = true; $("q").blur(); } if (e.key === "Enter") { const b = $("results").querySelector("[data-go]"); if (b) b.click(); } });
 document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });
 
 /* ---------- start ---------- */
-$("commit").textContent = (D.repos[0] && D.repos[0].commit ? D.repos[0].commit.slice(0, 7) : "");
-render(true);
+$("hint-cross").hidden = !WS;
+$("change-count").textContent = CHANGES.length ? " " + CHANGES.length : "";
+const asked = decodeURIComponent((location.hash.match(/change=([^&]+)/) || [])[1] || "") || (D.start && D.start.change);
+const startAt = asked ? CHANGES.findIndex((c) => c.name === asked || c.id === asked) : -1;
+if (startAt >= 0) openChange(startAt); else render(true);
 window.addEventListener("resize", () => { if (S.mode === "map") fit(); });
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { draw(); fit(); });
 })();
