@@ -53,6 +53,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 TESTED = ("SELECT id AS callable_id FROM keys WHERE k IN (SELECT DISTINCT callable FROM steps WHERE flow IN"
           " (SELECT k FROM keys WHERE id IN (SELECT id FROM flows WHERE json_extract(attrs, '$.kind') = 'test')))")
 
+
 def flow_callables(con, least: int, most: int) -> dict:
     """flow id -> the callable ids of its steps in order, for every flow of least..most steps. One pass over the
     keyed table: a query per flow cost seconds on a large repo, and through the view every step of every flow
