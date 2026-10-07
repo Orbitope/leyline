@@ -560,7 +560,8 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
     base_sha = _git(root, "merge-base", base, "HEAD")
     head_sha = _git(root, "rev-parse", "HEAD")
     dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
-    if not about.strip():
+    given = about.strip() or None   # said by the person (or the pull request); a description made here is not kept
+    if not given:
         about = _described(root, base_sha, db, given_id, github)
     db = Path(db)
     if not db.exists():
@@ -584,15 +585,18 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
     con = store.connect(db)
     try:
         facts = analyse(con, snap, about, _old_source(root, base_sha))
-        title = title or _title(about) or _git(root, "log", "-1", "--format=%s")
+        title = title or _title(about) or _untitled(root)
         marks = facts.pop("marks")
         with con:
             row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
             attrs = json.loads(row[0] or "{}") if row else {}
+            if given:
+                attrs["about_given"] = given
             attrs.update({"title": title, "kind": "pr", "base": base, "base_sha": base_sha, "url": url, "dirty": dirty,
                           "root": str(root), "report": {k: facts[k] for k in ("size",)}})
             con.execute("INSERT OR REPLACE INTO change_proposals (id, intent, status, base_commit, head_commit, attrs)"
-                        " VALUES (?,?,?,?,?,?)", (cid, about or title, "pr", base_sha, head_sha, json.dumps(attrs)))
+                        " VALUES (?,?,?,?,?,?)", (cid, attrs.get("about_given") or about or title, "pr", base_sha, head_sha,
+                                                  json.dumps(attrs)))
         seen, kept = set(), []
         for m in marks:
             if m["id"] not in seen:
@@ -649,17 +653,27 @@ def _title(about: str) -> str:
     return cut + "..."
 
 
+def _untitled(root: Path) -> str:
+    """A title for a branch with no commits of its own and no description: its name, and that it is uncommitted."""
+    try:
+        branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
+    except GitError:
+        branch = ""
+    return f"Uncommitted edits on {branch}" if branch else "Uncommitted edits"
+
+
 def _described(root: Path, base_sha: str, db, given_id, github) -> str:
     """What the change says it does when no one said: what an earlier review of it was told, else its commits'
     messages."""
-    if Path(db).exists():
+    if Path(db).exists():   # what the person said at an earlier review of this change still holds
         con = store.connect(db)
         try:
-            row = con.execute("SELECT intent FROM change_proposals WHERE id = ?", (change_id(root, given_id, github),)).fetchone()
+            row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (change_id(root, given_id, github),)).fetchone()
         finally:
             con.close()
-        if row and row[0] and not row[0].startswith("From its commit messages: "):   # commits may have come since
-            return row[0]
+        said = (json.loads(row[0] or "{}").get("about_given") if row else None)
+        if said:
+            return said
     try:
         log = _git(root, "log", "--no-merges", "--format=%s%n%n%b%x00", f"{base_sha}..HEAD")
     except GitError:
