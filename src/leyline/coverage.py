@@ -22,6 +22,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
+from . import store
+
 
 def _functions(con):
     """path -> [(first body line, last line, node id)] for every function on the map."""
@@ -199,8 +201,7 @@ def summary(con) -> dict:
     executed = ran(con)
     measured_files = {r[0] for r in con.execute(
         "SELECT DISTINCT a.file_id FROM covered c JOIN ancestry a ON a.node_id = c.node_id")}
-    static = {r[0] for r in con.execute("SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
-                                        " WHERE json_extract(f.attrs, '$.kind') = 'test'")}
+    static = {r[0] for r in con.execute(store.TESTED)}
     by_module = defaultdict(lambda: {"functions": 0, "ran": 0, "on_a_test_path": 0, "path_but_never_ran": 0, "ran_off_every_path": 0})
     for r in con.execute("SELECT n.id, a.file_id FROM nodes n JOIN ancestry a ON a.node_id = n.id WHERE n.kind = 'callable'"):
         if r["file_id"] not in measured_files:

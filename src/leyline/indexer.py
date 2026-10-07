@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import posixpath
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import subprocess
 import time
 import sys
+from array import array
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
@@ -86,8 +88,29 @@ def _arity(type_id: str) -> int:
     return int(tail[1]) if len(tail) == 2 and tail[1].isdigit() else 0
 
 
+NOT_TYPES = ("String", "Self", "None", "Some", "Ok", "Err")
+_IDENT = re.compile(r"[A-Za-z_]\w*")
+
+
+def _declared(text: list[str], start: Optional[int], end: Optional[int]) -> dict:
+    """Variables a span of text declares with a type: name -> the type names written for it, in the order that
+    decides (the first, then any later one), so that which of them are in the repo can be settled later."""
+    body = "\n".join(text[(start or 1) - 1:end or start or 1])
+    out: dict[str, list] = {}
+    for pat, gn, gt in Indexer._DECL:
+        for m in pat.finditer(body):
+            name, tname = m.group(gn), m.group(gt)
+            seen = out.get(name)
+            if seen is None:
+                if tname not in NOT_TYPES:
+                    out[name] = [tname]
+            elif tname not in seen:
+                seen.append(tname)
+    return out
+
+
 def _parse_one(job):
-    """Parse one file: (path, ext, module dir, module id, lines, sha1, result or None, error or None).
+    """Parse one file: (path, ext, module dir, module id, lines, sha1, result or None, error or None, declarations).
     Runs in a worker process on large repositories, so it touches nothing but its arguments."""
     root, repo, (f, ext, mod_dir, mod_id) = job
     data = (Path(root) / f).read_bytes()
@@ -96,13 +119,36 @@ def _parse_one(job):
     try:
         res = adapter.parse(repo, f, f"{repo}:file:{f}", data, mod_dir or ".")
     except Exception as exc:
-        return f, ext, mod_dir, mod_id, loc, sha, None, str(exc)[:300]
+        return f, ext, mod_dir, mod_id, loc, sha, None, str(exc)[:300], None
     lines = data.split(b"\n")
     for n in res.nodes:
         if n.span_start and n.kind in ("type", "callable", "test", "field"):
             # A hash of the node's own text, so a later index can tell which nodes were edited.
             n.content_hash = hashlib.sha1(b"\n".join(ln.strip() for ln in lines[n.span_start - 1:n.span_end])).hexdigest()[:16]
-    return f, ext, mod_dir, mod_id, loc, sha, res, None
+    decls = None
+    if getattr(adapter, "GENERIC", False):
+        # The generic resolver reads variable types out of function and type text. Reading it here puts that
+        # work in the parallel part; the text is read the way Indexer._file_text reads it, so the answer is the same.
+        try:
+            text = (Path(root) / f).read_text(errors="replace").splitlines()
+        except OSError:
+            text = None
+        if text is not None:
+            # Only where a call names a variable receiver is the type looked for; any other place falls back to
+            # reading the text in the main process.
+            holders, todo = set(), list(res.calls)
+            while todo:
+                c = todo.pop()
+                if c.receiver not in (None, "this", "base", "?") and _IDENT.fullmatch(c.receiver):
+                    holders.update((c.src_id, c.enclosing_type))
+                if c.chain is not None:
+                    todo.append(c.chain)
+            decls = {n.id: (n.span_start, n.span_end, _declared(text, n.span_start, n.span_end))
+                     for n in res.nodes if n.id in holders}
+    return f, ext, mod_dir, mod_id, loc, sha, res, None, decls
+
+
+PARALLEL_MIN_FILES = 300   # below this, starting worker processes costs more than it saves
 
 
 def _jobs() -> int:
@@ -117,7 +163,7 @@ def _parse_all(root: Path, repo: str, work: list):
     Results come back in the order given, so the index is the same however many processes ran."""
     jobs = _jobs()
     items = [(str(root), repo, w) for w in work]
-    if jobs == 1 or len(items) < 300:
+    if jobs == 1 or len(items) < PARALLEL_MIN_FILES:
         yield from map(_parse_one, items)
         return
     import multiprocessing
@@ -128,6 +174,47 @@ def _parse_all(root: Path, repo: str, work: list):
         ctx = None   # no fork (Windows): the default start method works, it is only slower to begin
     with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as pool:
         yield from pool.map(_parse_one, items, chunksize=max(4, len(items) // (jobs * 16)))
+
+
+class FlowSteps:
+    """The steps of every flow, packed into arrays: as tuples they were the largest thing in memory on a large
+    repository (millions of them). Iterates as (flow id, seq, depth, callable id, via, site line, parent seq)."""
+
+    def __init__(self):
+        self.flows: list[tuple] = []          # (flow id, index of its first step)
+        self.callable: list[str] = []         # the node ids themselves, shared with the nodes
+        self.depth, self.via, self.line, self.parent = array("i"), array("b"), array("q"), array("q")
+        self.via_names: list[str] = []
+        self._via: dict[str, int] = {}
+
+    def add(self, flow_id: str, steps: list[tuple]) -> None:
+        """steps: (seq, depth, callable id, via, site line or None, parent seq or None), seq counting from 0."""
+        self.flows.append((flow_id, len(self.callable)))
+        for _seq, depth, c, via, line, parent in steps:
+            v = self._via.get(via)
+            if v is None:
+                v = self._via[via] = len(self.via_names)
+                self.via_names.append(via)
+            self.callable.append(c)
+            self.depth.append(depth)
+            self.via.append(v)
+            self.line.append(-1 if line is None else line)
+            self.parent.append(-1 if parent is None else parent)
+
+    def __len__(self) -> int:
+        return len(self.callable)
+
+    def ids(self):
+        """Every flow id, then every callable id, in step order: the ids the rows name, as store._keys takes them."""
+        return itertools.chain((fid for fid, _ in self.flows), self.callable)
+
+    def __iter__(self):
+        ends = [start for _, start in self.flows[1:]] + [len(self.callable)]
+        for (fid, start), end in zip(self.flows, ends):
+            for i in range(start, end):
+                line, parent = self.line[i], self.parent[i]
+                yield (fid, i - start, self.depth[i], self.callable[i], self.via_names[self.via[i]],
+                       None if line < 0 else line, None if parent < 0 else parent)
 
 
 class Indexer:
@@ -142,14 +229,16 @@ class Indexer:
         self.file_lang: dict[str, str] = {}
         self.file_of_path: dict[str, str] = {}
         self._decl_cache: dict[str, dict] = {}
+        self._read_decls: dict[str, dict] = {}   # file id -> node id -> (span, declarations read in the parse)
         self._text_cache: dict[str, list] = {}
         self.stats: dict[str, Counter] = defaultdict(Counter)
         self.flows: list[tuple] = []
         self.call_col: dict[tuple, int] = {}
-        self.flow_steps: list[tuple] = []
+        self.flow_steps = FlowSteps()
         self.channel_stats: dict[str, Counter] = defaultdict(Counter)
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
+        self._name_ix: dict[tuple, dict] = {}
         self._loose_reach: dict[str, set] = {}
         self.exact_mode = "off"          # off | auto | roslyn | scip
         self.scip_paths: list[str] = []
@@ -201,7 +290,7 @@ class Indexer:
             mod_dir = _module_for(f, module_dirs)
             mod_id = self._module(mod_dir, files)
             work.append((f, ext, mod_dir, mod_id))
-        for f, ext, mod_dir, mod_id, loc, sha, res, failed in _parse_all(self.root, self.repo, work):
+        for f, ext, mod_dir, mod_id, loc, sha, res, failed, decls in _parse_all(self.root, self.repo, work):
             adapter = BY_EXTENSION[ext]
             file_id = f"{self.repo}:file:{f}"
             self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
@@ -212,6 +301,8 @@ class Indexer:
                 print(f"leyline: failed to parse {f}: {failed}", file=sys.stderr)
                 continue
             self.results[file_id] = res
+            if decls is not None:
+                self._read_decls[file_id] = decls
             self.file_of_path[f] = file_id
             self.file_lang[file_id] = adapter.LANGUAGE
             self.stats[adapter.NAME]["files"] += 1
@@ -1023,15 +1114,14 @@ class Indexer:
             if decls is None:
                 n = self.nodes[holder]
                 fid = self.file_of.get(holder)
-                text = self._file_text(fid) if fid else []
-                body = "\n".join(text[(n.span_start or 1) - 1:n.span_end or n.span_start or 1])
-                decls = {}
-                for pat, gn, gt in self._DECL:
-                    for m in pat.finditer(body):
-                        name, tname = m.group(gn), m.group(gt)
-                        if name not in decls and tname not in ("String", "Self", "None", "Some", "Ok", "Err") or (
-                                name in decls and decls[name] is None and self.types_by_name.get((lang, tname))):
-                            decls[name] = tname if self.types_by_name.get((lang, tname)) else None
+                read = self._read_decls.get(fid, {}).get(holder)
+                if read is not None and read[:2] == (n.span_start, n.span_end):
+                    found = read[2]   # read by the parse worker from the same text
+                else:
+                    found = _declared(self._file_text(fid) if fid else [], n.span_start, n.span_end)
+                # A name counts as the first type written for it, or, if that one is not in the repo, the first after it that is.
+                decls = {name: next((t for t in tnames if self.types_by_name.get((lang, t))), None)
+                         for name, tnames in found.items()}
                 self._decl_cache[holder] = decls
             if var in decls:
                 if decls[var] is None:
@@ -1041,6 +1131,10 @@ class Indexer:
 
     def _file_text(self, fid: str) -> list[str]:
         if fid not in self._text_cache:
+            if len(self._text_cache) >= 8:
+                # Calls are resolved a file at a time, so a few files are enough; keeping every file's text
+                # cost hundreds of MB on a large repo.
+                self._text_cache.clear()
             try:
                 self._text_cache[fid] = (self.root / self.nodes[fid].path).read_text(errors="replace").splitlines()
             except OSError:
@@ -1055,6 +1149,42 @@ class Indexer:
             self._vis_cache[key] = first | {t for f in first for t in self.import_targets.get(f, ())}
         return self._vis_cache[key]
 
+    def _name_index(self, lang: str, name: str) -> dict:
+        """Where the callables of one name are declared, looked up by file and directory. A common name (get, run)
+        has thousands of declarations in a large repo, and scanning them for every call was quadratic."""
+        key = (lang, name)
+        ix = self._name_ix.get(key)
+        if ix is None:
+            ix = {"free": [], "typed": [], "free_file": defaultdict(list), "typed_file": defaultdict(list),
+                  "free_dir": {}, "free_dir_base": {}, "stem": {}, "owners": set(), "typed_owners": set()}
+            for i, c in enumerate(self.by_name.get(key, ())):
+                f = self.file_of.get(c.id)
+                typed = bool(c.attrs.get("type_id"))
+                ix["owners"].add(c.parent_id)
+                if typed:
+                    ix["typed"].append(c)
+                    ix["typed_file"][f].append((i, c))
+                    ix["typed_owners"].add(c.parent_id)
+                else:
+                    ix["free"].append(c)
+                    ix["free_file"][f].append((i, c))
+                if f is None:
+                    continue
+                d = self.nodes[f].path.rpartition("/")[0]
+                if not typed:
+                    ix["free_dir"].setdefault(d, c)
+                    ix["free_dir_base"].setdefault(d.rsplit("/", 1)[-1], c)
+                ix["stem"].setdefault(self.nodes[f].name.rsplit(".", 1)[0], c)
+            self._name_ix[key] = ix
+        return ix
+
+    @staticmethod
+    def _in_files(by_file: dict, files) -> list:
+        """The declarations in any of these files, in declaration order."""
+        hits = [ic for f in files for ic in by_file.get(f, ())]
+        hits.sort(key=lambda ic: ic[0])
+        return [c for _, c in hits]
+
     def _generic_call(self, lang: str, fid: str, call: CallSite) -> Optional[list[Node]]:
         """A call read by the generic adapter: only the name and what the text shows of the receiver are known.
         Nearest first: the caller's own type, its file, its directory, a type or package named by the receiver,
@@ -1064,6 +1194,7 @@ class Indexer:
         types = self.types_by_name.get((lang, name), [])
         if not cands and not types:
             return None
+        ix = self._name_index(lang, name)
         r = call.receiver
 
         def by_args(fns):
@@ -1095,25 +1226,25 @@ class Indexer:
                     return by_args(found)
             if r is not None:
                 return [] if cands else None
-            for scope in (lambda c: self.file_of.get(c.id) == fid,
-                          lambda c: self.nodes[self.file_of[c.id]].path.rpartition("/")[0] == here if c.id in self.file_of else False):
-                local = [c for c in cands if scope(c) and not c.attrs.get("type_id")]
-                if local:
-                    return local[:1]
+            local = ix["free_file"].get(fid)   # declared in this file, then in this directory
+            if local:
+                return [local[0][1]]
+            if here in ix["free_dir"]:
+                return [ix["free_dir"][here]]
             if types and r is None:
                 local_t = [t for t in types if self.file_of.get(t) == fid] or \
                     [t for t in types if self.file_of.get(t) in near_files] or \
                     [t for t in types if self.nodes[self.file_of.get(t, fid)].path.rpartition("/")[0] == here] or types
                 if len(local_t) == 1:
                     return ctor_of(local_t)
-            free = [c for c in cands if not c.attrs.get("type_id")]
-            imported = [c for c in free if self.file_of.get(c.id) in self.import_targets.get(fid, ())] or \
-                [c for c in free if self.file_of.get(c.id) in near_files]
+            free = ix["free"]
+            imported = self._in_files(ix["free_file"], self.import_targets.get(fid, ())) or \
+                self._in_files(ix["free_file"], near_files)
             if imported:
                 return by_args(imported) if len({c.parent_id for c in imported}) == 1 else []
             if len(free) == 1 and (lang, name) not in self.outside_names:
                 self._guessed = True
-                return free
+                return list(free)
             return [] if free else None
         if r not in ("?", None, "this", "base"):
             tid = self._generic_var_type(lang, call.src_id, r, call.enclosing_type)
@@ -1125,22 +1256,22 @@ class Indexer:
                     if found:
                         return by_args(found)
         if r == "?":
-            pool = [c for c in cands if c.attrs.get("type_id")]
+            pool, owners = ix["typed"], ix["typed_owners"]
             if not pool:
                 return None
+            near = self._in_files(ix["typed_file"], near_files | {fid})
+            if near and len({c.parent_id for c in near}) == 1:
+                self._guessed = True
+                return near
         else:
             # The receiver names a type (static call) or a package / module directory (Go's pkg.Func, Rust's mod::f).
             owned = [c for t in self.types_by_name.get((lang, r), []) for c in self.members.get(t, {}).get(name, [])]
             if owned:
                 return by_args(owned)
-            in_dir = [c for c in cands if c.id in self.file_of and
-                      self.nodes[self.file_of[c.id]].path.rpartition("/")[0].rsplit("/", 1)[-1] == r and not c.attrs.get("type_id")]
-            if in_dir:
-                return in_dir[:1]
-            in_file = [c for c in cands if c.id in self.file_of and
-                       self.nodes[self.file_of[c.id]].name.rsplit(".", 1)[0] == r]
-            if in_file:
-                return in_file[:1]
+            if r in ix["free_dir_base"]:
+                return [ix["free_dir_base"][r]]
+            if r in ix["stem"]:
+                return [ix["stem"][r]]
             if types and r not in self.types_by_name.get((lang, r), ()) and self._generic_var_type(lang, call.src_id, r, call.enclosing_type) is None:
                 # module.Type(...): a type reached through the module or package the receiver names
                 via = [t for t in types if self.file_of.get(t) in near_files
@@ -1149,19 +1280,14 @@ class Indexer:
                     return ctor_of(via)
             if r[:1].isupper() and not self.types_by_name.get((lang, r)):
                 return None      # a type from outside: Foo.bar()
-            pool = cands
-        near = [c for c in pool if self.file_of.get(c.id) in near_files or self.file_of.get(c.id) == fid]
-        if near and len({c.parent_id for c in near}) == 1 and r == "?":
-            self._guessed = True
-            return near
+            pool, owners = cands, ix["owners"]
         if (lang, name) in self.outside_names or len(name) <= 2:
             self.stats[BY_LANGUAGE[lang].NAME]["calls_guess_declined"] += 1
             return None
-        owners = {c.parent_id for c in pool}
         if len(owners) == 1:
             self._guessed = True
             self.stats[BY_LANGUAGE[lang].NAME]["calls_by_unique_name"] += 1
-            return pool
+            return list(pool)
         return []
 
     def _resolve_call(self, lang: str, fid: str, call: CallSite) -> Optional[list[Node]]:
@@ -1597,7 +1723,7 @@ class Indexer:
             self.flows.append((fid, name, "static", start, 0.0, None, "fact", SOURCE, {
                 "kind": kind, "detail": detail, "steps": len(steps), "truncated": truncated,
                 "modules": sorted(m for m in mods if m)}))
-            self.flow_steps.extend((fid, *s) for s in steps)
+            self.flow_steps.add(fid, steps)
 
     def _py_symbol(self, node_id: str, argc: int) -> Optional[list[Node]]:
         n = self.nodes.get(node_id)
@@ -1702,25 +1828,29 @@ def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, 
         began = time.perf_counter()
         stats = ix.run(con)
         stats.update(ix.exact_stats)
+        # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
+        # large repo) from adding to what clustering and the pattern matchers hold.
+        repo, timing = ix.repo, ix.timing
+        del ix
         mark = time.perf_counter()
-        stats["systems"] = cluster.propose(con, ix.repo)
+        stats["systems"] = cluster.propose(con, repo)
         with con:
-            store.rebuild_derived(con)
-        ix.timing["systems"] = round(time.perf_counter() - mark, 3)
+            store.rebuild_derived(con, systems_of=repo)
+        timing["systems"] = round(time.perf_counter() - mark, 3)
         mark = time.perf_counter()
-        stats["patterns"] = patterns.run(con, ix.repo)
-        stats["tour"] = tours.generate(con, ix.repo)
-        ix.timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
+        stats["patterns"] = patterns.run(con, repo)
+        stats["tour"] = tours.generate(con, repo)
+        timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
         stats["stale_annotations"] = store.refresh_stale(con)
         files = sum(v.get("files", 0) for k, v in stats.items() if k.startswith(("tree-sitter", "generic")))
-        lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (ix.repo,)).fetchone()[0]
+        lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (repo,)).fetchone()[0]
         total = round(time.perf_counter() - began, 3)
-        stats["timing"] = {"total_seconds": total, **ix.timing, "files": files, "lines": lines,
+        stats["timing"] = {"total_seconds": total, **timing, "files": files, "lines": lines,
                            "lines_per_second": round(lines / total) if total else 0}
         with con:  # kept in the store so a later reader can see what the map cost to build
-            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{ix.repo}", json.dumps(stats["timing"])))
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{repo}", json.dumps(stats["timing"])))
             con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
-                        (ix.repo, "timing", "-", "ok", None, json.dumps(stats["timing"])))
+                        (repo, "timing", "-", "ok", None, json.dumps(stats["timing"])))
         return stats
     finally:
         con.close()

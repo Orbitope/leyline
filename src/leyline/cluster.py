@@ -54,10 +54,15 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
         if a and b and a != b and module.get(a) == module.get(b):
             weights[(a, b) if a < b else (b, a)] += w
 
-    for r in con.execute("SELECT src_id, dst_id, COUNT(*) AS n FROM calls GROUP BY src_id, dst_id"):
+    for r in con.execute("SELECT src_id, dst_id, COUNT(*) AS n FROM calls GROUP BY src_id, dst_id ORDER BY dst_id, src_id"):
         add(r["src_id"], r["dst_id"], WEIGHTS["calls"] * r["n"])
     for r in con.execute("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('uses_type','instantiates','extends','implements')"):
         add(r["src_id"], r["dst_id"], WEIGHTS[r["kind"]])
+
+    # Both ends of a weighted pair share a module, so each module's pairs can be found without scanning them all.
+    pairs_of: dict[str, list] = defaultdict(list)
+    for (a, b), w in weights.items():
+        pairs_of[module.get(a)].append((a, b, w))
 
     old = [r[0] for r in con.execute("SELECT id FROM nodes WHERE repo_id = ? AND kind = 'system' AND source = ?",
                                      (repo_id, SOURCE))]
@@ -71,7 +76,7 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                 continue
             g = nx.Graph()
             g.add_nodes_from(sorted(members))
-            for (a, b), w in weights.items():
+            for a, b, w in pairs_of.get(mod, ()):
                 if a in members and b in members:
                     g.add_edge(a, b, weight=w)
             communities = nx.community.louvain_communities(g, weight="weight", seed=seed, resolution=resolution)

@@ -62,7 +62,8 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
         return {"error": "; ".join(problems)}
 
     callers: dict[str, list] = defaultdict(list)      # callee -> [(caller, precision)]
-    for r in con.execute("SELECT src_id, dst_id, MIN(precision = 'guess') AS sure FROM calls GROUP BY src_id, dst_id"):
+    for r in con.execute("SELECT src_id, dst_id, MIN(precision = 'guess') AS sure FROM calls GROUP BY src_id, dst_id"
+                         " ORDER BY dst_id, src_id"):
         callers[r["dst_id"]].append((r["src_id"], "calls", not r["sure"]))
     for r in con.execute("SELECT src_id, dst_id, precision, attrs FROM edges WHERE kind = 'communicates'"):
         ch = (json.loads(r["attrs"]) if r["attrs"] else {}).get("channel", "channel")

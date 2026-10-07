@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
 from importlib import resources
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .model import Edge, Node
 
@@ -31,9 +32,39 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         for col in cols:
             if col not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
-    _flow_steps_view(con)
-    con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+    # One transaction, committed here: moving an older store's rows drops the old table, and a caller that only
+    # reads and never commits would otherwise roll back the moved rows and lose them.
+    con.execute("BEGIN")
+    try:
+        _flow_steps_view(con)
+        _calls_view(con)
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
     return con
+
+
+# Every callable on some test's path, as `SELECT DISTINCT callable_id FROM flow_steps` over the test flows
+# would give it. Done on the keyed table: the flows are filtered first (reading the kind out of each flow's
+# attrs once per step was most of the cost on a large repo), and only the distinct callables are turned
+# back into ids.
+TESTED = ("SELECT id AS callable_id FROM keys WHERE k IN (SELECT DISTINCT callable FROM steps WHERE flow IN"
+          " (SELECT k FROM keys WHERE id IN (SELECT id FROM flows WHERE json_extract(attrs, '$.kind') = 'test')))")
+
+
+def flow_callables(con, least: int, most: int) -> dict:
+    """flow id -> the callable ids of its steps in order, for every flow of least..most steps. One pass over the
+    keyed table: a query per flow cost seconds on a large repo, and through the view every step of every flow
+    would be joined to its ids just to count them."""
+    out: dict[str, list] = {}
+    for f, c in con.execute(
+            "SELECT fk.id, ck.id FROM steps s JOIN keys fk ON fk.k = s.flow JOIN keys ck ON ck.k = s.callable"
+            " WHERE s.flow IN (SELECT flow FROM steps GROUP BY flow HAVING COUNT(*) BETWEEN ? AND ?)"
+            " ORDER BY s.flow, s.seq", (least, most)):
+        out.setdefault(f, []).append(c)
+    return out
 
 
 VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel")
@@ -56,6 +87,32 @@ def _flow_steps_view(con) -> None:
             FROM steps s JOIN keys fk ON fk.k = s.flow JOIN keys ck ON ck.k = s.callable""")
 
 
+def _calls_view(con) -> None:
+    """`calls` as readers know it, over `call_sites`, which holds the two ends as keys. A store written before
+    the change has a real `calls` table: its rows are moved across once. The old table's index happened to
+    return whole-table groups sorted by callee, then caller; through the view a reader that needs that order
+    asks for it."""
+    kind = con.execute("SELECT type FROM sqlite_master WHERE name = 'calls'").fetchone()
+    if kind is not None and kind[0] == "table":
+        rows = con.execute("SELECT src_id, dst_id, dispatch, precision, site_start, site_end, hit_count, commit_sha"
+                           " FROM calls ORDER BY rowid").fetchall()
+        con.execute("DROP TABLE calls")
+        _insert_calls(con, rows)
+        kind = None
+    if kind is None:
+        con.execute("""CREATE VIEW calls AS
+            SELECT sk.id AS src_id, dk.id AS dst_id, c.dispatch, c.precision, c.site_start, c.site_end, c.hit_count,
+                   c.commit_sha
+            FROM call_sites c JOIN keys sk ON sk.k = c.src JOIN keys dk ON dk.k = c.dst""")
+
+
+def _insert_calls(con, rows) -> None:
+    """rows: (src_id, dst_id, dispatch, precision, site_start, site_end, hit_count, commit_sha)"""
+    key = _keys(con, itertools.chain.from_iterable((r[0], r[1]) for r in rows))
+    con.executemany("INSERT INTO call_sites (src, dst, dispatch, precision, site_start, site_end, hit_count, commit_sha)"
+                    " VALUES (?,?,?,?,?,?,?,?)", ((key[r[0]], key[r[1]], *r[2:]) for r in rows))
+
+
 def _keys(con, ids) -> dict:
     ids = list(dict.fromkeys(ids))
     con.executemany("INSERT OR IGNORE INTO keys (id) VALUES (?)", [(i,) for i in ids])
@@ -67,17 +124,24 @@ def _keys(con, ids) -> dict:
 
 
 def _insert_steps(con, steps) -> None:
-    key = _keys(con, [s[0] for s in steps] + [s[3] for s in steps])
+    """steps: (flow id, seq, depth, callable id, via, site line, parent seq) rows. A collection that can list
+    the flow ids and then the callable ids itself (indexer.FlowSteps) saves a pass over millions of rows."""
+    ids = getattr(steps, "ids", None)
+    key = _keys(con, ids() if ids else itertools.chain((s[0] for s in steps), (s[3] for s in steps)))
     via = {v: i for i, v in enumerate(VIA)}
+    # Millions of rows on a large repo: the callable index is built once at the end rather than kept up to date
+    # row by row, and the rows are made as they are inserted, not held in a second list.
+    con.execute("DROP INDEX IF EXISTS steps_callable")
     con.executemany("INSERT OR REPLACE INTO steps (flow, seq, depth, callable, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
-                    [(key[f], seq, depth, key[c], via.get(v, via["channel"]), line, parent)
-                     for f, seq, depth, c, v, line, parent in steps])
+                    ((key[f], seq, depth, key[c], via.get(v, via["channel"]), line, parent)
+                     for f, seq, depth, c, v, line, parent in steps))
+    con.execute("CREATE INDEX IF NOT EXISTS steps_callable ON steps(callable, flow)")
 
 
 def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
     """Drop every fact row for a repo. Inferred and intent rows are left alone."""
     ids = "SELECT id FROM nodes WHERE repo_id = ? AND layer = 'fact'"
-    con.execute(f"DELETE FROM calls WHERE src_id IN ({ids})", (repo_id,))
+    con.execute(f"DELETE FROM call_sites WHERE src IN (SELECT k FROM keys WHERE id IN ({ids}))", (repo_id,))
     con.execute(f"DELETE FROM edges WHERE layer = 'fact' AND src_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM ancestry WHERE node_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM search WHERE node_id IN ({ids})", (repo_id,))
@@ -115,11 +179,7 @@ def write_edges(con, edges: Iterable[Edge], source: str, commit: str | None) -> 
 
 def write_calls(con, rows: Iterable[tuple], commit: str | None) -> None:
     """rows: (src_id, dst_id, dispatch, precision, line)"""
-    con.executemany(
-        "INSERT INTO calls (src_id, dst_id, dispatch, precision, site_start, site_end, commit_sha)"
-        " VALUES (?,?,?,?,?,?,?)",
-        [(s, d, disp, prec, line, line, commit) for (s, d, disp, prec, line) in rows],
-    )
+    _insert_calls(con, [(s, d, disp, prec, line, line, 0, commit) for (s, d, disp, prec, line) in rows])
 
 
 def write_flows(con, repo_id: str, flows, steps) -> None:
@@ -185,12 +245,22 @@ def write_coverage(con, repo_id, extractor, version, status, commit, stats: dict
     )
 
 
-def rebuild_derived(con: sqlite3.Connection) -> None:
-    """Recompute the ancestry cache and the search index from the node table."""
-    con.execute("DELETE FROM ancestry")
-    con.execute("DELETE FROM search")
+def rebuild_derived(con: sqlite3.Connection, systems_of: Optional[str] = None) -> None:
+    """Recompute the ancestry cache and the search index from the node table. `systems_of` is for after
+    clustering a repo, which removes and adds only that repo's system nodes, the new ones after every other
+    node: the rows of other nodes stay, which gives the same tables as a full rebuild without rewriting every row."""
+    have: set = set()
+    if systems_of is not None:
+        kept = "SELECT id FROM nodes WHERE NOT (kind = 'system' AND repo_id IS ?)"
+        con.execute(f"DELETE FROM ancestry WHERE node_id NOT IN ({kept})", (systems_of,))
+        con.execute(f"DELETE FROM search WHERE node_id NOT IN ({kept})", (systems_of,))
+        have = {r[0] for r in con.execute("SELECT node_id FROM ancestry")}
+    else:
+        con.execute("DELETE FROM ancestry")
+        con.execute("DELETE FROM search")
     rows = con.execute("SELECT id, kind, name, parent_id, path FROM nodes").fetchall()
     by_id = {r["id"]: r for r in rows}
+    rows = [r for r in rows if r["id"] not in have]
     out = []
     for r in rows:
         file_id = module_id = None

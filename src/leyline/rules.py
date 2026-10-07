@@ -11,6 +11,8 @@ import json
 from collections import defaultdict
 from typing import Optional
 
+from . import store
+
 KINDS = ("forbid", "no_cycle", "must_be_tested")
 EDGE_KINDS = ("calls", "imports", "uses_type", "instantiates", "extends", "implements", "depends_on", "communicates",
               "reads", "writes")
@@ -82,7 +84,7 @@ def confirm_rule(con, rule_id: int) -> dict:
 def _links(con, kinds: list[str]):
     kinds = kinds or list(DEPENDENCY_KINDS)
     if "calls" in kinds:
-        for r in con.execute("SELECT DISTINCT src_id, dst_id FROM calls"):
+        for r in con.execute("SELECT DISTINCT src_id, dst_id FROM calls ORDER BY dst_id, src_id"):
             yield r[0], r[1], "calls"
     rest = [k for k in kinds if k != "calls"]
     if rest:
@@ -140,9 +142,7 @@ def check(con, rules_from=None) -> dict:
                     visit(v, [v])
         elif rule["kind"] == "must_be_tested":
             scope = _select(con, rule["selector_from"])
-            tested = {r[0] for r in con.execute(
-                "SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
-                " WHERE json_extract(f.attrs, '$.kind') = 'test'")}
+            tested = {r[0] for r in con.execute(store.TESTED)}
             try:  # functions measured running under a test count as tested
                 tested |= {r[0] for r in con.execute("SELECT DISTINCT node_id FROM covered")}
             except Exception:

@@ -79,7 +79,7 @@ def graph(con, with_sources: bool = True) -> dict:
     for c in con.execute(
             "SELECT src_id, dst_id, COUNT(*) AS n, MIN(site_start) AS line,"
             " MIN(CASE precision WHEN 'exact' THEN 2 WHEN 'guess' THEN 0 ELSE 1 END) AS rank"
-            " FROM calls GROUP BY src_id, dst_id"):
+            " FROM calls GROUP BY src_id, dst_id ORDER BY dst_id, src_id"):
         if c["src_id"] in index and c["dst_id"] in index:
             calls.append([index[c["src_id"]], index[c["dst_id"]], c["n"], c["line"], c["rank"]])
     flows = []
