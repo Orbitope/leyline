@@ -473,6 +473,8 @@ class TestNames:
 def record_tests(con, run: str, results: list[dict]) -> dict:
     """Store one test run. Each result is {name, status: pass|fail|skip, message?}."""
     names = TestNames(con)
+    from . import props   # results passed whole (MCP `test_results`) may carry a property test's counterexample
+    results = props.annotate([dict(r) for r in results])
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     rows = [(run, r["name"], names.node(r["name"]), r["status"], r.get("message"), now) for r in results]
     with con:
@@ -592,7 +594,8 @@ def parse_test_output(text: str) -> list[dict]:
                     name, message = rest.split(sep, 1)
                     break
         last = emit([name.strip()], status, message)
-    return list(out.values())
+    from . import props   # a failing property test's counterexample, from wherever in the text it was printed
+    return props.annotate(list(out.values()), text)
 
 
 def _n(n: int, word: str, plural: str = "") -> str:

@@ -439,6 +439,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
         in_run = bool(_scenario_results(ran, s["name"]))
         scenarios.append({**s, "test": tid, "test_exists": bool(tid or gen or in_run),
                           **({"generated_by": gen["name"]} if gen else {"in_run": True} if in_run and not tid else {})})
+    from . import props   # a scenario that states an invariant is proven better by a property test
+    props.mark_scenarios(con, scenarios, [i for l in links for i in l["nodes"]])
     tasked = {i for l in links for i in l["nodes"]}
     planned = {k for l in links for k in l["scenarios"]}   # scenarios some task says it will write the test for
 
@@ -1128,6 +1130,8 @@ def brief_text(b: dict) -> str:
             test = (f"made at run time by `{s['generated_by']}`" if s.get("generated_by") else
                     "in the test run (made at run time)" if s.get("in_run") else
                     "exists" if s["test_exists"] else "to be written, with this name")
+            from .props import cell
+            test += cell(s)
             L.append(f"| {s['name']} | {'; '.join(s['when']).replace('|', '/')} | {'; '.join(s['then']).replace('|', '/')} | {test} |")
     else:
         L.append("No scenarios yet: nothing says what done means.")
@@ -1264,7 +1268,10 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         static = bool(tid) and bool({r[0] for r in con.execute(
             "SELECT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id WHERE f.entry_id = ?", (tid,))} & touched)
         script = next((x["path"] for x in own_checks.values() if s["name"] in x["results"]), None) if not tid else None
+        from .props import from_message   # a failing property test's smallest failing input
+        ex = next((x for x in (from_message(r["message"]) for r in failed) if x), None)
         scenarios.append({"name": s["name"], "state": state, "test": tid, "generated": not tid and bool(gen),
+                          **({"counterexample": ex} if ex else {}),
                           "off_map": not tid and not gen and bool(rows), **({"script": script} if script else {}),
                           "results": len(rows), "reaches_the_change": static, "measured_running_the_change": ran_change,
                           "message": (failed[0]["message"] or "") if failed else ""})
@@ -1309,10 +1316,16 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
             got = int(any(t in files or any(t.startswith(i + ".") for i in extra["into"]) for t in touched))
         by_you = extra.get("by_you", not want)
         state = ("checked by you" if by_you else "done" if want and got >= want else "partly" if got else "not done")
+        from . import removal   # "Remove `X`" is done when X is gone and nothing still calls it, not when X is edited
+        gone = None if by_you else removal.check(con, cid, row, names, touched, removed)
+        state = gone["state"] if gone else state
+        declared |= set(gone["made"]) if gone else set()   # a rename's new name is the task's, not an edit of its own
         checked = next((t["done"] for t in parsed["tasks"] if t["key"] == row["key"]), False)
         tasks.append({"key": row["key"], "text": row["text"], "state": state, "ticked": checked,
                       "missing": [_label(names, i) for i in ids if i not in hit][:6] + [n["name"] for n in new if n["name"] not in made][:6]
                       + unproven})
+        if gone:
+            tasks[-1].update(missing=gone["missing"], removal=gone)
 
     all_findings = findings(con, cid)["findings"]
     open_high = [f for f in all_findings if f["status"] == "open" and f["severity"] == "high"]

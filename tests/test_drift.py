@@ -147,7 +147,8 @@ def test_accept_records_the_code_as_it_is_and_keeps_what_is_gone(done, capsys):
     edit(core, "def make_engine(", "def build_engine(")
     code, out = run(capsys, "drift", "--accept")
     assert code == 1 and "`Engine.child` has changed signature" not in out   # accepted again as it is now
-    assert "`core.make_engine` is gone" in out                               # accepting does not make gone code agree
+    # Accepting does not make gone code agree. The anchor kept its body without its name, so the rename shows.
+    assert "`core.make_engine` has been renamed to `build_engine` in py/src/pkg/core.py" in out
     edit(done / "openspec/specs/engine/spec.md", "`core.make_engine`", "`core.build_engine`")
     code, out = run(capsys, "drift", "--accept")
     assert code == 0, out

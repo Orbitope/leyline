@@ -1,0 +1,89 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-9.1.1, pluggy-1.6.0
+rootdir: /work/pyproj
+plugins: hypothesis-6.100.0, anyio-4.15.1
+collected 4 items
+
+tests/test_ledger.py FF.F                                                [100%]
+
+=================================== FAILURES ===================================
+________________________ test_balance_is_never_negative ________________________
+
+    @given(st.integers(min_value=0), st.integers())
+>   def test_balance_is_never_negative(balance, amount):
+                   ^^^
+
+tests/test_ledger.py:7: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+balance = 0, amount = -1
+
+    @given(st.integers(min_value=0), st.integers())
+    def test_balance_is_never_negative(balance, amount):
+>       assert apply(balance, amount) >= 0
+E       assert -1 >= 0
+E        +  where -1 = apply(0, -1)
+E       Falsifying example: test_balance_is_never_negative(
+E           balance=0,
+E           amount=-1,
+E       )
+
+tests/test_ledger.py:8: AssertionError
+_________________________ test_merge_keeps_every_item __________________________
+
+    @given(st.lists(st.integers()), st.lists(st.integers()))
+>   def test_merge_keeps_every_item(a, b):
+                   ^^^
+
+tests/test_ledger.py:12: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+a = [], b = [0, 0]
+
+    @given(st.lists(st.integers()), st.lists(st.integers()))
+    def test_merge_keeps_every_item(a, b):
+>       assert len(merge(a, b)) == len(a) + len(b)
+E       assert 1 == (0 + 2)
+E        +  where 1 = len([0])
+E        +    where [0] = merge([], [0, 0])
+E        +  and   0 = len([])
+E        +  and   2 = len([0, 0])
+E       Falsifying example: test_merge_keeps_every_item(
+E           a=[],  # or any other generated value
+E           b=[0, 0],
+E       )
+
+tests/test_ledger.py:13: AssertionError
+________________________ TestOrder.test_merge_is_sorted ________________________
+
+self = <test_ledger.TestOrder object at 0x7f77453d8cd0>
+
+    @given(st.lists(st.integers()))
+>   def test_merge_is_sorted(self, a):
+               ^^^^^^^
+
+tests/test_ledger.py:22: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <test_ledger.TestOrder object at 0x7f77453d8cd0>, a = [0, 0]
+
+    @given(st.lists(st.integers()))
+    def test_merge_is_sorted(self, a):
+>       assert merge(a, []) == sorted(a)
+E       assert [0] == [0, 0]
+E         
+E         Right contains one more item: 0
+E         Use -v to get more diff
+E       Falsifying example: test_merge_is_sorted(
+E           self=<test_ledger.TestOrder object at 0x7f77453d8cd0>,
+E           a=[0, 0],
+E       )
+
+tests/test_ledger.py:23: AssertionError
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/test_ledger.py::test_plain_example
+FAILED tests/test_ledger.py::test_balance_is_never_negative - assert -1 >= 0
+FAILED tests/test_ledger.py::test_merge_keeps_every_item - assert 1 == (0 + 2)
+FAILED tests/test_ledger.py::TestOrder::test_merge_is_sorted - assert [0] == ...
+========================= 3 failed, 1 passed in 1.33s ==========================

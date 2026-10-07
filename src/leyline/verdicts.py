@@ -174,6 +174,8 @@ def _task_verdict(t: dict, row, names, touched: set, removed: set, after_run: Op
     missing = ", ".join(t["missing"][:3])
     if t["state"] == "checked by you":
         return PERSON, "it names no code, so the map cannot see it done"
+    if t.get("removal"):   # a removal or rename, judged by what is left (leyline.removal)
+        return t["removal"]["verdict"], t["removal"]["why"]
     if t["state"] == "done":
         return PROVEN, "the code it names changed"
     if t["state"] == "partly":
@@ -200,12 +202,26 @@ def _task_verdict(t: dict, row, names, touched: set, removed: set, after_run: Op
     return CONTRADICTED, f"{missing or 'the code it names'} did not change, though other code did"
 
 
+def _get(r, key: str):
+    """A field of a result row, whether a stored row or a plain dict that may leave it out."""
+    try:
+        return r[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str, str]:
     passed = [r for r in after if r["status"] == "pass"]
     failed = [r for r in after if r["status"] == "fail"]
+    from .props import from_message   # a property test's smallest failing input, when it printed one
+    ex = next((x for x in (from_message(_get(r, "message")) for r in failed) if x), None)
     if passed and failed:
-        return PARTIAL, f"{len(passed)} of {len(passed) + len(failed)} results that carry its name pass"
+        return PARTIAL, (f"{len(passed)} of {len(passed) + len(failed)} results that carry its name pass"
+                         + (f"; one fails for {ex}" if ex else ""))
     if failed:
+        if ex:
+            return CONTRADICTED, f"fails for {ex}" + ("; its test passed before the change"
+                                                    if before and all(r["status"] == "pass" for r in before) else "")
         if before and all(r["status"] == "pass" for r in before):
             return CONTRADICTED, "its test passed before the change and fails now"
         return CONTRADICTED, "its test fails after the change"

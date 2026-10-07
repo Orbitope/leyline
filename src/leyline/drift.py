@@ -19,13 +19,15 @@ the directory it was mapped from), so another clone reads them the same. The fil
 
 Drift is reported per name:
     gone        nothing on the map answers to the name or its anchor any more
+    renamed     gone, but one new node beside where it was has its body or declaration under another name, or git
+                records its file as renamed (leyline.renames)
     moved       found, but in another file or under another owner
     signature   its declaration differs from the anchor (or a type lost members)
     ambiguous   the name now resolves to several things
     body        changed inside, same declaration: worth a read, not drift by itself
 A name with no anchor is checked by name only: gone when its owner or file is there without it, unclear when it
 could be several things (it never named one, so that is not drift). Without an anchor, a changed signature
-cannot be seen. Only gone and signature make `leyline drift` exit 1.
+cannot be seen. Only gone, renamed and signature make `leyline drift` exit 1.
 """
 
 from __future__ import annotations
@@ -42,9 +44,9 @@ from . import spec, store
 
 ANCHOR_FILE = "leyline-anchors.json"
 DATED = re.compile(r"^\d{4}-\d{2}-\d{2}-")
-ORDER = ("gone", "signature", "moved", "ambiguous", "unclear", "body", "ok")
-DRIFTED = ("gone", "signature", "moved", "ambiguous")   # what a plan warns about
-FAILS = ("gone", "signature")                          # what makes `leyline drift` exit 1
+ORDER = ("gone", "renamed", "signature", "moved", "ambiguous", "unclear", "body", "ok")
+DRIFTED = ("gone", "renamed", "signature", "moved", "ambiguous")   # what a plan warns about
+FAILS = ("gone", "renamed", "signature")                          # what makes `leyline drift` exit 1
 SHOWN = DRIFTED + ("unclear",)                         # a name with no anchor that could be several things
 
 
@@ -114,8 +116,36 @@ def _local(node_id: str, repo: Optional[str]) -> str:
 
 
 def _row(con, node_id: str):
-    return con.execute("SELECT id, kind, name, parent_id, repo_id, path, content_hash, attrs FROM nodes WHERE id = ?",
-                       (node_id,)).fetchone()
+    return con.execute("SELECT id, kind, name, parent_id, repo_id, path, content_hash, attrs, span_start, span_end"
+                       " FROM nodes WHERE id = ?", (node_id,)).fetchone()
+
+
+def _shape(con, r) -> Optional[str]:
+    """A hash of a node's text with its name taken out where it is declared (lines stripped, as the content hash
+    strips them), so a function renamed and otherwise untouched hashes the same. None for a file or module, or
+    text not on disk."""
+    if r["kind"] in ("file", "module", "repo") or not r["span_start"] or not r["path"]:
+        return None
+    root = store.roots(con).get(r["repo_id"])
+    if root is None:
+        return None
+    f = root / r["path"]
+    try:
+        st = f.stat()
+        key = (str(f), st.st_mtime_ns, st.st_size)
+        if _TEXT.get(str(f), (None,))[0] != key:
+            if len(_TEXT) > 4000:
+                _TEXT.clear()
+            _TEXT[str(f)] = (key, f.read_bytes().decode("utf-8", errors="replace").split("\n"))
+    except OSError:
+        return None
+    # Only where it is declared: the same word elsewhere (`JSON.parse` in `parse`) is other code, and stays.
+    word = re.compile(r"(?<![\w$])" + re.escape(r["name"]) + r"(?![\w$])")
+    lines = _TEXT[str(f)][1][r["span_start"] - 1:r["span_end"] or r["span_start"]]
+    return _h(word.sub("\0", "\n".join(ln.strip() for ln in lines), count=1))
+
+
+_TEXT: dict = {}   # path -> ((path, mtime, size), lines): a file read once while it stays the same
 
 
 def _declaration(con, r) -> tuple[Optional[str], Optional[list[str]]]:
@@ -145,6 +175,9 @@ def fingerprint(con, names, node_id: str) -> Optional[dict]:
            "decl_hash": _h(decl) if decl is not None else None, "body_hash": r["content_hash"]}
     if members is not None:
         out["members"] = members
+    shape = _shape(con, r)   # the body without the name: a rename keeps it (see renamed())
+    if shape is not None:
+        out["shape_hash"] = shape
     return out
 
 
@@ -263,6 +296,15 @@ class _Map:
         self.con = con
         self.names = spec._Names(con)
         self.repos = list(store.roots(con)) or sorted({r["id"].split(":", 1)[0] for r in self.names.rows})
+        self.claimed: set = set()   # nodes some anchor still finds: not what another name was renamed to
+        self._git = None
+
+    def git(self):
+        """What git says about the mapped repositories (leyline.renames.Git), or None when none is a git repository."""
+        if self._git is None:
+            from .renames import Git
+            self._git = Git(list(store.roots(self.con).values()))
+        return self._git if self._git.repos else None
 
     def find(self, a: dict) -> Optional[str]:
         """The node an anchor was made from, if it is still on the map under the same id."""
@@ -305,8 +347,8 @@ def _same_thing(m: _Map, a: dict, taken: set) -> Optional[str]:
     return hits[0] if len(hits) == 1 else None
 
 
-def judge(m: _Map, written: str, anchors: list[dict]) -> dict:
-    """One name against its anchors: what became of it."""
+def judge(m: _Map, written: str, anchors: list[dict], key: Optional[str] = None) -> dict:
+    """One name against its anchors (those of `key`, a change or specs/<capability>): what became of it."""
     item = {"written": written, "anchored": True, "was": [a["label"] for a in anchors], "ids": [],
             "was_ids": [f"{r}:{a['node']}" for a in anchors for r in m.repos]}
     found = {id(a): m.find(a) for a in anchors}
@@ -328,7 +370,13 @@ def judge(m: _Map, written: str, anchors: list[dict]) -> dict:
         elif fp["body_hash"] != a.get("body_hash"):
             item["body"] = True
     if gone and gone == len(anchors):
-        item["gone"] = {"was": anchors[0]["label"], "was_path": anchors[0]["path"]}
+        from . import renames   # gone under this name, but likely there under another
+        to = renames.find(m, anchors[0], key) if len(anchors) == 1 or len({a["label"] for a in anchors}) == 1 else None
+        if to is not None:
+            item["renamed"] = {**to, "was": anchors[0]["label"], "was_path": anchors[0]["path"]}
+            item["ids"] += [to["id"]] if to.get("id") else []
+        else:
+            item["gone"] = {"was": anchors[0]["label"], "was_path": anchors[0]["path"]}
     elif gone and "signature" not in item:   # one of several overloads went
         item["signature"] = {"was": f"{len(anchors)} overloads", "now": f"{len(anchors) - gone}", "lost": []}
     r = m.names.resolve(written)
@@ -363,7 +411,12 @@ def judge_name(m: _Map, written: str) -> Optional[dict]:
         item.update(state="gone", gone={"owner": m.names.by_id[owners[0]]["name"], "leaf": written.rsplit(".", 1)[1]},
                     ids=owners)
     elif "new" in r and r.get("file") and "/" in written:
-        item.update(state="gone", gone={"file": True})
+        from . import renames   # a file git records as renamed
+        to = renames.for_file(m, written)
+        if to:
+            item.update(state="renamed", renamed={**to, "was": written, "was_path": written})
+        else:
+            item.update(state="gone", gone={"file": True})
     else:
         return None
     return item
@@ -404,6 +457,7 @@ def report(con, dirs: list[Path]) -> dict:
     """Every living spec, archived change and anchored change in these openspec/ folders, name by name."""
     m = _Map(con)
     groups, problems, used = [], [], set()
+    m.claimed = {i for osd in dirs for e in load(con, osd)[0].values() for a in e.get("anchors") or [] for i in [m.find(a)] if i}
     for osd in dirs:
         anchors, trouble = load(con, osd)
         problems += trouble
@@ -417,7 +471,7 @@ def report(con, dirs: list[Path]) -> dict:
                 hit = _pick(index, w, cap)
                 if hit:   # reported here, so not again under the change that anchored it
                     used |= {(hit[0], a["written"]) for a in hit[1]} | {a["node"] for a in hit[1]}
-                it = judge(m, w, hit[1]) if hit else judge_name(m, w)
+                it = judge(m, w, hit[1], hit[0]) if hit else judge_name(m, w)
                 if it is not None and hit:
                     it["anchor_key"] = hit[0]
                 items.append(it)
@@ -434,7 +488,7 @@ def report(con, dirs: list[Path]) -> dict:
             items = []
             for w, xs in sorted(mine.items()):
                 if (key, w) not in used and not all(a["node"] in used for a in xs):
-                    items.append({**judge(m, w, xs), "anchor_key": key})
+                    items.append({**judge(m, w, xs, key), "anchor_key": key})
             if key in archived:
                 for w in _change_names(archived[key]):
                     if w not in mine:
@@ -523,6 +577,12 @@ def line(it: dict) -> str:
         if "owner" in g:
             return f"{w} is gone: {g['owner']} has no `{g['leaf']}` now."
         return f"{w} is gone: nothing on the map answers to it now (it was {g['was']}{_where(g['was_path'])})."
+    if it.get("renamed"):
+        rn = it["renamed"]
+        if rn["how"].startswith("git"):
+            return f"{w} has been renamed to `{rn['to']}`: {rn['how']}."
+        return (f"{w} has been renamed to `{rn['to']}`{_where(rn['to_path'])}: nothing answers to the old name now, and"
+                f" `{rn['to']}` {rn['how']}.")
     bits = []
     if it.get("signature"):
         s = it["signature"]
@@ -562,6 +622,7 @@ def text(r: dict) -> str:
              f" {spec._n(r['changes'], 'change')} against the map.")
     if bad:
         parts = [f"{c['gone']} {'is' if c['gone'] == 1 else 'are'} gone" if c["gone"] else "",
+                 f"{c['renamed']} {'was' if c['renamed'] == 1 else 'were'} renamed" if c["renamed"] else "",
                  f"{c['signature']} changed signature" if c["signature"] else "",
                  f"{c['moved']} moved" if c["moved"] else "",
                  f"{c['ambiguous']} could now be several things" if c["ambiguous"] else ""]
@@ -649,6 +710,7 @@ def touching(con, change_dir: str | Path, ids: list[str]) -> list[str]:
                 continue
             who = (f"The living spec {g['capability']}/spec.md" if g["kind"] == "spec" else f"The change {g['change']}")
             what = ("which is gone" if it["state"] == "gone" else
+                    f"which has been renamed to `{it['renamed']['to']}`" if it["state"] == "renamed" else
                     "which has changed signature since it was written" if it["state"] == "signature" else
                     f"which has moved to {it['moved']['to_path']} since it was written" if it["state"] == "moved" else
                     f"which could now be {len(it['ambiguous'])} things")
