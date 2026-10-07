@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 import re
 import sqlite3
 from pathlib import Path
@@ -313,7 +313,57 @@ def search(con, query: str, kind: Optional[str] = None, limit: int = 20) -> dict
         sql = ("SELECT * FROM nodes WHERE (name LIKE ? OR id LIKE ?)" + (" AND kind = ?" if kind else "")
                + " ORDER BY length(id) LIMIT ?")
         rows = con.execute(sql, (like, like, kind, limit) if kind else (like, like, limit)).fetchall()
+    # What the text names exactly comes first: the id, a file at that path (or ending in it), a node of that
+    # name, or Owner.name. Ranking by words alone put local.ts 19th behind files that only mention "local".
+    q = query.strip()
+    exact = []
+    if q:
+        exact = con.execute(
+            "SELECT * FROM nodes WHERE (id = ? OR name = ? OR (kind IN ('file', 'module') AND (path = ? OR path LIKE ? ESCAPE '\\')))"
+            + (" AND kind = ?" if kind else "") + " ORDER BY id = ? DESC, path = ? DESC, name = ? DESC,"
+            " kind IN ('file', 'type', 'callable') DESC, length(id) LIMIT ?",
+            (q, q, q, "%/" + re.sub(r"([\\%_])", r"\\\1", q), *([kind] if kind else []), q, q, q, limit)).fetchall()
+        if "." in q and not exact:
+            owner, _, leaf = q.rpartition(".")
+            exact = [r for r in con.execute("SELECT n.* FROM nodes n JOIN nodes p ON p.id = n.parent_id WHERE n.name = ?"
+                                            " AND p.name = ?" + (" AND n.kind = ?" if kind else "") + " LIMIT ?",
+                                            (leaf, owner.rsplit(".", 1)[-1], *([kind] if kind else []), limit))]
+    first = {r["id"] for r in exact}
+    rows = (exact + [r for r in rows if r["id"] not in first])[:limit]
     return {"query": query, "results": [_brief(r) for r in rows]}
+
+
+def resolve(con, text: str) -> dict:
+    """A node id, or the node a person means by a name: `Owner.method`, `method`, a file path. {"id": ...} when it is
+    one thing; otherwise {"error": ..., "candidates": [...]}."""
+    text = text.strip()
+    if _node(con, text) is not None:
+        return {"id": text}
+    if "/" in text or re.search(r"\.\w{1,5}$", text) and con.execute(
+            "SELECT 1 FROM nodes WHERE kind = 'file' AND (path = ? OR path LIKE ?) LIMIT 1", (text, "%/" + text)).fetchone():
+        rows = con.execute("SELECT * FROM nodes WHERE kind = 'file' AND (path = ? OR path LIKE ?) ORDER BY length(path)",
+                           (text, "%/" + text)).fetchall()
+    else:
+        parts = text.split(".")
+        rows = [r for r in con.execute("SELECT * FROM nodes WHERE name = ? AND kind IN ('callable', 'type', 'field', 'test',"
+                                       " 'module', 'system', 'entry_point') ORDER BY length(id)", (parts[-1],))]
+        for depth, owner in enumerate(reversed(parts[:-1])):   # each written owner must be the next one up
+            keep = []
+            for r in rows:
+                cur = r
+                for _ in range(depth + 1):
+                    cur = _node(con, cur["parent_id"]) if cur and cur["parent_id"] else None
+                if cur is not None and cur["name"] == owner:
+                    keep.append(r)
+            rows = keep
+    exact = [r for r in rows if r["path"] == text] or rows
+    if len(exact) == 1:
+        return {"id": exact[0]["id"]}
+    if not exact:
+        hits = search(con, text, limit=8)["results"]
+        return {"error": f"nothing on the map is called {text!r}", "candidates": hits}
+    return {"error": f"{text!r} could be {len(exact)} things; give the id, or write it as Owner.name",
+            "candidates": [_brief(r) for r in exact[:20]]}
 
 
 def neighbors(con, node_id: str, direction: str = "both", kinds: Optional[list[str]] = None,
@@ -418,8 +468,22 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
         "WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT n.id FROM nodes n JOIN d ON n.parent_id = d.id)"
         " SELECT id FROM d", (node_id,))}
     adj = _adjacency(con, reverse=True)
+    from .change import enclosing
+    shape = {r[0]: {"kind": r[1], "parent_id": r[2]} for r in con.execute("SELECT id, kind, parent_id FROM nodes")}
     dist: dict[str, int] = {t: 0 for t in targets}
-    frontier, depth = list(targets), 0
+
+    def lift(found, d):
+        # A nested function runs when the function it is defined in runs, so that function's callers reach it.
+        more = []
+        for i in found:
+            for e in enclosing(shape, i):
+                if e in dist:
+                    break
+                dist[e] = d
+                more.append(e)
+        return found + more
+
+    frontier, depth = lift(list(targets), 0), 0
     while frontier and depth < max_depth:
         nxt = []
         for cur in frontier:
@@ -427,7 +491,7 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
                 if src not in dist:
                     dist[src] = depth + 1
                     nxt.append(src)
-        frontier, depth = nxt, depth + 1
+        frontier, depth = lift(nxt, depth + 1), depth + 1
     reached = [i for i in dist if i not in targets]
     by_module: dict[str, dict] = {}
     home = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (node_id,)).fetchone()
@@ -567,6 +631,13 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40) -> dict:
                      "writers": len(product), "written_from": [names.get(t, t) for t in outside_types],
                      "writer_modules": sorted({names.get(module.get(w), "") for w in product}),
                      "readers": len(readers.get(f, ()))})
+    # Two fields can read the same (a Builder class in each of four scripts): name the file of each such one.
+    seen = Counter(r["name"] for r in rows)
+    for r in rows:
+        if seen[r["name"]] > 1:
+            path = con.execute("SELECT path FROM nodes WHERE id = ?", (r["id"],)).fetchone()
+            r["path"] = path[0] if path else ""
+            r["name"] += f" ({r['path']})"
     rows.sort(key=lambda r: (-len(r["written_from"]), -len(r["writer_modules"]), -r["writers"], r["name"]))
     return {"total": len(rows), "fields": rows[:limit],
             "note": "A field many types assign has no single place that keeps it valid. Test code, constructors and values set "

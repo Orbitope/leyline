@@ -12,7 +12,7 @@ from typing import Optional
 
 KEEP_ATTRS = ("framework", "runner", "native_kind", "visibility", "signature", "declared_type", "trigger", "is_static",
               "is_abstract", "marker", "ecosystem", "category", "also_in", "namespace", "version",
-              "target_framework", "url")
+              "target_framework", "url", "is_test")
 
 # The role that names a pattern instance: a strategy is named after its abstraction, not its context.
 PRIMARY_ROLE = {"strategy": "strategy", "decorator": "decorator", "composite": "composite", "template method": "template",

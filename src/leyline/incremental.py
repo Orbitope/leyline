@@ -62,13 +62,18 @@ def mentions(res, decls) -> bytes:
     here. Collisions only make a file look affected when it is not."""
     strings: set = set()
     stack = [res, decls]
+    seen: set = set()   # a record reachable twice (a call shared as the receiver of the next in a.b().c()) is read once
     while stack:
         o = stack.pop()
         if o is None or isinstance(o, (int, float, bool)):
             continue
         if isinstance(o, str):
             strings.add(o)
-        elif isinstance(o, dict):
+            continue
+        if id(o) in seen:
+            continue
+        seen.add(id(o))
+        if isinstance(o, dict):
             stack.extend(o.keys())
             stack.extend(o.values())
         elif isinstance(o, (list, tuple, set, frozenset)):

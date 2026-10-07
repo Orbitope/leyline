@@ -962,25 +962,39 @@ class _Walker:
     def _call_node(self, node, cid, class_id, scope, qual, top) -> None:
         fn = _unwrap(node.child_by_field_name("function"))
         args = node.child_by_field_name("arguments")
-        ftext = _text(fn)
+        # Not the callee's whole text: in a builder chain a.b().c().d()... that is the chain so far, read again at
+        # every link, which made a long chain quadratic. Only the last name is needed, and the whole text only for
+        # a call that could be a test (a title and a function among its arguments).
+        if fn is None:
+            last = ""
+        elif fn.type == "member_expression":
+            last = _text(fn.child_by_field_name("property"))
+        elif fn.type in ("identifier", "import"):
+            last = _text(fn)
+        else:
+            last = _text(fn).rsplit(".", 1)[-1]
         arg_nodes = [a for a in args.named_children if a.type != "comment"] if args is not None and args.type == "arguments" else []
         if fn is not None and fn.type == "import":
             s = _string(arg_nodes[0]) if arg_nodes else None
             if s:
                 self.res.imports.append(ImportRef(self.file_id, self._spec(s)))
             return
-        if ftext == "require" and arg_nodes and _string(arg_nodes[0]):
+        if fn is not None and fn.type == "identifier" and last == "require" and arg_nodes and _string(arg_nodes[0]):
             self.res.imports.append(ImportRef(self.file_id, self._spec(_string(arg_nodes[0]))))
             return
-        # describe("x", () => { it("does y", () => { ... }) })
-        head = ftext.split(".")[0].split("(")[0]
-        runner = fn
-        while runner is not None and runner.type in ("call_expression", "member_expression"):   # it.each(rows)("...", fn)
-            runner = runner.child_by_field_name("function") if runner.type == "call_expression" else runner.child_by_field_name("object")
-        head = _text(runner) if runner is not None and runner.type == "identifier" else head
-        mods = set(re.findall(r"\.(\w+)", ftext.split("(")[0]))
         title = _string(arg_nodes[0]) if arg_nodes else None
-        body = next((_unwrap(a) for a in arg_nodes[1:] if _unwrap(a) is not None and _unwrap(a).type in FUNCS), None)
+        body = next((_unwrap(a) for a in arg_nodes[1:] if _unwrap(a) is not None and _unwrap(a).type in FUNCS), None) \
+            if title is not None else None
+        head, mods = "", set()
+        if body is not None:
+            # describe("x", () => { it("does y", () => { ... }) })
+            ftext = _text(fn)
+            head = ftext.split(".")[0].split("(")[0]
+            runner = fn
+            while runner is not None and runner.type in ("call_expression", "member_expression"):   # it.each(rows)("...", fn)
+                runner = runner.child_by_field_name("function") if runner.type == "call_expression" else runner.child_by_field_name("object")
+            head = _text(runner) if runner is not None and runner.type == "identifier" else head
+            mods = set(re.findall(r"\.(\w+)", ftext.split("(")[0]))
         if head in SUITE_FNS and mods <= TEST_MODS and title is not None and body is not None:
             self.suites.append(title)
             self._callback(body, cid, class_id, scope, qual)
@@ -1007,7 +1021,7 @@ class _Walker:
             if (site.receiver is None and site.name in MAIN_NAMES and site.name in self.fn_names) or site.name in ("listen",) \
                     or (site.name == "render" and "createRoot" in _text(node)):
                 self.entry = True
-        if site is not None and fn is not None and (ftext.rsplit(".", 1)[-1] in LAUNCHERS) \
+        if site is not None and fn is not None and last in LAUNCHERS \
                 and (site.receiver is None or re.search(r"child_process|^cp$|^childProcess$", site.receiver or "")):
             found = list(_strings(args)) if args is not None else []
             for a in arg_nodes:
