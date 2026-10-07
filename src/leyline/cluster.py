@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 
+from . import store
+
 SOURCE = "leyline-cluster/louvain-0.1"
 WEIGHTS = {"calls": 1.0, "uses_type": 1.0, "instantiates": 1.0, "extends": 3.0, "implements": 3.0}
 
@@ -68,7 +70,7 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                                      (repo_id, SOURCE))]
     with con:
         for sid in old:
-            con.execute("DELETE FROM edges WHERE kind = 'groups' AND src_id = ?", (sid,))
+            con.execute("DELETE FROM links WHERE kind = 'groups' AND src IN (SELECT k FROM keys WHERE id = ?)", (sid,))
         con.execute("DELETE FROM nodes WHERE repo_id = ? AND kind = 'system' AND source = ?", (repo_id, SOURCE))
         result = {}
         for mod, members in sorted(by_module.items()):
@@ -103,9 +105,8 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                         "anchor": anchor, "members": len(community), "modularity": round(modularity, 3),
                         "cohesion": round(internal / (internal + boundary), 3) if internal + boundary else 0.0,
                         "top": [names[v] for v in ranked[:6]], "method": "louvain"})))
-                con.executemany(
-                    "INSERT INTO edges (kind, src_id, dst_id, precision, layer, source) VALUES"
-                    " ('groups', ?, ?, 'heuristic', 'inferred', ?)", [(sid, u, SOURCE) for u in sorted(community)])
+                store.insert_edges(con, [(None, "groups", sid, u, "heuristic", "inferred", SOURCE, None, None)
+                                         for u in sorted(community)])
                 made += 1
             result[mod.split(":module:")[-1]] = {"units": len(members), "systems": made,
                                                  "modularity": round(modularity, 3)}

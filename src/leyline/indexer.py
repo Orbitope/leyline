@@ -62,11 +62,16 @@ def _module_dirs(files: list[str]) -> set[str]:
             if base == "__init__.py":
                 packages.add(d)
     # A nested __init__.py belongs to its top-most package, not to a module of its own. A project file
-    # inside another project's folder (a workspace package) is a module of its own.
-    own = {d for d in dirs if d not in packages or any(
-        f.rpartition("/")[0] == d and (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS[:3]) for f in files)}
-    return {d for d in dirs if d in own or not any(
-        d != o and d.startswith(o + "/") and o != "" for o in dirs)}
+    # inside another project's folder (a workspace package) is a module of its own. Both are looked up by
+    # directory: scanning every file per package, and every directory per directory, was quadratic.
+    projects = {f.rpartition("/")[0] for f in files
+                if f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS[:3]}
+    own = {d for d in dirs if d not in packages or d in projects}
+
+    def nested(d: str) -> bool:
+        parts = d.split("/")
+        return any("/".join(parts[:k]) in dirs for k in range(1, len(parts)))
+    return {d for d in dirs if d in own or not nested(d)}
 
 
 def _module_for(path: str, module_dirs: set[str]) -> str:
@@ -249,11 +254,13 @@ class Indexer:
         self.channel_stats: dict[str, Counter] = defaultdict(Counter)
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
+        self._sets: dict[tuple, set] = {}        # see _file_set
         self._name_ix: dict[tuple, dict] = {}
         self._loose_reach: dict[str, set] = {}
         self.exact_mode = "off"          # off | auto | roslyn | scip
         self.scip_paths: list[str] = []
         self.exact_stats: dict[str, dict] = {}
+        self.keep_results = True         # False: run() lets go of the adapters' output and the resolvers' caches before writing
 
     def _apply_exact(self) -> None:
         """Let a compiler overrule the syntax resolvers where one is available."""
@@ -325,6 +332,12 @@ class Indexer:
             self._resolve_endpoints()
         self._timed("channels", channels)
         self._timed("flows", self._build_flows)
+        if not self.keep_results:
+            # Only the write is left, which reads nodes, edges, calls and flows. What the resolvers held (a GB on
+            # a large repository) is let go first, so the write's own lists reuse that memory instead of adding to it.
+            for held in (self.results, self._read_decls, self._decl_cache, self._name_ix, self._sets, self._vis_cache,
+                         self._text_cache, self.call_col, getattr(self, "_chain_memo", {})):
+                held.clear()
         self._timed("write", self._write, con)
         return {k: dict(v) for k, v in self.stats.items()}
 
@@ -376,12 +389,23 @@ class Indexer:
         repo = repo or self.repo
         mid = f"{repo}:module:{mod_dir or '.'}"
         if mid not in self.nodes:
-            marker = next((f.rsplit("/", 1)[-1] for f in files
-                           if f.rpartition("/")[0] == mod_dir and
-                           (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS)), None)
+            marker = self._markers(files).get(mod_dir)
             self._add(Node(id=mid, kind="module", name=mod_dir.rsplit("/", 1)[-1] or repo,
                            parent_id=repo, path=mod_dir, attrs={"marker": marker}))
         return mid
+
+    def _markers(self, files: list[str]) -> dict:
+        """directory -> the first project marker in it, for a list of files. Made once per list: looking through
+        every file for each new module was quadratic (minutes on a repository of tens of thousands of files)."""
+        got = getattr(self, "_marker_memo", None)
+        if got is None or got[0] is not files:
+            out: dict[str, str] = {}
+            for f in files:
+                d, _, base = f.rpartition("/")
+                if d not in out and (f.endswith(".csproj") or base in MODULE_MARKERS):
+                    out[d] = base
+            got = self._marker_memo = (files, out)
+        return got[1]
 
     def _projects(self, files: list[str], repo: Optional[str] = None) -> None:
         """Project files give exact module-to-module and module-to-package edges."""
@@ -852,10 +876,24 @@ class Indexer:
             self._vis_cache[mod] = seen
         return self._vis_cache[mod]
 
+    def _file_set(self, key: tuple) -> Optional[set]:
+        """A set kept for the file whose calls are being resolved. Calls are resolved a file at a time, so only the
+        last few files' sets are kept: keeping one per file held millions of members on a large repository (every
+        Go file sees each file of every package it imports). Import targets are settled before any of these is
+        asked for, so a set made again is the same set."""
+        return self._sets.get(key)
+
+    def _keep_set(self, key: tuple, value: set) -> set:
+        if len(self._sets) >= 16:
+            self._sets.clear()
+        self._sets[key] = value
+        return value
+
     def _reach(self, fid: str) -> set:
         """Files reachable through imports. A name found nowhere else in that set is a fair guess."""
         key = ("reach", fid)
-        if key not in self._vis_cache:
+        got = self._file_set(key)
+        if got is None:
             out, queue = set(), [fid]
             while queue:
                 cur = queue.pop()
@@ -863,8 +901,8 @@ class Indexer:
                     continue
                 out.add(cur)
                 queue.extend(t for t in self.import_targets.get(cur, ()) if t not in out)
-            self._vis_cache[key] = out
-        return self._vis_cache[key]
+            got = self._keep_set(key, out)
+        return got
 
     def _can_see(self, fid: str, node_id: str) -> bool:
         vis = self._visible(fid)
@@ -1384,10 +1422,11 @@ class Indexer:
     def _near(self, fid: str) -> set:
         """Files this one imports, and the files those import in turn (a package's index re-exporting its parts)."""
         key = ("near", fid)
-        if key not in self._vis_cache:
+        got = self._file_set(key)
+        if got is None:
             first = set(self.import_targets.get(fid, ()))
-            self._vis_cache[key] = first | {t for f in first for t in self.import_targets.get(f, ())}
-        return self._vis_cache[key]
+            got = self._keep_set(key, first | {t for f in first for t in self.import_targets.get(f, ())})
+        return got
 
     def _name_index(self, lang: str, name: str) -> dict:
         """Where the callables of one name are declared, looked up by file and directory. A common name (get, run)
@@ -1421,9 +1460,15 @@ class Indexer:
         return ix
 
     @staticmethod
-    def _in_files(by_file: dict, files) -> list:
-        """The declarations in any of these files, in declaration order."""
-        hits = [ic for f in files for ic in by_file.get(f, ())]
+    def _in_files(by_file: dict, files, also: Optional[str] = None) -> list:
+        """The declarations in any of these files (or in `also`), in declaration order. Walks whichever side is
+        smaller: a Go package's files all import each other, so `files` can be thousands long for every call."""
+        if len(by_file) < len(files):
+            hits = [ic for f, ics in by_file.items() if f in files or f == also for ic in ics]
+        else:
+            hits = [ic for f in files for ic in by_file.get(f, ())]
+            if also is not None and also not in files:
+                hits.extend(by_file.get(also, ()))
         hits.sort(key=lambda ic: ic[0])
         return [c for _, c in hits]
 
@@ -1525,7 +1570,7 @@ class Indexer:
             pool, owners = ix["typed"], ix["typed_owners"]
             if not pool:
                 return None
-            near = self._in_files(ix["typed_file"], near_files | {fid})
+            near = self._in_files(ix["typed_file"], near_files, fid)
             if near and len({c.parent_id for c in near}) == 1:
                 self._guessed = True
                 return by_args(near)
@@ -2187,6 +2232,7 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         members = workspace(con, list(root) if isinstance(root, (list, tuple)) else [root], repo_id)
         ix = Indexer(members[0][0], members[0][1], members[1:])
         ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
+        ix.keep_results = False
         began = time.perf_counter()
         stats = ix.run(con)
         stats.update(ix.exact_stats)

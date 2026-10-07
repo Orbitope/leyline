@@ -62,9 +62,9 @@ def generate(con, repo_id: str) -> dict:
     if not mods:
         return {"stops": 0}
     module = {r["node_id"]: r["module_id"] for r in q("SELECT node_id, module_id FROM ancestry")}
-    names = {r["id"]: r["name"] for r in q("SELECT id, name FROM nodes WHERE repo_id = ?", repo_id)}
-    kind_of = {r["id"]: r["kind"] for r in q("SELECT id, kind FROM nodes WHERE repo_id = ?", repo_id)}
-    parent = {r["id"]: r["parent_id"] for r in q("SELECT id, parent_id FROM nodes WHERE repo_id = ?", repo_id)}
+    names, kind_of, parent = {}, {}, {}
+    for r in con.execute("SELECT id, name, kind, parent_id FROM nodes WHERE repo_id = ?", (repo_id,)):   # one pass, not three
+        names[r[0]], kind_of[r[0]], parent[r[0]] = r[1], r[2], r[3]
 
     def qual(i):
         p = parent.get(i)

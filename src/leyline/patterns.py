@@ -36,21 +36,38 @@ ABOUT = {
 }
 
 
+class _Parsed(dict):
+    """key -> attrs, read from their JSON text the first time they are asked for. The matchers look at the attrs
+    of a few thousand nodes and edges; parsing all of them up front was most of the time on a large repository."""
+
+    def __init__(self, text: dict):
+        super().__init__()
+        self.text = text
+
+    def __missing__(self, key):
+        got = self[key] = json.loads(self.text[key] or "{}")   # KeyError when the key is not there at all
+        return got
+
+    def get(self, key, default=None):
+        return self[key] if key in self.text else default
+
+
 class _Graph:
     def __init__(self, con):
         self.nodes = {r["id"]: r for r in con.execute(
             "SELECT id, kind, name, parent_id, language, path, attrs FROM nodes WHERE layer = 'fact'")}
-        self.attrs = {i: json.loads(r["attrs"] or "{}") for i, r in self.nodes.items()}
+        self.attrs = _Parsed({i: r["attrs"] for i, r in self.nodes.items()})
         self.children = defaultdict(list)
         for i, r in self.nodes.items():
             self.children[r["parent_id"]].append(i)
         self.out = defaultdict(lambda: defaultdict(set))
         self.inn = defaultdict(lambda: defaultdict(set))
-        self.edge_attrs = {}
+        edge_attrs = {}
         for e in con.execute("SELECT kind, src_id, dst_id, attrs FROM edges WHERE kind != 'contains'"):
             self.out[e["kind"]][e["src_id"]].add(e["dst_id"])
             self.inn[e["kind"]][e["dst_id"]].add(e["src_id"])
-            self.edge_attrs[(e["kind"], e["src_id"], e["dst_id"])] = json.loads(e["attrs"] or "{}")
+            edge_attrs[(e["kind"], e["src_id"], e["dst_id"])] = e["attrs"]
+        self.edge_attrs = _Parsed(edge_attrs)
         self.calls = defaultdict(set)
         for c in con.execute("SELECT DISTINCT src_id, dst_id FROM calls"):
             self.calls[c["src_id"]].add(c["dst_id"])
@@ -113,7 +130,7 @@ class _Graph:
 def _held(g: _Graph, abstraction: str):
     """Fields whose type is the abstraction itself (not a collection of it), by owning type."""
     out = defaultdict(list)
-    for f in g.inn["uses_type"][abstraction]:
+    for f in sorted(g.inn["uses_type"][abstraction]):   # sorted: the rationale names them in this order
         if g.kind(f) == "field" and g.edge_attrs.get(("uses_type", f, abstraction), {}).get("role") == "field_type":
             owner = g.owner(f)
             if owner:
@@ -125,7 +142,7 @@ def _collections(g: _Graph, abstraction: str):
     """Fields that hold many of the abstraction (List<I>, I[], dict of I), by owning type."""
     out = defaultdict(list)
     name = g.name(abstraction)
-    for f in g.inn["uses_type"][abstraction]:
+    for f in sorted(g.inn["uses_type"][abstraction]):
         if g.kind(f) != "field":
             continue
         role = g.edge_attrs.get(("uses_type", f, abstraction), {}).get("role")

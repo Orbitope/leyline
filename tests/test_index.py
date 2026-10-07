@@ -869,8 +869,8 @@ def test_parse_workers_do_not_change_the_index(tmp_path, monkeypatch):
 
 
 def test_older_store_is_moved_to_keyed_tables_on_open(tmp_path):
-    """A store whose calls and flow steps are plain tables is moved to the keyed tables when opened, and the
-    move holds even when whoever opened it only reads."""
+    """A store whose calls, edges and flow steps are plain tables is moved to the keyed tables when opened, and
+    the move holds even when whoever opened it only reads."""
     import sqlite3
     db = tmp_path / "old.db"
     index(Path(__file__).parent / "fixture4", db, "f4")
@@ -880,16 +880,35 @@ def test_older_store_is_moved_to_keyed_tables_on_open(tmp_path):
         CREATE TABLE old_calls AS SELECT * FROM calls; DROP VIEW calls; ALTER TABLE old_calls RENAME TO calls;
         CREATE TABLE old_steps AS SELECT * FROM flow_steps; DROP VIEW flow_steps;
         ALTER TABLE old_steps RENAME TO flow_steps;
-        DELETE FROM call_sites; DELETE FROM steps; DELETE FROM keys;""")
+        CREATE TABLE old_edges AS SELECT * FROM edges; DROP VIEW edges; ALTER TABLE old_edges RENAME TO edges;
+        DELETE FROM call_sites; DELETE FROM steps; DELETE FROM links; DELETE FROM keys;""")
     raw.close()
     c = store.connect(db)
     c.execute("SELECT COUNT(*) FROM calls").fetchone()
     c.close()   # read only: nothing committed by the caller
     raw = sqlite3.connect(db)
-    kinds = dict(raw.execute("SELECT name, type FROM sqlite_master WHERE name IN ('calls', 'flow_steps')").fetchall())
+    kinds = dict(raw.execute("SELECT name, type FROM sqlite_master WHERE name IN ('calls', 'flow_steps', 'edges')").fetchall())
     raw.close()
-    assert kinds == {"calls": "view", "flow_steps": "view"}
+    assert kinds == {"calls": "view", "flow_steps": "view", "edges": "view"}
     assert _facts(db) == want
+
+
+def test_edges_view_takes_inserts_and_deletes(tmp_path):
+    """Code that writes to `edges` directly keeps working on the keyed table behind it."""
+    db = tmp_path / "e.db"
+    index(Path(__file__).parent / "fixture4", db, "f4")
+    c = store.connect(db)
+    a, b = [r[0] for r in c.execute("SELECT id FROM nodes ORDER BY id LIMIT 2")]
+    n = c.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+    with c:
+        c.execute("INSERT INTO edges (kind, src_id, dst_id, precision, source) VALUES ('notes', ?, 'not-a-node-yet', 'heuristic', 't')", (a,))
+    row = c.execute("SELECT kind, src_id, dst_id, layer FROM edges WHERE kind = 'notes'").fetchone()
+    assert tuple(row) == ("notes", a, "not-a-node-yet", "fact")
+    with c:
+        c.execute("DELETE FROM edges WHERE kind = 'notes' AND src_id = ?", (a,))
+    assert c.execute("SELECT COUNT(*) FROM edges").fetchone()[0] == n
+    assert c.execute("SELECT COUNT(*) FROM edges WHERE src_id = ? OR dst_id = ?", (b, b)).fetchone()[0] > 0
+    c.close()
 
 
 FIXTURE_WS = Path(__file__).parent / "fixture_ws"
@@ -947,3 +966,69 @@ def test_workspace_links_two_repositories(tmp_path):
     assert "wsapp:ext:python:libpkg" in ids(c, "SELECT id FROM nodes WHERE kind = 'external'")
     assert "workspace" not in query.overview(c)
     c.close()
+
+
+def test_shortcuts_for_large_repositories_give_the_same_answers():
+    """The lookups that replaced scans on large repositories answer as the scans did."""
+    import random
+    from leyline import indexer
+    from leyline.adapters import generic
+
+    rnd = random.Random(5)
+    # Module directories: the per-directory lookups against the original all-pairs scans.
+    names = ["__init__.py", "setup.py", "package.json", "a.py", "b.ts", "X.csproj", "pyproject.toml"]
+    for _ in range(200):
+        files = sorted({"/".join(rnd.choice("abc") for _ in range(rnd.randint(0, 3))).strip("/") + "/" + rnd.choice(names)
+                        for _ in range(rnd.randint(1, 12))})
+        files = [f.lstrip("/") for f in files]
+        dirs, packages = set(), set()
+        for f in files:
+            d, _, base = f.rpartition("/")
+            if base.endswith(".csproj") or base in indexer.MODULE_MARKERS:
+                dirs.add(d)
+                if base == "__init__.py":
+                    packages.add(d)
+        own = {d for d in dirs if d not in packages or any(
+            f.rpartition("/")[0] == d and (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in indexer.MODULE_MARKERS[:3]) for f in files)}
+        want = {d for d in dirs if d in own or not any(d != o and d.startswith(o + "/") and o != "" for o in dirs)}
+        assert indexer._module_dirs(files) == want, files
+    # Declarations in a set of files, walked from either side.
+    by_file = {f"f{i}": [(rnd.randint(0, 10 ** 6), f"c{i}.{j}") for j in range(rnd.randint(1, 3))] for i in range(30)}
+    for _ in range(100):
+        files = {f"f{rnd.randint(0, 60)}" for _ in range(rnd.randint(0, 50))}
+        also = f"f{rnd.randint(0, 40)}"
+        want = [c for _, c in sorted(ic for f in files | {also} for ic in by_file.get(f, ()))]
+        assert indexer.Indexer._in_files(by_file, files, also) == want
+    # The receiver of a call: the narrowed search against the search over all 80 bytes.
+    alphabet = b"ab_9$@ \t\n)](.-?>:&=+"
+    for _ in range(20000):
+        text = bytes(rnd.choice(alphabet) for _ in range(rnd.randint(0, 12)))
+        m = generic._RECV.search(text)
+        got = generic._receiver(text, len(text))
+        if m is None:
+            assert got is None, text
+        elif m.group(3) != b":":
+            assert got == ("?" if m.group(2) or not m.group(1) else
+                           {"this": "this", "self": "this", "Self": "this", "@": "this", "me": "this", "super": "base",
+                            "base": "base", "parent": "base"}.get(m.group(1).decode(), m.group(1).decode())), text
+
+
+def test_pattern_rationale_names_fields_in_a_fixed_order():
+    """A decorator holding two fields names them in sorted order, not in the order a set happens to give."""
+    from collections import defaultdict
+    from leyline import patterns
+
+    class G:
+        inn = {"uses_type": defaultdict(set, {"I": {"T.z", "T.a", "T.m"}})}
+        edge_attrs = {("uses_type", f, "I"): {"role": "field_type"} for f in ("T.z", "T.a", "T.m")}
+        attrs = {f: {} for f in ("T.z", "T.a", "T.m")}
+
+        def kind(self, i):
+            return "field"
+
+        def owner(self, i):
+            return "T"
+
+        def name(self, i):
+            return i
+    assert patterns._held(G(), "I") == {"T": ["T.a", "T.m", "T.z"]}

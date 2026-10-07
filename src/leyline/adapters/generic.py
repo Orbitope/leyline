@@ -152,6 +152,8 @@ class Generic:
         self.VERSION = VERSION
         self.COMMON_METHODS = COMMON_METHODS
         self._parser = self._query = None
+        self._shape: dict = {}   # node type -> (definition kind, is a call, is a base list), see _collect
+        self._io_shape: dict = {}   # node type -> (is an import, is a field), see parse
         self.mode = None      # "tags" or "shape", once loaded
         self._loaded = False
 
@@ -223,22 +225,30 @@ class Generic:
                             "instantiate" if node.type in _NEW or (node.parent is not None and node.parent.type in _NEW) else "local"
                         refs.append((name, node, role))
         lang = self.LANGUAGE
+        shape = self._shape
         stack = [root]
         while stack:
             n = stack.pop()
             t = n.type
-            if not n.is_named:
-                continue
+            # What the rules below make of a node type, worked out once per type rather than by four regular
+            # expressions on every node of every file.
+            got = shape.get(t)
+            if got is None:
+                got = shape[t] = (1 if _CALLABLE.match(t) and t not in _NOT_CALLABLE else
+                                  2 if (_TYPE.match(t) and t not in _NOT_TYPE) or (lang, t) in _KEEP_TYPE else
+                                  3 if _BINDING.match(t) else 0,
+                                  _CALL.match(t) is not None, bool(_BASES.search(t)) and t != "argument_list")
+            decl, is_call, is_bases = got
             if True:   # the shape rules run alongside the tags query: many queries cover only part of a language
-                if _CALLABLE.match(t) and t not in _NOT_CALLABLE:
+                if decl == 1:
                     nm = _name_of(n)
                     if nm is not None and _text(nm) not in _KEYWORDS:
                         defs.append(("callable", t.split("_")[0], nm, n))
-                elif (_TYPE.match(t) and t not in _NOT_TYPE) or (lang, t) in _KEEP_TYPE:
+                elif decl == 2:
                     nm = _name_of(n)
                     if nm is not None:
                         defs.append(("type", t.split("_")[0], nm, n))
-                elif _BINDING.match(t):
+                elif decl == 3:
                     value = n.child_by_field_name("value") or n.child_by_field_name("right") or \
                         (n.named_children[-1] if n.named_child_count >= 2 else None)
                     while value is not None and value.type in ("parenthesized_expression", "expression_list") and value.named_children:
@@ -249,7 +259,7 @@ class Generic:
                         nm = target if target.type in _NAME_TYPES and not target.named_child_count else _last_name(target)
                         if nm is not None and re.fullmatch(r"[A-Za-z_$][\w$]*", _text(nm)):
                             defs.append(("callable", "function", nm, n))
-                if _CALL.match(t):
+                if is_call:
                     callee = n.child_by_field_name("function") or n.child_by_field_name("name") or n.child_by_field_name("method") \
                         or n.child_by_field_name("constructor") or n.child_by_field_name("type") or n.child_by_field_name("macro") \
                         or (n.named_children[0] if n.named_children else None)
@@ -265,7 +275,7 @@ class Generic:
                                 defs.append(("test" if word in TEST_CALLS else "suite", word, title, n))
                         if t in _NEW:
                             refs.append((nm, n, "instantiate"))
-                elif _BASES.search(t) and t != "argument_list" and n.parent is not None and (
+                elif is_bases and n.parent is not None and (
                         _TYPE.match(n.parent.type) or (lang, n.parent.type) in _KEEP_TYPE or n.parent.type in ("class", "type_spec")):
                     inner = [n]
                     while inner:
@@ -288,7 +298,8 @@ class Generic:
                 nm = _last_name(target)
                 if nm is not None:
                     containers.append((n, _text(nm)))
-            stack.extend(n.children)
+            # Only named nodes are read; unnamed ones (punctuation, keywords) are not put on the stack at all.
+            stack.extend(n.named_children)
         return defs, calls, refs, containers
 
     def parse(self, repo: str, rel_path: str, file_id: str, src: bytes, module: str = "") -> FileResult:
@@ -517,16 +528,18 @@ class Generic:
 
         # Imports and fields come from the tree's shape in either mode.
         stack = [root]
+        kinds = self._io_shape
         while stack:
             n = stack.pop()
-            if not n.is_named:
-                continue
             t = n.type
-            if _IMPORT.match(t):
+            got = kinds.get(t)
+            if got is None:
+                got = kinds[t] = (_IMPORT.match(t) is not None, _FIELD.match(t) is not None)
+            if got[0]:
                 for target in _import_targets(n):
                     res.imports.append(ImportRef(file_id, target))
                 continue
-            if _FIELD.match(t):
+            if got[1]:
                 home = inside(n.start_byte, ("callable", "type"))
                 if home is not None and home[3] == "type":
                     nm = _name_of(n)
@@ -544,7 +557,7 @@ class Generic:
                         res.nodes.append(field)
                         res.edges.append(Edge("has_field", home[2], fid))
                     continue
-            stack.extend(n.children)
+            stack.extend(n.named_children)
 
         if top_used or force_top[0]:
             res.nodes.append(Node(id=top_id, kind="callable", name="<module>", parent_id=file_id, language=lang, path=rel_path,
@@ -712,9 +725,24 @@ def _named_here(node: Optional[Node], name: str, name_node, role: str) -> bool:
 _RECV = re.compile(rb"([A-Za-z_@$][\w$]*)?\s*(\)|\])?\s*(\?\.|\.|->|::|:|&\.)\s*$")
 
 
+_WS = b" \t\n\r\x0b\x0c"
+_WORD = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_$@"
+
+
 def _receiver(src: bytes, pos: int) -> Optional[str]:
     """What the text shows the call is made on: None for a bare call, `this`, `base`, a name, or ? for an expression."""
-    m = _RECV.search(src[max(0, pos - 80):pos])
+    text = src[max(0, pos - 80):pos]
+    # _RECV tried at every position of the 80 bytes was a fifth of all parsing time. A match ends in one of the
+    # operators and can only cover the name, bracket and spaces just before it, so the search starts there:
+    # it finds the same match, since no match can start earlier.
+    s = text.rstrip(_WS)
+    if s[-1:] not in (b".", b">", b":"):
+        return None
+    s = s[:-2] if s[-2:-1] and s[-2:-1] in b"?.->:&" else s[:-1]
+    s = s.rstrip(_WS)
+    if s[-1:] in (b")", b"]"):
+        s = s[:-1]
+    m = _RECV.search(text, len(s.rstrip(_WS).rstrip(_WORD)))
     if not m:
         return None
     if m.group(3) == b":" and not src[max(0, pos - 80):pos].rstrip().endswith(b":"):

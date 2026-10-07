@@ -23,23 +23,26 @@ CREATE INDEX IF NOT EXISTS nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS nodes_kind ON nodes(kind);
 CREATE INDEX IF NOT EXISTS nodes_path ON nodes(path);
 
-CREATE TABLE IF NOT EXISTS edges (
+-- Every id once, numbered, for the large tables below that would otherwise repeat long ids in every row
+-- and in each of their indexes.
+CREATE TABLE IF NOT EXISTS keys (k INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE);
+
+-- Edges, with both ends as keys. Readers and writers use the `edges` view, which store.connect creates and
+-- which has the columns of the original table (id, kind, src_id, dst_id, precision, layer, source,
+-- commit_sha, attrs); inserting into or deleting from the view works.
+CREATE TABLE IF NOT EXISTS links (
   id          INTEGER PRIMARY KEY,
   kind        TEXT NOT NULL,
-  src_id      TEXT NOT NULL REFERENCES nodes(id),
-  dst_id      TEXT NOT NULL REFERENCES nodes(id),
+  src         INTEGER NOT NULL,
+  dst         INTEGER NOT NULL,
   precision   TEXT NOT NULL,
   layer       TEXT NOT NULL DEFAULT 'fact',
   source      TEXT NOT NULL,
   commit_sha  TEXT,
   attrs       TEXT
 );
-CREATE INDEX IF NOT EXISTS edges_out ON edges(src_id, kind);
-CREATE INDEX IF NOT EXISTS edges_in ON edges(dst_id, kind);
-
--- Every id once, numbered, for the large tables below that would otherwise repeat long ids in every row
--- and in each of their indexes.
-CREATE TABLE IF NOT EXISTS keys (k INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE);
+CREATE INDEX IF NOT EXISTS links_out ON links(src, kind);
+CREATE INDEX IF NOT EXISTS links_in ON links(dst, kind);
 
 -- Call edges are the largest kind, so they get a narrow table of their own, with both ends as keys. Readers
 -- use the `calls` view, which store.connect creates and which has the columns of the original table
