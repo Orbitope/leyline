@@ -89,12 +89,14 @@ The agent implements the tasks. Then:
 ## 4. Was it done as agreed
 **Yes.** Every task is done, every scenario is proven, and nothing outside the spec changed.
 
-| Task | Result | Missing |
-| 1.1 Change `Engine.start` to return the name in upper case | done |  |
+| Task | Result | Verdict | Missing |
+| 1.1 Change `Engine.start` to return the name in upper case | done | proven |  |
 ...
-| Scenario | Result | Evidence |
-| Start | passes | its test reaches the changed code on the map |
-| Shout | passes | its test reaches the changed code on the map |
+| Scenario | Result | Verdict | Evidence |
+| Start | passes | proven | its test reaches the changed code on the map |
+| Shout | passes | proven | its test reaches the changed code on the map |
+
+Verdicts: 5 proven. Blocking: partial, contradicted, inconclusive. Not blocking: needs you. (The default.)
 
 Tests: 5 of 5 passed before, 6 of 6 after.
 Next: nothing left to check; the change was done as agreed. Review the diff and commit it.
@@ -263,6 +265,27 @@ from its test's recorded result, lists edits outside the spec, new links between
 newly broken, and appends the result to `leyline.md`. It exits 0 only when the change was done as
 agreed. A new function that only code named in the spec calls is listed as a helper, not as an edit
 outside the spec.
+
+Each task and scenario gets one verdict, shown in the tables, counted under them ("7 proven, 1 needs
+you, 1 inconclusive"), and given as `verdict` and `verdict_why` in the MCP `check` answer:
+
+| Verdict | Task | Scenario |
+| --- | --- | --- |
+| proven | the code it names changed | its test passes, and failed or did not exist before, or passed both times while running the changed code |
+| partial | some of the code it names changed, some did not | some results that carry its name pass, some fail |
+| contradicted | the code it names did not change (or what it adds is missing) while other code did | its test fails after the change |
+| inconclusive | the map cannot place the code it names, or nothing changed at all | no pass or fail was recorded for it |
+| needs a person | it names no code (docs, say) | its test passes, but does not reach the changed code, or Leyline cannot tell whether it does |
+
+Partial, contradicted and inconclusive hold up "done as agreed"; an item that needs a person is listed
+and does not. A project can change that in `openspec/leyline.toml`, committed beside the changes:
+
+```toml
+[check]
+blocking = ["contradicted", "inconclusive", "partial", "needs a person"]   # every item proven by the code
+```
+
+A tick in `tasks.md` never clears an item: the agent ticks tasks as it goes.
 
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
 the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.

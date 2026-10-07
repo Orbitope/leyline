@@ -86,6 +86,8 @@ why not.
 2. Report `done_as_agreed` first. Then each task not done, each scenario not proven, and each edit
    outside the spec. For every edit outside the spec, read its source and say whether the spec was
    incomplete or the implementation wandered. The person decides which; do not decide for them.
+   Each task and scenario carries a `verdict` (proven, partial, contradicted, inconclusive, needs a
+   person) and `verdict_why`; quote them as they are, and name every item that needs a person.
 3. Pass on `next`.
 
 `spec_brief`, `spec_verify` and `record_test_run` are the steps inside `plan` and `check`, for when one

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import change, diff, rules, store
+from . import verdicts
 
 TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(\d+(?:\.\d+)*)?\.?\s*(.+?)\s*$")
 CODE = re.compile(r"`([^`\n]+)`")
@@ -1310,11 +1311,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     # only next to that code, or to import or register it.
     spans, code_names = diff._spans(con, sorted(in_spec | declared | {h["id"] for h in helpers}))
     drift = [n for n in drift if not (n.get("own") and diff.explained(n, spans.get(n.get("path"), []), code_names))]
-    verdict = []
-    if any(t["state"] in ("not done", "partly") for t in tasks):
-        verdict.append("some tasks are not done")
-    if any(s["state"] != "passes" for s in scenarios):
-        verdict.append("some scenarios are not proven")
+    # One verdict per task and scenario; which of them hold up "done as agreed" is the project's to set.
+    judged = verdicts.judge(con, cid, parsed["dir"], tasks, scenarios, names, touched, removed, before_run, after_run)
+    verdict = list(judged.pop("holds_up"))
     if drift:
         verdict.append(f"{_n(len(drift), 'edit is', 'edits are')} outside the spec")
     if review["rules"]["new_violations"]:
@@ -1343,7 +1342,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "baseline": review.get("baseline"),
            "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results)} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
-           "done_as_agreed": not verdict, "why_not": verdict, "view_id": review.get("view_id")}
+           "done_as_agreed": not verdict, "why_not": verdict, "verdicts": judged, "view_id": review.get("view_id")}
     if write:
         path = Path(parsed["dir"]) / "leyline.md"
         body = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
@@ -1365,6 +1364,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
 
 
 def _yes(v: dict) -> str:
+    other = verdicts.yes_text(v)   # something other than proven was let through: say so
+    if other:
+        return other
     mine = [t["key"] for t in v["tasks"] if t["state"] == "checked by you"]
     return ("Every task " + ("that names code " if mine else "") + "is done, every scenario is proven, and nothing outside"
             " the spec changed." + (f" Task{'s' if len(mine) > 1 else ''} {', '.join(mine)} {'are' if len(mine) > 1 else 'is'}"
@@ -1389,12 +1391,14 @@ def verify_text(v: dict) -> str:
          " and each scenario from the test results.", "",
          "**Yes.** " + _yes(v) if v["done_as_agreed"]
          else "**Not yet:** " + "; ".join(v["why_not"]) + ".", "",
-         "| Task | Result | Missing |", "| --- | --- | --- |"]
+         "| Task | Result | Verdict | Missing |", "| --- | --- | --- | --- |"]
     for t in v["tasks"]:
-        L.append(f"| {t['key']} {_clip(t['text'], 70).replace('|', '/')} | {t['state']} | {', '.join(t['missing'])} |")
+        L.append(f"| {t['key']} {_clip(t['text'], 70).replace('|', '/')} | {t['state']} | {t.get('verdict', '')} | {', '.join(t['missing'])} |")
     if any(t["state"] == "checked by you" for t in v["tasks"]):
-        L += ["", "*Checked by you*: the task names no code, so the map cannot see it done; it does not hold up the verdict."]
-    L += ["", "| Scenario | Result | Evidence |", "| --- | --- | --- |"]
+        L += ["", "*Checked by you*: the task names no code, so the map cannot see it done; "
+              + ("this project makes that hold up the verdict." if verdicts.PERSON in (v.get("verdicts") or {}).get("blocking", ())
+                 else "it does not hold up the verdict.")]
+    L += ["", "| Scenario | Result | Verdict | Evidence |", "| --- | --- | --- | --- |"]
     for s in v["scenarios"]:
         ev = ("measured running the changed code" if s["measured_running_the_change"] else
               "proven by the test run (the test is generated, so it is not on the map)"
@@ -1407,7 +1411,8 @@ def verify_text(v: dict) -> str:
         if s["state"] == "passes" and s.get("results", 0) > 1:
             ev += f" ({s['results']} results carry its name; all pass)"
         msg = " ".join((s["message"] or "").split()).replace("|", "/")
-        L.append(f"| {s['name']} | {s['state']} | {(msg[:200] + '...' if len(msg) > 200 else msg) or ev} |")
+        L.append(f"| {s['name']} | {s['state']} | {s.get('verdict', '')} | {(msg[:200] + '...' if len(msg) > 200 else msg) or ev} |")
+    L += verdicts.page_lines(v)
     if v["drift"]:
         L += ["", "**Changed, but not in the spec:**"] + [_drift_line(n) for n in v["drift"][:25]]
     if v.get("helpers_added"):

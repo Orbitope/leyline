@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import diff, spec, store
+from . import verdicts
 
 STORE = Path(".leyline") / "leyline.db"
 
@@ -410,6 +411,7 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
         mine = [t["key"] for t in v["tasks"] if t["state"] == "checked by you"]
         yours = (f" Check task{'s' if len(mine) > 1 else ''} {', '.join(mine)} by hand: {'they name' if len(mine) > 1 else 'it names'}"
                  " no code.") if mine else ""
+        yours += verdicts.next_note(v)   # scenarios whose tests pass but may not run the change
         return [("Next: nothing left to check; the change was done as agreed. Show the person the verdict and the diff."
                  if for_agent else "Next: nothing left to check; the change was done as agreed. Review the diff and commit it.")
                 + yours + (" The baseline is kept, so `check` can run again after later edits." if for_agent else
@@ -463,6 +465,7 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
     if v["rules_newly_failing"]:
         out.append(f"{spec._n(len(v['rules_newly_failing']), 'rule')} that held now {'fail' if len(v['rules_newly_failing']) > 1 else 'fails'}:"
                    " fix the code or change the rule.")
+    out += verdicts.waiting_lines(v)   # when the project makes a person's check block
     if not out:
         out.append(f"fix what the verdict lists, then {again}.")
     return ["Next: " + out[0], *("Also: " + x for x in out[1:])]
