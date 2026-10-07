@@ -32,8 +32,17 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         for col in cols:
             if col not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
-    _flow_steps_view(con)
-    con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+    # One transaction, committed here: moving an older store's rows drops the old table, and a caller that only
+    # reads and never commits would otherwise roll back the moved rows and lose them.
+    con.execute("BEGIN")
+    try:
+        _flow_steps_view(con)
+        _calls_view(con)
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
     return con
 
 
@@ -62,6 +71,32 @@ def _flow_steps_view(con) -> None:
             FROM steps s JOIN keys fk ON fk.k = s.flow JOIN keys ck ON ck.k = s.callable""")
 
 
+def _calls_view(con) -> None:
+    """`calls` as readers know it, over `call_sites`, which holds the two ends as keys. A store written before
+    the change has a real `calls` table: its rows are moved across once. The old table's index happened to
+    return whole-table groups sorted by callee, then caller; through the view a reader that needs that order
+    asks for it."""
+    kind = con.execute("SELECT type FROM sqlite_master WHERE name = 'calls'").fetchone()
+    if kind is not None and kind[0] == "table":
+        rows = con.execute("SELECT src_id, dst_id, dispatch, precision, site_start, site_end, hit_count, commit_sha"
+                           " FROM calls ORDER BY rowid").fetchall()
+        con.execute("DROP TABLE calls")
+        _insert_calls(con, rows)
+        kind = None
+    if kind is None:
+        con.execute("""CREATE VIEW calls AS
+            SELECT sk.id AS src_id, dk.id AS dst_id, c.dispatch, c.precision, c.site_start, c.site_end, c.hit_count,
+                   c.commit_sha
+            FROM call_sites c JOIN keys sk ON sk.k = c.src JOIN keys dk ON dk.k = c.dst""")
+
+
+def _insert_calls(con, rows) -> None:
+    """rows: (src_id, dst_id, dispatch, precision, site_start, site_end, hit_count, commit_sha)"""
+    key = _keys(con, itertools.chain.from_iterable((r[0], r[1]) for r in rows))
+    con.executemany("INSERT INTO call_sites (src, dst, dispatch, precision, site_start, site_end, hit_count, commit_sha)"
+                    " VALUES (?,?,?,?,?,?,?,?)", ((key[r[0]], key[r[1]], *r[2:]) for r in rows))
+
+
 def _keys(con, ids) -> dict:
     ids = list(dict.fromkeys(ids))
     con.executemany("INSERT OR IGNORE INTO keys (id) VALUES (?)", [(i,) for i in ids])
@@ -87,7 +122,7 @@ def _insert_steps(con, steps) -> None:
 def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
     """Drop every fact row for a repo. Inferred and intent rows are left alone."""
     ids = "SELECT id FROM nodes WHERE repo_id = ? AND layer = 'fact'"
-    con.execute(f"DELETE FROM calls WHERE src_id IN ({ids})", (repo_id,))
+    con.execute(f"DELETE FROM call_sites WHERE src IN (SELECT k FROM keys WHERE id IN ({ids}))", (repo_id,))
     con.execute(f"DELETE FROM edges WHERE layer = 'fact' AND src_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM ancestry WHERE node_id IN ({ids})", (repo_id,))
     con.execute(f"DELETE FROM search WHERE node_id IN ({ids})", (repo_id,))
@@ -125,11 +160,7 @@ def write_edges(con, edges: Iterable[Edge], source: str, commit: str | None) -> 
 
 def write_calls(con, rows: Iterable[tuple], commit: str | None) -> None:
     """rows: (src_id, dst_id, dispatch, precision, line)"""
-    con.executemany(
-        "INSERT INTO calls (src_id, dst_id, dispatch, precision, site_start, site_end, commit_sha)"
-        " VALUES (?,?,?,?,?,?,?)",
-        [(s, d, disp, prec, line, line, commit) for (s, d, disp, prec, line) in rows],
-    )
+    _insert_calls(con, [(s, d, disp, prec, line, line, 0, commit) for (s, d, disp, prec, line) in rows])
 
 
 def write_flows(con, repo_id: str, flows, steps) -> None:

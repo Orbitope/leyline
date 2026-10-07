@@ -54,7 +54,7 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
         if a and b and a != b and module.get(a) == module.get(b):
             weights[(a, b) if a < b else (b, a)] += w
 
-    for r in con.execute("SELECT src_id, dst_id, COUNT(*) AS n FROM calls GROUP BY src_id, dst_id"):
+    for r in con.execute("SELECT src_id, dst_id, COUNT(*) AS n FROM calls GROUP BY src_id, dst_id ORDER BY dst_id, src_id"):
         add(r["src_id"], r["dst_id"], WEIGHTS["calls"] * r["n"])
     for r in con.execute("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('uses_type','instantiates','extends','implements')"):
         add(r["src_id"], r["dst_id"], WEIGHTS[r["kind"]])

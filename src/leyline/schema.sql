@@ -37,10 +37,16 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS edges_out ON edges(src_id, kind);
 CREATE INDEX IF NOT EXISTS edges_in ON edges(dst_id, kind);
 
--- Call edges are the largest kind, so they get a narrow table of their own.
-CREATE TABLE IF NOT EXISTS calls (
-  src_id      TEXT NOT NULL REFERENCES nodes(id),
-  dst_id      TEXT NOT NULL REFERENCES nodes(id),
+-- Every id once, numbered, for the large tables below that would otherwise repeat long ids in every row
+-- and in each of their indexes.
+CREATE TABLE IF NOT EXISTS keys (k INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE);
+
+-- Call edges are the largest kind, so they get a narrow table of their own, with both ends as keys. Readers
+-- use the `calls` view, which store.connect creates and which has the columns of the original table
+-- (src_id, dst_id, dispatch, precision, site_start, site_end, hit_count, commit_sha).
+CREATE TABLE IF NOT EXISTS call_sites (
+  src         INTEGER NOT NULL,
+  dst         INTEGER NOT NULL,
   dispatch    TEXT NOT NULL,
   precision   TEXT NOT NULL,
   site_start  INTEGER,
@@ -48,8 +54,8 @@ CREATE TABLE IF NOT EXISTS calls (
   hit_count   INTEGER DEFAULT 0,
   commit_sha  TEXT
 );
-CREATE INDEX IF NOT EXISTS calls_out ON calls(src_id, dst_id);
-CREATE INDEX IF NOT EXISTS calls_in ON calls(dst_id, src_id);
+CREATE INDEX IF NOT EXISTS call_sites_out ON call_sites(src, dst);
+CREATE INDEX IF NOT EXISTS call_sites_in ON call_sites(dst, src);
 
 CREATE TABLE IF NOT EXISTS annotations (
   id             INTEGER PRIMARY KEY,
@@ -72,7 +78,6 @@ CREATE TABLE IF NOT EXISTS flows (
 -- Flow steps are the largest table by far (millions of rows on a big repository), so they are stored as
 -- integers: every id once in `keys`, every step as a row of numbers. Readers use the `flow_steps` view,
 -- which store.connect creates and which has the columns of the original table.
-CREATE TABLE IF NOT EXISTS keys (k INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE);
 CREATE INDEX IF NOT EXISTS flows_entry ON flows(entry_id);
 CREATE TABLE IF NOT EXISTS steps (
   flow INTEGER, seq INTEGER, depth INTEGER, callable INTEGER,

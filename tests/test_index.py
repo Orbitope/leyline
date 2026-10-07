@@ -783,3 +783,54 @@ def test_generic_languages(tmp_path):
     entries = {r[0] for r in c.execute("SELECT path FROM nodes WHERE kind = 'entry_point'")}
     assert {"go/main.go", "rs/src/main.rs", "java/com/acme/App.java"} <= entries
     c.close()
+
+
+def _facts(db):
+    c = store.connect(db)
+    out = {name: sorted(map(tuple, c.execute(sql))) for name, sql in (
+        ("nodes", "SELECT id, kind, parent_id, content_hash FROM nodes"),
+        ("calls", "SELECT src_id, dst_id, dispatch, precision, site_start FROM calls"),
+        ("edges", "SELECT kind, src_id, dst_id, precision, COALESCE(attrs, '') FROM edges"),
+        ("steps", "SELECT flow_id, seq, depth, callable_id, via, COALESCE(site_line, -1), COALESCE(parent_seq, -1)"
+                  " FROM flow_steps"))}
+    c.close()
+    return out
+
+
+def test_parse_workers_do_not_change_the_index(tmp_path, monkeypatch):
+    """Files parsed across processes give the same index as files parsed in order, in one process."""
+    from leyline import indexer
+    monkeypatch.setattr(indexer, "PARALLEL_MIN_FILES", 0)
+    for fx in ("fixture", "fixture2", "fixture3", "fixture4"):
+        got = []
+        for jobs in ("1", "2"):
+            monkeypatch.setenv("LEYLINE_JOBS", jobs)
+            db = tmp_path / f"{fx}-{jobs}.db"
+            index(Path(__file__).parent / fx, db, "fx")
+            got.append(_facts(db))
+        assert got[0] == got[1], fx
+        assert got[0]["calls"] and got[0]["steps"]
+
+
+def test_older_store_is_moved_to_keyed_tables_on_open(tmp_path):
+    """A store whose calls and flow steps are plain tables is moved to the keyed tables when opened, and the
+    move holds even when whoever opened it only reads."""
+    import sqlite3
+    db = tmp_path / "old.db"
+    index(Path(__file__).parent / "fixture4", db, "f4")
+    want = _facts(db)
+    raw = sqlite3.connect(db)
+    raw.executescript("""
+        CREATE TABLE old_calls AS SELECT * FROM calls; DROP VIEW calls; ALTER TABLE old_calls RENAME TO calls;
+        CREATE TABLE old_steps AS SELECT * FROM flow_steps; DROP VIEW flow_steps;
+        ALTER TABLE old_steps RENAME TO flow_steps;
+        DELETE FROM call_sites; DELETE FROM steps; DELETE FROM keys;""")
+    raw.close()
+    c = store.connect(db)
+    c.execute("SELECT COUNT(*) FROM calls").fetchone()
+    c.close()   # read only: nothing committed by the caller
+    raw = sqlite3.connect(db)
+    kinds = dict(raw.execute("SELECT name, type FROM sqlite_master WHERE name IN ('calls', 'flow_steps')").fetchall())
+    raw.close()
+    assert kinds == {"calls": "view", "flow_steps": "view"}
+    assert _facts(db) == want

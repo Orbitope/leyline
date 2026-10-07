@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 import sys
+from array import array
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
@@ -136,6 +137,9 @@ def _parse_one(job):
     return f, ext, mod_dir, mod_id, loc, sha, res, None, decls
 
 
+PARALLEL_MIN_FILES = 300   # below this, starting worker processes costs more than it saves
+
+
 def _jobs() -> int:
     env = os.environ.get("LEYLINE_JOBS")
     if env and env.isdigit():
@@ -148,7 +152,7 @@ def _parse_all(root: Path, repo: str, work: list):
     Results come back in the order given, so the index is the same however many processes ran."""
     jobs = _jobs()
     items = [(str(root), repo, w) for w in work]
-    if jobs == 1 or len(items) < 300:
+    if jobs == 1 or len(items) < PARALLEL_MIN_FILES:
         yield from map(_parse_one, items)
         return
     import multiprocessing
@@ -159,6 +163,43 @@ def _parse_all(root: Path, repo: str, work: list):
         ctx = None   # no fork (Windows): the default start method works, it is only slower to begin
     with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as pool:
         yield from pool.map(_parse_one, items, chunksize=max(4, len(items) // (jobs * 16)))
+
+
+class FlowSteps:
+    """The steps of every flow, packed into arrays: as tuples they were the largest thing in memory on a large
+    repository (millions of them). Iterates as (flow id, seq, depth, callable id, via, site line, parent seq)."""
+
+    def __init__(self):
+        self.flows: list[tuple] = []          # (flow id, index of its first step)
+        self.callable: list[str] = []         # the node ids themselves, shared with the nodes
+        self.depth, self.via, self.line, self.parent = array("i"), array("b"), array("q"), array("q")
+        self.via_names: list[str] = []
+        self._via: dict[str, int] = {}
+
+    def add(self, flow_id: str, steps: list[tuple]) -> None:
+        """steps: (seq, depth, callable id, via, site line or None, parent seq or None), seq counting from 0."""
+        self.flows.append((flow_id, len(self.callable)))
+        for _seq, depth, c, via, line, parent in steps:
+            v = self._via.get(via)
+            if v is None:
+                v = self._via[via] = len(self.via_names)
+                self.via_names.append(via)
+            self.callable.append(c)
+            self.depth.append(depth)
+            self.via.append(v)
+            self.line.append(-1 if line is None else line)
+            self.parent.append(-1 if parent is None else parent)
+
+    def __len__(self) -> int:
+        return len(self.callable)
+
+    def __iter__(self):
+        ends = [start for _, start in self.flows[1:]] + [len(self.callable)]
+        for (fid, start), end in zip(self.flows, ends):
+            for i in range(start, end):
+                line, parent = self.line[i], self.parent[i]
+                yield (fid, i - start, self.depth[i], self.callable[i], self.via_names[self.via[i]],
+                       None if line < 0 else line, None if parent < 0 else parent)
 
 
 class Indexer:
@@ -178,7 +219,7 @@ class Indexer:
         self.stats: dict[str, Counter] = defaultdict(Counter)
         self.flows: list[tuple] = []
         self.call_col: dict[tuple, int] = {}
-        self.flow_steps: list[tuple] = []
+        self.flow_steps = FlowSteps()
         self.channel_stats: dict[str, Counter] = defaultdict(Counter)
         self.project_refs: dict[str, set] = defaultdict(set)
         self._vis_cache: dict[str, set] = {}
@@ -1667,7 +1708,7 @@ class Indexer:
             self.flows.append((fid, name, "static", start, 0.0, None, "fact", SOURCE, {
                 "kind": kind, "detail": detail, "steps": len(steps), "truncated": truncated,
                 "modules": sorted(m for m in mods if m)}))
-            self.flow_steps.extend((fid, *s) for s in steps)
+            self.flow_steps.add(fid, steps)
 
     def _py_symbol(self, node_id: str, argc: int) -> Optional[list[Node]]:
         n = self.nodes.get(node_id)
@@ -1772,25 +1813,29 @@ def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, 
         began = time.perf_counter()
         stats = ix.run(con)
         stats.update(ix.exact_stats)
+        # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
+        # large repo) from adding to what clustering and the pattern matchers hold.
+        repo, timing = ix.repo, ix.timing
+        del ix
         mark = time.perf_counter()
-        stats["systems"] = cluster.propose(con, ix.repo)
+        stats["systems"] = cluster.propose(con, repo)
         with con:
             store.rebuild_derived(con)
-        ix.timing["systems"] = round(time.perf_counter() - mark, 3)
+        timing["systems"] = round(time.perf_counter() - mark, 3)
         mark = time.perf_counter()
-        stats["patterns"] = patterns.run(con, ix.repo)
-        stats["tour"] = tours.generate(con, ix.repo)
-        ix.timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
+        stats["patterns"] = patterns.run(con, repo)
+        stats["tour"] = tours.generate(con, repo)
+        timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
         stats["stale_annotations"] = store.refresh_stale(con)
         files = sum(v.get("files", 0) for k, v in stats.items() if k.startswith(("tree-sitter", "generic")))
-        lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (ix.repo,)).fetchone()[0]
+        lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (repo,)).fetchone()[0]
         total = round(time.perf_counter() - began, 3)
-        stats["timing"] = {"total_seconds": total, **ix.timing, "files": files, "lines": lines,
+        stats["timing"] = {"total_seconds": total, **timing, "files": files, "lines": lines,
                            "lines_per_second": round(lines / total) if total else 0}
         with con:  # kept in the store so a later reader can see what the map cost to build
-            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{ix.repo}", json.dumps(stats["timing"])))
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{repo}", json.dumps(stats["timing"])))
             con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
-                        (ix.repo, "timing", "-", "ok", None, json.dumps(stats["timing"])))
+                        (repo, "timing", "-", "ok", None, json.dumps(stats["timing"])))
         return stats
     finally:
         con.close()

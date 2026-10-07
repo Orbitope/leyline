@@ -84,7 +84,7 @@ def confirm_rule(con, rule_id: int) -> dict:
 def _links(con, kinds: list[str]):
     kinds = kinds or list(DEPENDENCY_KINDS)
     if "calls" in kinds:
-        for r in con.execute("SELECT DISTINCT src_id, dst_id FROM calls"):
+        for r in con.execute("SELECT DISTINCT src_id, dst_id FROM calls ORDER BY dst_id, src_id"):
             yield r[0], r[1], "calls"
     rest = [k for k in kinds if k != "calls"]
     if rest:
