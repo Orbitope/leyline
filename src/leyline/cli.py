@@ -142,6 +142,20 @@ def _affected(args) -> int:
     return 0
 
 
+def _drift(args) -> int:
+    from . import drift, loop
+    db = args.db or loop.find_store(Path(args.path)) or DEFAULT_DB
+    if not Path(db).exists():
+        print("leyline: no map of this code yet. Run `leyline map <repo>` first.", file=sys.stderr)
+        return 2
+    r = drift.run(db, args.path, args.accept)
+    if args.json:
+        _print(r)
+    else:
+        print(drift.text(r) + "\n".join(drift.next_steps(r)))
+    return 1 if r["fails"] else 0
+
+
 def _short(con, i: str) -> str:
     """A node as a person reads it: its name, after its owner's when it has one that is not a file."""
     n = query._node(con, i)
@@ -250,7 +264,8 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   coverage      import measured test coverage, or show it
   rules         check the architecture rules
   affected-tests  the tests to run for a change, as a command
-  spec         the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
+  spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
+  drift         code the specs name that has moved, changed signature or gone since they were written
   record-tests  store a test run under a label
   review        compare an implemented change with a proposal made through MCP
   view          serve the map on localhost
@@ -415,6 +430,14 @@ def _main(argv=None) -> int:
     p.add_argument("--path", default=".", help="the checkout (default: here)")
     p.add_argument("--json", action="store_true")
     # Advanced commands: no help= keeps them out of the list at the top of --help; ADVANCED lists them.
+    p = sub.add_parser("drift", description="Compare the code that the living specs (openspec/specs/) and finished changes"
+                                            " name in backticks with the map: what is gone, has moved, has changed signature"
+                                            " or could now be several things. Exits 1 when something is gone or changed"
+                                            " signature.")
+    p.add_argument("path", nargs="?", default=".", help="the repository, or its openspec/ folder (default: here)")
+    p.add_argument("--accept", action="store_true", help="the specs and the code agree as they are now: record that, in"
+                                                         " openspec/leyline-anchors.json, to compare with later")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("grade", description="measure the call links found against a compiler's (a SCIP index, or roslyn for C#)")
     p.add_argument("root", help="the repository")
     p.add_argument("compiler", help="a .scip file, or roslyn")
@@ -509,6 +532,8 @@ def _main(argv=None) -> int:
         return _pr(args)
     if args.cmd == "affected-tests":
         return _affected(args)
+    if args.cmd == "drift":
+        return _drift(args)
     explicit, args.db = args.db is not None, args.db or DEFAULT_DB
     if args.cmd == "index":
         if len(args.path) > 1 and args.repo:

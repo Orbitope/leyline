@@ -153,3 +153,12 @@ CREATE TABLE IF NOT EXISTS findings (
   id TEXT PRIMARY KEY, change_id TEXT, reviewer TEXT, severity TEXT, claim TEXT, evidence TEXT,
   proposal TEXT, status TEXT, resolution TEXT, created TEXT
 );
+
+-- Spec drift (leyline.drift): what each code name a spec or a finished change names meant when it was last known
+-- to be right. change_id is the change's id, or specs/<capability> for a living spec. The same anchors are kept in
+-- openspec/leyline-anchors.json, which wins, so they outlive a fresh map. place is that openspec/ folder.
+CREATE TABLE IF NOT EXISTS spec_anchors (
+  place TEXT NOT NULL, change_id TEXT NOT NULL, written TEXT NOT NULL, node_id TEXT NOT NULL, kind TEXT, path TEXT,
+  decl TEXT, decl_hash TEXT, body_hash TEXT, attrs TEXT, recorded TEXT,
+  PRIMARY KEY (place, change_id, written, node_id)
+);

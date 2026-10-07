@@ -487,6 +487,8 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "baseline_tests": con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1",
                                             (run_label(cid, "before"),)).fetchone() is not None,
               "ready": not gaps and not any(f["status"] == "open" and f["severity"] == "high" for f in findings(con, cid)["findings"])}
+    from . import drift   # specs, living or of finished changes, that no longer match code this change touches
+    result["drifted_specs"] = drift.touching(con, parsed["dir"], sorted(tasked | {i for l in links for i in l["into"]}))
     with con:
         con.execute("DELETE FROM spec_items WHERE change_id = ?", (cid,))
         con.executemany("INSERT INTO spec_items VALUES (?,?,?,?,?,?,?)",
@@ -1095,6 +1097,9 @@ def brief_text(b: dict) -> str:
     if b["patterns"]:
         L += ["", "**Design patterns the change sits in** (found from the shape of the code):"] + [
             f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]
+    if b.get("drifted_specs"):
+        L += ["", "**Specs that no longer match code this change touches** (update them with it):"] + [
+            f"- {x}" for x in b["drifted_specs"][:8]] + ([f"- and {len(b['drifted_specs']) - 8} more"] if len(b["drifted_specs"]) > 8 else [])
     L += ["", "## 3. How you will know it was done", "",
           "Each scenario is proven by a test with the same name. After the change, `leyline check` marks each one from "
           "the test results.", ""]
@@ -1363,6 +1368,8 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         attrs["verified"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         with con:
             con.execute("UPDATE change_proposals SET status = 'verified', attrs = ? WHERE id = ?", (json.dumps(attrs), cid))
+        from . import drift   # what each code name meant now that it is agreed: `leyline drift` compares later code with it
+        out["anchors"] = drift.record(con, change_dir, write_file=write)
     return out
 
 

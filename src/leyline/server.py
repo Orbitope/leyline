@@ -864,6 +864,28 @@ def spec_verify(change: ChangeArg,
     return spec_loop.verify(_db(), folder, before_run, after_run)
 
 
+@_tool(items=30, keep=("next",), more="Lists were cut to keep this answer short; `page` says what drifted, spec by spec.")
+def drift(path: Annotated[Optional[str], Field(description="The repository or its openspec/ folder. Default: the server's"
+                                                           " directory and every mapped repository.")] = None,
+          accept: Annotated[bool, Field(description="Record the code as it is now as what the specs mean. Only when the"
+                                                    " person says the specs and the code agree.")] = False) -> dict:
+    """Specs that no longer match the code: every backticked code name in the living specs (openspec/specs/) and in
+    finished changes, compared with the map and with what it meant when the change was checked done. Each name is
+    gone, moved, signature (changed), ambiguous (could now be several things), body (changed inside; not drift by
+    itself) or ok. Re-maps changed code first. `fails` is true when something is gone or changed signature."""
+    from . import drift as drift_mod
+    with _lock:
+        try:
+            r = drift_mod.run(_path(), path if path is not None else Path.cwd(), accept)
+        finally:
+            _generation[0] += 1
+    groups = [{**g, "items": [{k: v for k, v in it.items() if k not in ("ids", "was_ids")} for it in g["items"]
+                              if it["state"] != "ok"]} for g in r["groups"]]
+    return {"fails": r["fails"], "counts": r["counts"], "page": drift_mod.text(r),
+            "next": drift_mod.next_steps(r, for_agent=True), "groups": [g for g in groups if g["items"]],
+            **({"accepted": r["accepted"]} if "accepted" in r else {}), "problems": r["problems"]}
+
+
 # -- tours ----------------------------------------------------------------------------------------
 @_tool(items=50)
 def tours() -> dict:

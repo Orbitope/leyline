@@ -90,6 +90,12 @@ why not.
    person) and `verdict_why`; quote them as they are, and name every item that needs a person.
 3. Pass on `next`.
 
+A check that finds the change done as agreed records what each code name in it means now, in
+`openspec/leyline-anchors.json`. Commit that file with the spec. Later, `drift` says which names in the
+living specs and finished changes have gone, moved or changed signature; `plan` lists those the new
+change touches under "Specs that no longer match code this change touches". Update each such spec with
+the change. Call `drift` with `accept=true` only when the person says the specs and the code agree.
+
 `spec_brief`, `spec_verify` and `record_test_run` are the steps inside `plan` and `check`, for when one
 is needed alone. `plan` stores its test run as `before:spec-<id>` and `check` as `after:spec-<id>`.
 
