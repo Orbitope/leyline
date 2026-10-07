@@ -214,11 +214,25 @@ class FlowSteps:
                        None if line < 0 else line, None if parent < 0 else parent)
 
 
+def _repo_of(node_id: str) -> str:
+    """Every node id starts with its repo id: flask:python:..., flask:file:..., flask:module:..."""
+    return node_id.split(":", 1)[0]
+
+
 class Indexer:
-    def __init__(self, root: str | Path, repo_id: Optional[str] = None):
+    def __init__(self, root: str | Path, repo_id: Optional[str] = None,
+                 others: Optional[list[tuple[str | Path, str]]] = None):
+        """`others` are more (root, repo id) pairs indexed in the same run, a workspace: a name in one
+        repository resolves to its declaration in another. Node ids keep their own repo's prefix."""
         self.root = Path(root).resolve()
         self.repo = repo_id or self.root.name
+        self.repos: dict[str, Path] = {self.repo: self.root}
+        for r, rid in others or ():
+            if rid in self.repos or ":" in rid:
+                raise ValueError(f"repo id {rid!r} is used twice or contains ':'")
+            self.repos[rid] = Path(r).resolve()
         self.commit = _git(self.root, "rev-parse", "HEAD")
+        self.commits = {rid: _git(r, "rev-parse", "HEAD") for rid, r in self.repos.items()}
         self.nodes: dict[str, Node] = {}
         self.edges: list[Edge] = []
         self.calls: list[tuple] = []
@@ -246,23 +260,36 @@ class Indexer:
         if self.exact_mode == "off":
             return
         from . import exact
+        multi = len(self.repos) > 1
         if self.exact_mode in ("auto", "roslyn") and any(v == "csharp" for v in self.file_lang.values()):
-            try:
-                records, info = exact.roslyn(self)
-            except RuntimeError as exc:
-                records, info = [], {"status": "failed", "reason": str(exc)[-600:]}
+            if multi:
+                records, info = [], {"status": "skipped", "reason": "not yet run for a workspace of several repositories"}
+            else:
+                try:
+                    records, info = exact.roslyn(self)
+                except RuntimeError as exc:
+                    records, info = [], {"status": "failed", "reason": str(exc)[-600:]}
             if records:
                 info.update(exact.apply(self, records, "roslyn"))
             self.exact_stats["exact:roslyn"] = info
-        paths = list(self.scip_paths)
+        paths = [(p, None) for p in self.scip_paths]
         if self.exact_mode in ("auto", "scip") and not paths:
-            paths = [str(p) for p in (self.root / "index.scip", self.root / ".leyline" / "index.scip") if p.is_file()]
-        for path in paths:
+            paths = [(str(p), repo) for repo, root in self.repos.items()
+                     for p in (root / "index.scip", root / ".leyline" / "index.scip") if p.is_file()]
+        by_repo = {}
+        for path, repo in paths:
             try:
-                info = {"status": "ok", "file": path, **exact.apply(self, exact.scip(path, self.root), "scip")}
+                if repo is None:   # a SCIP index names the directory it was made in; that says whose it is
+                    repo = next((r for r, root in self.repos.items() if exact.scip_root(path) == root), self.repo) if multi else self.repo
+                info = {"status": "ok", "file": path, **exact.apply(self, exact.scip(path, self.repos[repo]), "scip",
+                                                                    repo if multi else None)}
             except Exception as exc:
                 info = {"status": "failed", "reason": str(exc)[-600:]}
             self.exact_stats["exact:scip"] = info
+            by_repo[repo] = info
+        if multi and by_repo:
+            ok = any(i["status"] == "ok" for i in by_repo.values())
+            self.exact_stats["exact:scip"] = {"status": "ok" if ok else "failed", "by_repo": by_repo}
 
     # -- public --------------------------------------------------------------
     def _timed(self, name: str, fn, *args) -> None:
@@ -273,43 +300,14 @@ class Indexer:
     def run(self, con) -> dict:
         self.timing: dict[str, float] = {}
         started = time.perf_counter()
-        files = list_files(self.root)
-        module_dirs = _module_dirs(files)
-        self._add(Node(id=self.repo, kind="repo", name=self.repo, path="",
-                       attrs={"url": _git(self.root, "remote", "get-url", "origin"),
-                              "branch": _git(self.root, "rev-parse", "--abbrev-ref", "HEAD")}))
-        work = []
-        for f in files:
-            ext = "." + f.rsplit(".", 1)[-1] if "." in f else ""
-            adapter = BY_EXTENSION.get(ext)
-            if adapter is None:
-                continue
-            mod_dir = _module_for(f, module_dirs)
-            mod_id = self._module(mod_dir, files)
-            work.append((f, ext, mod_dir, mod_id))
-        for f, ext, mod_dir, mod_id, loc, sha, res, failed, decls in _parse_all(self.root, self.repo, work):
-            adapter = BY_EXTENSION[ext]
-            file_id = f"{self.repo}:file:{f}"
-            self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
-                           language=adapter.LANGUAGE, path=f, span_start=1, span_end=loc,
-                           content_hash=sha, attrs={"loc": loc}))
-            if res is None:   # one bad file must not sink the run
-                self.stats[adapter.NAME]["files_failed"] += 1
-                print(f"leyline: failed to parse {f}: {failed}", file=sys.stderr)
-                continue
-            self.results[file_id] = res
-            if decls is not None:
-                self._read_decls[file_id] = decls
-            self.file_of_path[f] = file_id
-            self.file_lang[file_id] = adapter.LANGUAGE
-            self.stats[adapter.NAME]["files"] += 1
-            for n in res.nodes:
-                self._add(n)
-            self.edges.extend(res.edges)
+        self.files_of = {rid: list_files(root) for rid, root in self.repos.items()}
+        for repo, root in self.repos.items():
+            self._parse_repo(repo, root, self.files_of[repo])
         self.timing["parse"] = round(time.perf_counter() - started, 3)
 
         def resolve():
-            self._projects(files)
+            for repo, files in self.files_of.items():
+                self._projects(files, repo)
             self._attach_methods()
             self._build_indexes()
             self._resolve_imports()
@@ -330,6 +328,40 @@ class Indexer:
         self._timed("write", self._write, con)
         return {k: dict(v) for k, v in self.stats.items()}
 
+    def _parse_repo(self, repo: str, root: Path, files: list[str]) -> None:
+        module_dirs = _module_dirs(files)
+        self._add(Node(id=repo, kind="repo", name=repo, path="",
+                       attrs={"url": _git(root, "remote", "get-url", "origin"),
+                              "branch": _git(root, "rev-parse", "--abbrev-ref", "HEAD")}))
+        work = []
+        for f in files:
+            ext = "." + f.rsplit(".", 1)[-1] if "." in f else ""
+            adapter = BY_EXTENSION.get(ext)
+            if adapter is None:
+                continue
+            mod_dir = _module_for(f, module_dirs)
+            mod_id = self._module(mod_dir, files, repo)
+            work.append((f, ext, mod_dir, mod_id))
+        for f, ext, mod_dir, mod_id, loc, sha, res, failed, decls in _parse_all(root, repo, work):
+            adapter = BY_EXTENSION[ext]
+            file_id = f"{repo}:file:{f}"
+            self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
+                           language=adapter.LANGUAGE, path=f, span_start=1, span_end=loc,
+                           content_hash=sha, attrs={"loc": loc}))
+            if res is None:   # one bad file must not sink the run
+                self.stats[adapter.NAME]["files_failed"] += 1
+                print(f"leyline: failed to parse {f}: {failed}", file=sys.stderr)
+                continue
+            self.results[file_id] = res
+            if decls is not None:
+                self._read_decls[file_id] = decls
+            self.file_of_path[f] = file_id
+            self.file_lang[file_id] = adapter.LANGUAGE
+            self.stats[adapter.NAME]["files"] += 1
+            for n in res.nodes:
+                self._add(n)
+            self.edges.extend(res.edges)
+
     # -- structure -----------------------------------------------------------
     def _add(self, n: Node) -> None:
         if n.id in self.nodes:
@@ -340,48 +372,65 @@ class Indexer:
             return
         self.nodes[n.id] = n
 
-    def _module(self, mod_dir: str, files: list[str]) -> str:
-        mid = f"{self.repo}:module:{mod_dir or '.'}"
+    def _module(self, mod_dir: str, files: list[str], repo: Optional[str] = None) -> str:
+        repo = repo or self.repo
+        mid = f"{repo}:module:{mod_dir or '.'}"
         if mid not in self.nodes:
             marker = next((f.rsplit("/", 1)[-1] for f in files
                            if f.rpartition("/")[0] == mod_dir and
                            (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS)), None)
-            self._add(Node(id=mid, kind="module", name=mod_dir.rsplit("/", 1)[-1] or self.repo,
-                           parent_id=self.repo, path=mod_dir, attrs={"marker": marker}))
+            self._add(Node(id=mid, kind="module", name=mod_dir.rsplit("/", 1)[-1] or repo,
+                           parent_id=repo, path=mod_dir, attrs={"marker": marker}))
         return mid
 
-    def _projects(self, files: list[str]) -> None:
+    def _projects(self, files: list[str], repo: Optional[str] = None) -> None:
         """Project files give exact module-to-module and module-to-package edges."""
+        repo = repo or self.repo
+        root = self.repos[repo]
         for f in files:
             if not f.endswith(".csproj"):
                 continue
             d = f.rpartition("/")[0]
-            mid = f"{self.repo}:module:{d or '.'}"
+            mid = f"{repo}:module:{d or '.'}"
             if mid not in self.nodes:
                 continue
-            text = (self.root / f).read_text(errors="replace")
+            text = (root / f).read_text(errors="replace")
             for ref in re.findall(r'<ProjectReference\s+Include="([^"]+)"', text):
                 target = (Path(d) / ref.replace("\\", "/")).parent
                 tdir = Path(*_normalize(target.parts)).as_posix() if target.parts else ""
-                tid = f"{self.repo}:module:{tdir or '.'}"
+                tid = f"{repo}:module:{tdir or '.'}"
+                if target.parts[:1] == ("..",) or tid not in self.nodes:
+                    tid = self._module_elsewhere(root / target) or tid   # a project in another repo of the workspace
                 if tid in self.nodes:
                     self.edges.append(Edge("imports", mid, tid, "exact", {"via": "ProjectReference"}))
                     self.project_refs[mid].add(tid)
             for name, ver in re.findall(r'<PackageReference\s+Include="([^"]+)"(?:\s+Version="([^"]+)")?', text):
-                xid = self._external("nuget", name, {"category": "package", "version": ver or None})
+                xid = self._external("nuget", name, {"category": "package", "version": ver or None}, repo)
                 self.edges.append(Edge("depends_on", mid, xid, "exact", {"version_range": ver or None}))
             sdk = re.search(r'<Project\s+Sdk="([^"/]+)(?:/([^"]+))?"', text)
             if sdk and sdk.group(1) != "Microsoft.NET.Sdk":
-                xid = self._external("nuget", sdk.group(1), {"category": "sdk", "version": sdk.group(2)})
+                xid = self._external("nuget", sdk.group(1), {"category": "sdk", "version": sdk.group(2)}, repo)
                 self.edges.append(Edge("depends_on", mid, xid, "exact", {"version_range": sdk.group(2)}))
             tf = re.search(r"<TargetFramework>([^<]+)<", text)
             if tf:
                 self.nodes[mid].attrs["target_framework"] = tf.group(1)
 
-    def _external(self, eco: str, name: str, attrs: Optional[dict] = None) -> str:
-        xid = f"{self.repo}:ext:{eco}:{name}"
+    def _module_elsewhere(self, path: Path) -> Optional[str]:
+        """The module of another workspace repo that an absolute directory is, if any."""
+        if len(self.repos) < 2:
+            return None
+        path = Path(os.path.normpath(path))
+        for repo, root in self.repos.items():
+            if path == root or root in path.parents:
+                mid = f"{repo}:module:{path.relative_to(root).as_posix()}"
+                return mid if mid in self.nodes else None
+        return None
+
+    def _external(self, eco: str, name: str, attrs: Optional[dict] = None, repo: Optional[str] = None) -> str:
+        repo = repo or self.repo
+        xid = f"{repo}:ext:{eco}:{name}"
         if xid not in self.nodes:
-            self._add(Node(id=xid, kind="external", name=name, parent_id=self.repo,
+            self._add(Node(id=xid, kind="external", name=name, parent_id=repo,
                            attrs={"ecosystem": eco, **(attrs or {})}))
         return xid
 
@@ -395,8 +444,9 @@ class Indexer:
         self.bases: dict[str, list[str]] = defaultdict(list)
         self.field_names: dict[str, set] = defaultdict(set)
         self.ns_modules: dict[str, set] = defaultdict(set)               # C# namespace -> module ids
-        self.py_modules: dict[str, str] = {}                             # python module path -> file id
-        self.path_modules: dict[str, str] = {}                           # path without extension -> file id (TypeScript)
+        self.py_modules: dict[str, dict] = defaultdict(dict)             # repo -> python module path -> file id
+        self.path_modules: dict[str, dict] = defaultdict(dict)           # repo -> path without extension -> file id (TypeScript)
+        self.py_importable: dict[str, str] = {}                          # python import name -> file id, across the workspace
         self.star_exports: dict[str, list] = defaultdict(list)           # file -> files it re-exports everything from
         self.default_export: dict[str, str] = {}                         # file -> the node it exports as default
         self.packages: dict[str, dict] = {}                              # npm package name -> {"dir", "exports", "main"}
@@ -423,21 +473,25 @@ class Indexer:
                 if lang == "csharp":
                     self.ns_modules[d].add(mod_id)
                 elif lang == "python":
-                    self.py_modules[d] = fid
+                    self.py_modules[_repo_of(fid)][d] = fid
                 else:
-                    self.path_modules[d] = fid
+                    self.path_modules[_repo_of(fid)][d] = fid
             for n in res.nodes:
                 self.file_of[n.id] = fid
         # A package under a source root (src/flask) is imported by its own name (flask), not by its path.
-        py_files = {self.nodes[f].path: f for f in self.results if self.file_lang[f] == "python"}
-        dirs_with_init = {p.rsplit("/", 1)[0] if "/" in p else "" for p in py_files if p.endswith("__init__.py")}
-        for path, fid in sorted(py_files.items()):
-            parts = path.split("/")
-            start = len(parts) - 1
-            while start > 0 and "/".join(parts[:start]) in dirs_with_init:
-                start -= 1
-            if 0 < start < len(parts) - 1:
-                self.py_modules.setdefault(module_path("/".join(parts[start:])), fid)
+        for repo in self.repos:
+            py_files = {self.nodes[f].path: f for f in self.results if self.file_lang[f] == "python" and _repo_of(f) == repo}
+            dirs_with_init = {p.rsplit("/", 1)[0] if "/" in p else "" for p in py_files if p.endswith("__init__.py")}
+            for path, fid in sorted(py_files.items()):
+                parts = path.split("/")
+                start = len(parts) - 1
+                while start > 0 and "/".join(parts[:start]) in dirs_with_init:
+                    start -= 1
+                if 0 < start < len(parts) - 1:
+                    self.py_modules[repo].setdefault(module_path("/".join(parts[start:])), fid)
+                if len(self.repos) > 1 and start < len(parts) - 1:
+                    # Inside a package: another repository of the workspace can import it by this name.
+                    self.py_importable.setdefault(module_path("/".join(parts[start:])), fid)
 
     # -- imports -------------------------------------------------------------
     def _resolve_imports(self) -> None:
@@ -447,15 +501,16 @@ class Indexer:
         self.py_names: dict[str, dict] = defaultdict(dict)     # file -> local name -> (file id, symbol|None)
         self.outside_imports: dict[str, set] = defaultdict(set)  # file -> local names imported from outside the workspace
         self.import_targets: dict[str, set] = defaultdict(set)   # file -> files it imports, by any form of import
-        for f in list_files(self.root):
-            if f.rsplit("/", 1)[-1] == "package.json":
-                try:
-                    data = json.loads((self.root / f).read_text())
-                except (OSError, ValueError):
-                    continue
-                if isinstance(data, dict) and data.get("name"):
-                    self.packages[data["name"]] = {"dir": f.rpartition("/")[0], "exports": data.get("exports"),
-                                                   "main": data.get("source") or data.get("module") or data.get("main") or data.get("types")}
+        for repo, files in self.files_of.items():
+            for f in files:
+                if f.rsplit("/", 1)[-1] == "package.json":
+                    try:
+                        data = json.loads((self.repos[repo] / f).read_text())
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(data, dict) and data.get("name"):
+                        self.packages[data["name"]] = {"dir": f.rpartition("/")[0], "exports": data.get("exports"), "repo": repo,
+                                                       "main": data.get("source") or data.get("module") or data.get("main") or data.get("types")}
         seen = set()
         stdlib = getattr(sys, "stdlib_module_names", frozenset())
         for fid, res in self.results.items():
@@ -485,7 +540,7 @@ class Indexer:
                                 self.edges.append(Edge("imports", fid, m, "exact", {"namespace": ns}))
                     elif not declared:
                         xid = self._external("dotnet", imp.target if not (imp.is_static or imp.alias) else ns,
-                                             {"category": "namespace"})
+                                             {"category": "namespace"}, _repo_of(fid))
                         if (fid, xid) not in seen:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact"))
@@ -509,7 +564,7 @@ class Indexer:
                     elif lang == "python":
                         top = imp.target.split(".")[0] or imp.target
                         xid = self._external("python", top,
-                                             {"category": "stdlib" if top in stdlib else "package"})
+                                             {"category": "stdlib" if top in stdlib else "package"}, _repo_of(fid))
                         if (fid, xid) not in seen:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
@@ -518,7 +573,7 @@ class Indexer:
                         parts = spec.split("/")
                         top = "/".join(parts[:2]) if spec.startswith("@") else parts[0]
                         builtin = imp.target.startswith("node:") or top in NODE_BUILTINS
-                        xid = self._external("npm", top, {"category": "stdlib" if builtin else "package"})
+                        xid = self._external("npm", top, {"category": "stdlib" if builtin else "package"}, _repo_of(fid))
                         for s in imp.symbols:   # a name from outside: calls to it are not ours to resolve
                             self.outside_imports[fid].add(s.partition(" as ")[2] or s)
                         if imp.alias:
@@ -536,7 +591,7 @@ class Indexer:
                 continue
             path = self.nodes[fid].path
             base = path.rsplit("/", 1)[-1]
-            top = f"{self.repo}:typescript:{self._modpath(fid)}.<module>"
+            top = f"{_repo_of(fid)}:typescript:{self._modpath(fid)}.<module>"
             if top not in self.nodes or top + "#entry" in self.nodes or re.search(r"\.(test|spec|bench|config|setup|d)\.", base) \
                     or "/test/" in "/" + path or "/__tests__/" in "/" + path or any(n.kind == "test" for n in res.nodes):
                 continue
@@ -561,12 +616,12 @@ class Indexer:
             if not owner or (n.parent_id in self.nodes and self.nodes[n.parent_id].kind == "type"):
                 continue
             cands = types.get((n.language, owner), [])
-            here = (n.path or "").rpartition("/")[0]
-            near = [t for t in cands if (self.nodes[t].path or "").rpartition("/")[0] == here] or cands
+            here = (_repo_of(n.id), (n.path or "").rpartition("/")[0])
+            near = [t for t in cands if (_repo_of(t), (self.nodes[t].path or "").rpartition("/")[0]) == here] or cands
             if len(near) == 1:
                 n.parent_id = near[0]
                 n.attrs["type_id"] = near[0]
-                for res in (self.results.get(self.file_of_path.get(n.path, "")),):
+                for res in (self.results.get(f"{_repo_of(n.id)}:file:{n.path}"),):
                     for c in (res.calls if res else ()):
                         if c.src_id == n.id and c.enclosing_type is None:
                             c.enclosing_type = near[0]
@@ -579,7 +634,7 @@ class Indexer:
             return hits[0] if hits else None
         if self.file_lang[fid] == "python":
             return self._py_module(fid, target)
-        return self._path_module(target)
+        return self._path_module(target, _repo_of(fid))
 
     def _generic_import(self, fid: str, target: str) -> list[str]:
         """Files an import names, whatever the language writes: a relative path (./x, ../x.h), a dotted or ::
@@ -598,7 +653,7 @@ class Indexer:
                 d = parts[:-1]
                 for i in range(len(d)):
                     self._dirs["/".join(d[i:])].append(f)
-        lang = self.file_lang[fid]
+        lang, repo = self.file_lang[fid], _repo_of(fid)
         here = self.nodes[fid].path.rpartition("/")[0]
         t = target.strip().strip("\"'<>`")
         if not t:
@@ -610,31 +665,55 @@ class Indexer:
                 base = base.rpartition("/")[0]
             t = "./" + posixpath.join(posixpath.relpath(base or ".", here or "."), m.group(2).replace(".", "/")) if m.group(2) else "./"
             if not m.group(2):
-                return [f for f in self._suffixes.get(posixpath.join(base, "__init__") if base else "__init__", [])][:1]
+                return [f for f in self._suffixes.get(posixpath.join(base, "__init__") if base else "__init__", []) if _repo_of(f) == repo][:1]
         if t.startswith("."):
             joined = posixpath.normpath(posixpath.join(here, t))
             key = re.sub(r"\.[A-Za-z0-9]+$", "", joined)
-            return [f for f in self._suffixes.get(key, []) if self.nodes[f].path.startswith(key)] or self._dirs.get(key, [])[:0]
+            return [f for f in self._suffixes.get(key, []) if self.nodes[f].path.startswith(key) and _repo_of(f) == repo] or self._dirs.get(key, [])[:0]
         t = re.sub(r"^(crate|self|super)::", "", t)
         key = re.sub(r"(::|\.|\\)", "/", t) if not "/" in t else re.sub(r"\.[A-Za-z0-9]+$", "", t)
         key = key.rstrip("/*").strip("/")
-        same_lang = lambda fs: [f for f in fs if self.file_lang[f] == lang]
-        for k in (key, key.rsplit("/", 1)[0] if "/" in key else None):   # import a.b.C names a file a/b/C, or a symbol C in a/b
-            if not k:
-                continue
-            hits = same_lang(self._suffixes.get(k, []))
-            if hits:
-                return hits[:8] if len(hits) <= 8 else []
-            hits = same_lang(self._dirs.get(k, []))        # a package or module directory
-            if hits and len({self.nodes[h].path.rpartition("/")[0] for h in hits}) == 1:
-                return hits[:40]
-        return []
+        def find(accept):
+            same_lang = lambda fs, k: [f for f in fs if self.file_lang[f] == lang and accept(f, k)]
+            for k in (key, key.rsplit("/", 1)[0] if "/" in key else None):   # import a.b.C names a file a/b/C, or a symbol C in a/b
+                if not k:
+                    continue
+                hits = same_lang(self._suffixes.get(k, []), k)
+                if hits:
+                    return hits[:8] if len(hits) <= 8 else []
+                hits = same_lang(self._dirs.get(k, []), k)        # a package or module directory
+                if hits and len({self.nodes[h].path.rpartition("/")[0] for h in hits}) == 1:
+                    return hits[:40]
+            return []
+        own = find(lambda f, k: _repo_of(f) == repo)
+        if own or len(self.repos) == 1:
+            return own
+        # Another repository of the workspace: only a name that starts at its root or at a source root there
+        # (werkzeug/routing in src/werkzeug/routing.py), not any file that happens to end the same way (json).
+        return find(lambda f, k: _repo_of(f) != repo and self._rooted(self.nodes[f].path, k))
 
-    def _path_module(self, target: str) -> Optional[str]:
-        """A TypeScript import: ./path from the repo root (the adapter resolved it), or a workspace package."""
-        def at(path):
+    SOURCE_ROOTS = {"src", "lib", "source", "sources", "main", "java", "kotlin", "scala", "pkg", "include", "app"}
+
+    def _rooted(self, path: str, key: str) -> bool:
+        """Whether `key` names `path` from the top of its repository or of a source root in it."""
+        stem = re.sub(r"\.[A-Za-z0-9]+$", "", path)
+        for tail in ("", "/mod", "/index", "/__init__", "/lib"):
+            for cand in (stem, stem.rpartition("/")[0]):   # the file itself, or its directory (a package)
+                if tail and not cand.endswith(tail):
+                    continue
+                cand = cand[: len(cand) - len(tail)] if tail else cand
+                if cand == key or cand.endswith("/" + key):
+                    prefix = cand[: len(cand) - len(key)].strip("/")
+                    if not prefix or all(p in self.SOURCE_ROOTS for p in prefix.split("/")):
+                        return True
+        return False
+
+    def _path_module(self, target: str, repo: Optional[str] = None) -> Optional[str]:
+        """A TypeScript import: ./path from the repo root (the adapter resolved it), or a workspace package,
+        which may live in another repository of the workspace."""
+        def at(path, repo=repo or self.repo):
             path = re.sub(r"\.(d\.[cm]?ts|[cm]?[jt]sx?)$", "", path.lstrip("./"))
-            return self.path_modules.get(path) or self.path_modules.get(path + "/index")
+            return self.path_modules[repo].get(path) or self.path_modules[repo].get(path + "/index")
         if target.startswith("."):
             return at(target[2:] if target.startswith("./") else target)
         name = max((p for p in self.packages if target == p or target.startswith(p + "/")), key=len, default=None)
@@ -649,20 +728,23 @@ class Indexer:
         tries += [f"{sub}", f"src/{sub}"] if sub else [pkg["main"], "src/index", "index"]
         for t in tries:
             if t:
-                hit = at(posixpath.normpath(posixpath.join(pkg["dir"], t)))
+                hit = at(posixpath.normpath(posixpath.join(pkg["dir"], t)), pkg["repo"])
                 if hit:
                     return hit
         return None
 
     def _py_module(self, fid: str, target: str) -> Optional[str]:
-        if target in self.py_modules:
-            return self.py_modules[target]
+        repo = _repo_of(fid)
+        mods = self.py_modules[repo]
+        if target in mods:
+            return mods[target]
         own = module_path(self.nodes[fid].path)
         pkg = own.rsplit(".", 1)[0] if "." in own else ""
         sibling = f"{pkg}.{target}" if pkg else target
-        if sibling in self.py_modules:  # script-style import of a file in the same directory
-            return self.py_modules[sibling]
-        return None
+        if sibling in mods:  # script-style import of a file in the same directory
+            return mods[sibling]
+        hit = self.py_importable.get(target)   # a package of another repository in the workspace
+        return hit if hit and _repo_of(hit) != repo else None
 
     def _modpath(self, fid: str) -> str:
         return BY_LANGUAGE[self.file_lang[fid]].module_path(self.nodes[fid].path)
@@ -674,7 +756,7 @@ class Indexer:
             return None
         if symbol == "default" and target_fid in self.default_export:
             return self.default_export[target_fid]
-        cand = f"{self.repo}:{self.file_lang[target_fid]}:{self._modpath(target_fid)}.{symbol}"
+        cand = f"{_repo_of(target_fid)}:{self.file_lang[target_fid]}:{self._modpath(target_fid)}.{symbol}"
         if cand in self.nodes:
             return cand
         if depth < 6 and symbol in self.py_names.get(target_fid, {}):
@@ -698,7 +780,7 @@ class Indexer:
                 by_file[self.file_of[n.id]][n.name] = n
         if not by_file:
             return
-        conftests = {self.nodes[f].path.rsplit("/", 1)[0] if "/" in self.nodes[f].path else "": f
+        conftests = {(_repo_of(f), self.nodes[f].path.rsplit("/", 1)[0] if "/" in self.nodes[f].path else ""): f
                      for f in by_file if self.nodes[f].path.rsplit("/", 1)[-1] == "conftest.py"}
 
         def find(fid: str, name: str, skip: Optional[str] = None) -> Optional[Node]:
@@ -707,7 +789,7 @@ class Indexer:
                 return hit
             d = self.nodes[fid].path.rsplit("/", 1)[0] if "/" in self.nodes[fid].path else ""
             while True:
-                hit = by_file.get(conftests.get(d, ""), {}).get(name)
+                hit = by_file.get(conftests.get((_repo_of(fid), d), ""), {}).get(name)
                 if hit is not None and hit.id != skip:
                     return hit
                 if not d:
@@ -810,7 +892,7 @@ class Indexer:
         if lang == "typescript" and fid:
             if name in self.outside_imports[fid]:
                 return None
-            own = f"{self.repo}:{lang}:{self._modpath(fid)}.{name}"
+            own = f"{_repo_of(fid)}:{lang}:{self._modpath(fid)}.{name}"
             if own in self.nodes and self.nodes[own].kind == "type":
                 return own
         cands = self.types_by_name.get((lang, name), [])
@@ -1294,7 +1376,7 @@ class Indexer:
                 # cost hundreds of MB on a large repo.
                 self._text_cache.clear()
             try:
-                self._text_cache[fid] = (self.root / self.nodes[fid].path).read_text(errors="replace").splitlines()
+                self._text_cache[fid] = (self.repos[_repo_of(fid)] / self.nodes[fid].path).read_text(errors="replace").splitlines()
             except OSError:
                 self._text_cache[fid] = []
         return self._text_cache[fid]
@@ -1352,6 +1434,10 @@ class Indexer:
         name = call.name
         cands = self.by_name.get((lang, name), [])
         types = self.types_by_name.get((lang, name), [])
+        if len(self.repos) > 1:   # another repository's names are seen only through what this file imports
+            reach = self._reach(fid)
+            mine = lambda i: _repo_of(i) == _repo_of(fid) or self.file_of.get(i) in reach
+            cands, types = [c for c in cands if mine(c.id)], [t for t in types if mine(t)]
         if not cands and not types:
             return None
         ix = self._name_index(lang, name)
@@ -1624,6 +1710,8 @@ class Indexer:
                     if u.name in field_id.get(t, ()):
                         target = field_id[t][u.name]
                         break
+                if lang == "python" and u.access != "w" and owners:
+                    self._read_getters(u, owners, target)
                 if target is None or target == u.src_id:
                     continue
                 st["field_uses"] += 1
@@ -1638,6 +1726,55 @@ class Indexer:
             if init == n:
                 attrs["init"] = True  # only ever set while creating the object, never changed afterwards
             self.edges.append(Edge(kind, src, dst, "guess" if guessed else "heuristic", attrs))
+
+    def _is_getter(self, fn: Node) -> bool:
+        """A Python method that runs when its attribute is read: @property, or a decorator that is a descriptor
+        class (one defining __get__, such as werkzeug's cached_property) declared somewhere in the workspace."""
+        if fn.kind != "callable" or not fn.attrs.get("decorators"):
+            return False
+        if fn.id not in self._getter_memo:
+            hit = False
+            for d in fn.attrs["decorators"]:
+                d = d.lstrip("@").split("(", 1)[0].strip()
+                if d in ("property", "functools.cached_property", "abc.abstractproperty"):
+                    hit = True
+                elif re.fullmatch(r"[A-Za-z_][\w.]*", d) and not d.endswith((".setter", ".deleter")):
+                    tid = self._type("python", d.rsplit(".", 1)[-1], fn.id)
+                    hit = bool(tid and any("__get__" in self.members.get(t, {}) for t in self._chain(tid)))
+                if hit:
+                    break
+            self._getter_memo[fn.id] = hit
+        return self._getter_memo[fn.id]
+
+    def _read_getters(self, u: FieldUse, owners: list[str], field: Optional[str]) -> None:
+        """Reading an attribute that a getter computes runs the getter, so the read is a call. On `self`, a
+        subclass may compute an attribute the class itself holds as a plain value or a getter of its own
+        (Flask's Request.max_content_length over Werkzeug's): those getters are reached too, as dispatch."""
+        if not hasattr(self, "_getter_memo"):
+            self._getter_memo: dict[str, bool] = {}
+            self._subtypes: dict[str, set] = defaultdict(set)
+            for sub, bases in self.bases.items():
+                for b in bases:
+                    self._subtypes[b].add(sub)
+        hits = []
+        for t in owners:
+            if field is not None and self.nodes[field].parent_id == t:
+                break   # a plain value nearer than any getter
+            found = [m for m in self.members.get(t, {}).get(u.name, []) if self._is_getter(m)]
+            if found:
+                hits.append((found[0], "property"))
+                break
+        if u.receiver == "this" and (hits or field is not None):
+            seen, queue = set(), [owners[0]]
+            while queue:
+                for sub in self._subtypes.get(queue.pop(), ()):
+                    if sub not in seen:
+                        seen.add(sub)
+                        queue.append(sub)
+                        hits += [(m, "virtual") for m in self.members.get(sub, {}).get(u.name, [])[:1] if self._is_getter(m)]
+        for fn, dispatch in hits:
+            if fn.id != u.src_id:
+                self.calls.append((u.src_id, fn.id, dispatch, "heuristic", u.line))
 
     def _resolve_events(self) -> None:
         """Link the code that raises an event to the code that handles it."""
@@ -1719,6 +1856,8 @@ class Indexer:
         seen = set()
         for req, _ in requests:
             cands = [r for r, _ in routes if fits(r, req)]
+            # In a workspace, a route in the request's own repository wins over one in another.
+            cands = [r for r in cands if _repo_of(r.src_id) == _repo_of(req.src_id)] or cands
             near = [r for r in cands if root_of(r.src_id) == root_of(req.src_id)]   # a route declared inside the same test
             chosen = near or (cands if len({r.src_id for r in cands}) == 1 else [])
             if cands and not chosen:
@@ -1761,8 +1900,8 @@ class Indexer:
             if wr != "write":
                 continue
             for (r, rr), (rd, re_, rn) in toks.items():
-                if rr != "read" or root_of(r) == root_of(w):
-                    continue
+                if rr != "read" or root_of(r) == root_of(w) or _repo_of(r) != _repo_of(w):
+                    continue   # file paths are matched within one repository; across two they say too little
                 shared_name = wn & rn
                 shared = (wd & rd, we & re_)
                 if shared_name:
@@ -1786,16 +1925,16 @@ class Indexer:
                 mod = self.nodes[self.file_of[e.dst_id]].parent_id if e.dst_id in self.file_of else None
                 if mod:
                     entries[mod].append(e.dst_id)
-        files_by_path = {n.path: n.id for n in self.nodes.values() if n.kind == "file"}
+        files_by_path = {(_repo_of(n.id), n.path): n.id for n in self.nodes.values() if n.kind == "file"}
         modules = [(n.path, n.id) for n in self.nodes.values() if n.kind == "module" and n.path]
 
-        def match(text: str):
+        def match(text: str, repo: str):
             text = text.strip().replace("\\", "/")
-            if text in files_by_path:  # a script path
-                fid = files_by_path[text]
+            if (repo, text) in files_by_path:  # a script path, in the launching file's repository
+                fid = files_by_path[(repo, text)]
                 tops = [e.dst_id for e in self.edges if e.kind == "exposes" and self.file_of.get(e.dst_id) == fid]
                 return tops[0] if tops else fid
-            for path, mid in modules:
+            for path, mid in sorted(modules, key=lambda m: _repo_of(m[1]) != repo):   # own repository first
                 stem = text.rsplit("/", 1)[-1].rsplit(".", 1)[0] if "." in text.rsplit("/", 1)[-1] else None
                 if text == path or text.startswith(path + "/") or (stem and stem == path.rsplit("/", 1)[-1] and text.endswith((".dll", ".exe", ".csproj"))):
                     if not entries.get(mid):
@@ -1807,10 +1946,10 @@ class Indexer:
         for fid, res in self.results.items():
             for sp in res.spawns:
                 st["launch_sites"] += 1
-                hits = [(match(s), s, "heuristic") for s in sp.strings]
+                hits = [(match(s, _repo_of(fid)), s, "heuristic") for s in sp.strings]
                 hits = [h for h in hits if h[0]]
                 if not hits:
-                    hits = [(match(s), s, "guess") for s in dict.fromkeys(sp.file_strings)]
+                    hits = [(match(s, _repo_of(fid)), s, "guess") for s in dict.fromkeys(sp.file_strings)]
                     hits = [h for h in hits if h[0]]
                 if not hits:
                     st["launches_of_outside_programs"] += 1
@@ -1923,7 +2062,7 @@ class Indexer:
     def _py_bare(self, fid: str, call: CallSite, defined_here: bool) -> Optional[list[Node]]:
         self._last_src = call.src_id
         lang = self.file_lang[fid]
-        own = f"{self.repo}:{lang}:{self._modpath(fid)}.{call.name}"
+        own = f"{_repo_of(fid)}:{lang}:{self._modpath(fid)}.{call.name}"
         hit = self._py_symbol(own, call.argc)
         if hit is not None:
             return hit
@@ -1944,46 +2083,58 @@ class Indexer:
 
     # -- write ---------------------------------------------------------------
     def _write(self, con) -> None:
+        multi = len(self.repos) > 1
+        owner = lambda i: _repo_of(i) if _repo_of(i) in self.repos else self.repo
         with con:
-            store.clear_facts(con, self.repo)
-            store.write_nodes(con, self.nodes.values(), self.repo, SOURCE, self.commit)
-            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{self.repo}", str(self.root)))
+            for repo, root in self.repos.items():
+                store.clear_facts(con, repo)
+                store.write_nodes(con, [n for n in self.nodes.values() if owner(n.id) == repo], repo, SOURCE, self.commits[repo])
+                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"root:{repo}", str(root)))
             # Drop edges whose endpoints did not survive (defensive) and exact duplicates.
             seen, edges = set(), []
             for e in self.edges:
                 key = (e.kind, e.src_id, e.dst_id, tuple(sorted((e.attrs or {}).items(), key=str)).__repr__())
                 if e.src_id in self.nodes and e.dst_id in self.nodes and key not in seen:
                     seen.add(key)
+                    if multi and owner(e.dst_id) != owner(e.src_id):
+                        e.attrs = {**(e.attrs or {}), "to_repo": owner(e.dst_id)}   # a link between repositories
                     edges.append(e)
             for n in self.nodes.values():
                 if n.parent_id:
                     edges.append(Edge("contains", n.parent_id, n.id, "exact"))
-            store.write_edges(con, edges, SOURCE, self.commit)
             calls = sorted({c for c in self.calls if c[0] in self.nodes})
-            store.write_calls(con, calls, self.commit)
-            from .adapters import ADAPTERS
-            for a in ADAPTERS:
-                st = dict(self.stats.get(a.NAME, {}))
-                status = "ok" if st.get("files") else "no_files"
-                store.write_coverage(con, self.repo, a.NAME, a.VERSION, status, self.commit, st)
-            for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
-                ran = channel in ("event", "process", "http", "file")
-                store.write_coverage(con, self.repo, f"communicates:{channel}", "0.1" if ran else "-",
-                                     "ok" if ran else "not_analyzed", self.commit,
-                                     dict(self.channel_stats.get(channel, {})))
+            for repo in self.repos:   # each row carries the commit of the repository its source is in
+                store.write_edges(con, [e for e in edges if owner(e.src_id) == repo], SOURCE, self.commits[repo])
+                store.write_calls(con, [c for c in calls if owner(c[0]) == repo], self.commits[repo])
             store.write_flows(con, self.repo, self.flows, self.flow_steps)
-            store.write_coverage(con, self.repo, "flows:static", "0.1", "ok", self.commit,
-                                 {"flows": len(self.flows), "steps": len(self.flow_steps)})
-            for name in ("exact:roslyn", "exact:scip"):
-                info = dict(self.exact_stats.get(name, {}))
-                status = info.pop("status", "not_analyzed")
-                store.write_coverage(con, self.repo, name, "1" if status == "ok" else "-",
-                                     status if status in ("ok", "failed") else "not_analyzed", self.commit, info)
-            kept = con.execute("SELECT format, stats FROM coverage_runs ORDER BY created DESC LIMIT 1").fetchone()
-            if kept:   # an imported coverage file outlives a re-index
-                store.write_coverage(con, self.repo, "coverage", kept["format"], "ok", self.commit, json.loads(kept["stats"] or "{}"))
-            else:
-                store.write_coverage(con, self.repo, "coverage", "-", "not_analyzed", self.commit, {})
+            from .adapters import ADAPTERS
+            # Counts are for the whole run; in a workspace every member repo gets the same rows, marked as such.
+            ws = {"workspace": sorted(self.repos)} if multi else {}
+            for repo in self.repos:
+                commit = self.commits[repo]
+                for a in ADAPTERS:
+                    st = dict(self.stats.get(a.NAME, {}))
+                    status = "ok" if st.get("files") else "no_files"
+                    store.write_coverage(con, repo, a.NAME, a.VERSION, status, commit, {**st, **ws} if st else st)
+                for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
+                    ran = channel in ("event", "process", "http", "file")
+                    store.write_coverage(con, repo, f"communicates:{channel}", "0.1" if ran else "-",
+                                         "ok" if ran else "not_analyzed", commit,
+                                         dict(self.channel_stats.get(channel, {})))
+                store.write_coverage(con, repo, "flows:static", "0.1", "ok", commit,
+                                     {"flows": len(self.flows), "steps": len(self.flow_steps), **ws})
+                for name in ("exact:roslyn", "exact:scip"):
+                    info = dict(self.exact_stats.get(name, {}))
+                    status = info.pop("status", "not_analyzed")
+                    store.write_coverage(con, repo, name, "1" if status == "ok" else "-",
+                                         status if status in ("ok", "failed") else "not_analyzed", commit, info)
+                kept = con.execute("SELECT format, stats FROM coverage_runs ORDER BY created DESC LIMIT 1").fetchone()
+                if kept:   # an imported coverage file outlives a re-index
+                    store.write_coverage(con, repo, "coverage", kept["format"], "ok", commit, json.loads(kept["stats"] or "{}"))
+                else:
+                    store.write_coverage(con, repo, "coverage", "-", "not_analyzed", commit, {})
+            if multi:
+                con.execute("INSERT OR REPLACE INTO meta VALUES ('workspace', ?)", (json.dumps(list(self.repos)),))
             store.rebuild_derived(con)
 
 
@@ -1998,42 +2149,85 @@ def _normalize(parts: tuple) -> list[str]:
     return out
 
 
-def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, exact: str = "off",
+def workspace(con, roots: list[str | Path], repo_id: Optional[str] = None) -> list[tuple[Path, str]]:
+    """The (root, repo id) pairs to index together. Repositories named together make the store a workspace,
+    and it remembers them: indexing any one of them later indexes all of them again, so the links between
+    them are kept. A member whose directory is gone is left as it was stored."""
+    given = [(Path(r).resolve(), repo_id if repo_id and len(roots) == 1 else Path(r).resolve().name) for r in roots]
+    row = con.execute("SELECT value FROM meta WHERE key = 'workspace'").fetchone()
+    stored = json.loads(row[0]) if row else []
+    if len(given) == 1 and not stored:
+        return given
+    out = list(given)
+    for rid in stored:
+        root = con.execute("SELECT value FROM meta WHERE key = ?", (f"root:{rid}",)).fetchone()
+        if any(rid == g[1] or (root and Path(root[0]) == g[0]) for g in given):
+            continue
+        if root and Path(root[0]).is_dir():
+            out.append((Path(root[0]), rid))
+        else:
+            print(f"leyline: workspace member {rid} is not at {root[0] if root else '?'}; its facts are kept as they were",
+                  file=sys.stderr)
+    ids = [rid for _, rid in out]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise ValueError(f"two repositories would have the id {dupes[0]!r}; index them from directories with different names")
+    return out
+
+
+def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] = None, exact: str = "off",
           scip: Optional[list[str]] = None) -> dict:
-    """Index a repository. `exact` is off, auto, roslyn or scip: whether a compiler's view of the
-    references replaces the syntax-based one (see leyline.exact). `scip` lists index.scip files."""
+    """Index a repository, or several as one workspace (`root` a list). `exact` is off, auto, roslyn or scip:
+    whether a compiler's view of the references replaces the syntax-based one (see leyline.exact). `scip`
+    lists index.scip files."""
     from . import cluster, patterns, tours
 
     con = store.connect(db_path)
     try:
-        ix = Indexer(root, repo_id)
+        members = workspace(con, list(root) if isinstance(root, (list, tuple)) else [root], repo_id)
+        ix = Indexer(members[0][0], members[0][1], members[1:])
         ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
         began = time.perf_counter()
         stats = ix.run(con)
         stats.update(ix.exact_stats)
         # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
         # large repo) from adding to what clustering and the pattern matchers hold.
-        repo, timing = ix.repo, ix.timing
+        repo, timing, repos = ix.repo, ix.timing, dict(ix.repos)
         del ix
         mark = time.perf_counter()
-        stats["systems"] = cluster.propose(con, repo)
-        with con:
-            store.rebuild_derived(con, systems_of=repo)
+        multi = len(repos) > 1
+        systems = {r: cluster.propose(con, r) for r in repos}
+        stats["systems"] = systems if multi else systems[repo]
+        with con:   # a workspace re-clusters every repo, so it rebuilds everything
+            store.rebuild_derived(con, systems_of=None if multi else repo)
         timing["systems"] = round(time.perf_counter() - mark, 3)
         mark = time.perf_counter()
         stats["patterns"] = patterns.run(con, repo)
-        stats["tour"] = tours.generate(con, repo)
+        for other in list(repos)[1:]:
+            with con:
+                store.write_coverage(con, other, "patterns:structural", "0.1", "ok", None, stats["patterns"])
+        tour = {r: tours.generate(con, r) for r in repos}
+        stats["tour"] = tour if multi else tour[repo]
         timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
         stats["stale_annotations"] = store.refresh_stale(con)
+        if multi:
+            stats["workspace"] = {"repos": {r: str(p) for r, p in repos.items()}, "cross_repo": _cross_counts(con)}
         files = sum(v.get("files", 0) for k, v in stats.items() if k.startswith(("tree-sitter", "generic")))
-        lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (repo,)).fetchone()[0]
+        lines = con.execute(f"SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id IN ({','.join('?' * len(repos))})",
+                            list(repos)).fetchone()[0]
         total = round(time.perf_counter() - began, 3)
         stats["timing"] = {"total_seconds": total, **timing, "files": files, "lines": lines,
                            "lines_per_second": round(lines / total) if total else 0}
         with con:  # kept in the store so a later reader can see what the map cost to build
-            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{repo}", json.dumps(stats["timing"])))
-            con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
-                        (repo, "timing", "-", "ok", None, json.dumps(stats["timing"])))
+            for r in repos:
+                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{r}", json.dumps(stats["timing"])))
+                con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
+                            (r, "timing", "-", "ok", None, json.dumps(stats["timing"])))
         return stats
     finally:
         con.close()
+
+
+def _cross_counts(con) -> list[dict]:
+    from .query import cross_repo
+    return cross_repo(con)["pairs"]

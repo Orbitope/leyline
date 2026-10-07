@@ -890,3 +890,60 @@ def test_older_store_is_moved_to_keyed_tables_on_open(tmp_path):
     raw.close()
     assert kinds == {"calls": "view", "flow_steps": "view"}
     assert _facts(db) == want
+
+
+FIXTURE_WS = Path(__file__).parent / "fixture_ws"
+
+
+def test_workspace_links_two_repositories(tmp_path):
+    """Two repositories indexed together: a call into the other resolves to its source, a change there reaches
+    callers here, and re-indexing either one keeps the links."""
+    from leyline import change
+    from leyline.cli import main
+
+    db = tmp_path / "ws.db"
+    assert main(["--db", str(db), "index", str(FIXTURE_WS / "wsapp"), str(FIXTURE_WS / "wslib")]) == 0
+    app, lib = "wsapp:python:src.apppkg.main", "wslib:python:src.libpkg.core"
+
+    def check(c):
+        assert f"{lib}.helper" in calls(c, f"{app}.App.hook")             # through the package's re-export
+        assert f"{lib}.Base.handle" in calls(c, f"{app}.run")             # a method inherited from the other repo
+        assert f"{app}.App.limit" in calls(c, f"{lib}.Base.handle")       # Base reads self.limit; App computes it
+        assert f"{app}.App.name" in calls(c, f"{app}.run")                # @cached is a descriptor declared in wslib
+        assert ("overrides", "wslib") in {(r[0], r[1]) for r in c.execute(
+            "SELECT kind, json_extract(attrs, '$.to_repo') FROM edges WHERE src_id = ?", (f"{app}.App.hook",))}
+
+    c = store.connect(db)
+    check(c)
+    x = query.cross_repo(c)
+    assert {(p["from"], p["to"]) for p in x["pairs"]} == {("wsapp", "wslib"), ("wslib", "wsapp")}
+    assert x["flows_crossing_and_back"] >= 1
+    assert query.overview(c)["workspace"]["repos"] == ["wsapp", "wslib"]
+    # The test's flow runs into wslib and back into wsapp.
+    steps = [s["id"] for s in query.flow(c, "flow:wsapp:python:tests.test_main.test_run")["steps"]]
+    assert steps.index(f"{lib}.Base.handle") < steps.index(f"{app}.App.hook") < steps.index(f"{lib}.helper")
+    # A change in wslib lists what must change in wsapp and the wsapp test to run.
+    r = change.assess(c, "helper takes a factor", [{"id": f"{lib}.helper", "action": "signature"}])
+    assert f"{app}.App.hook" in {m["id"] for m in r["must_edit"]}
+    assert "wsapp:python:tests.test_main.test_run" in {t["id"] for t in r["tests_to_run"]}
+    assert any("another repository: wsapp" in k["what"] for k in r["risks"])
+    imp = query.impact(c, f"{lib}.Base.hook")
+    assert imp["crosses_repo_boundary"] and imp["by_repo"]["wsapp"] >= 1
+    c.close()
+
+    # Re-indexing one repository re-indexes the workspace it belongs to, so neither side loses its links.
+    for one in ("wslib", "wsapp"):
+        index(FIXTURE_WS / one, db)
+        c = store.connect(db)
+        check(c)
+        assert {r[0] for r in c.execute("SELECT repo_id FROM nodes WHERE kind = 'repo'")} == {"wsapp", "wslib"}
+        c.close()
+
+    # Alone, the same repository sees the other as an outside package.
+    alone = tmp_path / "alone.db"
+    index(FIXTURE_WS / "wsapp", alone)
+    c = store.connect(alone)
+    assert not {d for d in calls(c, f"{app}.%") if d.startswith("wslib:")}
+    assert "wsapp:ext:python:libpkg" in ids(c, "SELECT id FROM nodes WHERE kind = 'external'")
+    assert "workspace" not in query.overview(c)
+    c.close()

@@ -69,7 +69,7 @@ def generate(con, repo_id: str) -> dict:
     def qual(i):
         p = parent.get(i)
         return f"{names[p]}.{names[i]}" if kind_of.get(p) == "type" and kind_of.get(i) in ("callable", "field") else names.get(i, i)
-    flows = q("SELECT id, name, entry_id, attrs FROM flows")
+    flows = q("SELECT id, name, entry_id, attrs FROM flows WHERE entry_id IN (SELECT id FROM nodes WHERE repo_id = ?)", repo_id)
     flow_kind = {f["id"]: (json.loads(f["attrs"] or "{}").get("kind")) for f in flows}
     test_mods = {module.get(f["entry_id"]) for f in flows if flow_kind[f["id"]] == "test"} - {None}
 
@@ -106,7 +106,7 @@ def generate(con, repo_id: str) -> dict:
 
     # 2. Where it starts.
     entries = q("SELECT e.dst_id AS target, n.attrs FROM edges e JOIN nodes n ON n.id = e.src_id"
-                " WHERE e.kind = 'exposes' AND n.kind = 'entry_point'")
+                " WHERE e.kind = 'exposes' AND n.kind = 'entry_point' AND n.repo_id = ?", repo_id)
     reach = {}
     for f in flows:
         if flow_kind[f["id"]] != "test":

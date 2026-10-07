@@ -62,9 +62,10 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
         return {"error": "; ".join(problems)}
 
     callers: dict[str, list] = defaultdict(list)      # callee -> [(caller, precision)]
-    for r in con.execute("SELECT src_id, dst_id, MIN(precision = 'guess') AS sure FROM calls GROUP BY src_id, dst_id"
+    # A link is a guess only when every call site behind it is one.
+    for r in con.execute("SELECT src_id, dst_id, MIN(precision = 'guess') AS guess FROM calls GROUP BY src_id, dst_id"
                          " ORDER BY dst_id, src_id"):
-        callers[r["dst_id"]].append((r["src_id"], "calls", not r["sure"]))
+        callers[r["dst_id"]].append((r["src_id"], "calls", bool(r["guess"])))
     for r in con.execute("SELECT src_id, dst_id, precision, attrs FROM edges WHERE kind = 'communicates'"):
         ch = (json.loads(r["attrs"]) if r["attrs"] else {}).get("channel", "channel")
         callers[r["dst_id"]].append((r["src_id"], ch, r["precision"] == "guess"))
@@ -238,7 +239,8 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
             continue
         mod = module_of(i) or (i if nodes[i]["kind"] == "module" else None)
         if mod:
-            g = by_module.setdefault(mod, {"module": nodes[mod]["name"], "id": mod, "changed": 0, "must_edit": 0, "reached": 0})
+            g = by_module.setdefault(mod, {"module": nodes[mod]["name"], "id": mod, "repo": mod.split(":", 1)[0],
+                                           "changed": 0, "must_edit": 0, "reached": 0})
             g["changed" if m["role"] in ("changed", "new") else "must_edit" if m["role"] in ("must_edit", "contract") else "reached"] += 1
         u = _unit(nodes, i)
         s = system_of.get(u) if u else None
@@ -254,6 +256,12 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
     if crossing:
         risks.append({"level": "high" if any(by_module[m]["must_edit"] for m in by_module if m not in home_modules) else "medium",
                       "what": f"Reaches outside its own module: {', '.join(crossing)}."})
+    home_repos = {h.split(":", 1)[0] for h in home_modules if h}
+    other_repos = sorted({g["repo"] for g in by_module.values()} - home_repos)
+    if other_repos and home_repos:
+        risks.append({"level": "high" if any(g["must_edit"] for g in by_module.values() if g["repo"] in other_repos) else "medium",
+                      "what": f"Reaches into another repository: {', '.join(other_repos)}. It is released and tested on its own, "
+                              "so its side may need its own change."})
     if channel_links:
         chans = sorted({c["channel"] for c in channel_links})
         behavioral = any(t["action"] in ("behavior", "remove") for t in targets)
@@ -280,7 +288,7 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
         "intent": intent,
         "summary": {"changed": len([m for m in marks.values() if m["role"] == "changed"]), "added": len(new_nodes),
                     "must_edit": len(must), "reached": len([m for m in marks.values() if m["role"] in ("direct", "indirect")]),
-                    "modules": len(by_module), "systems": len(by_system), "flows": len(flows), "tests_to_run": len(tests),
+                    "modules": len(by_module), "repos": len({g["repo"] for g in by_module.values()}), "systems": len(by_system), "flows": len(flows), "tests_to_run": len(tests),
                     "depth": depth},
         "risks": risks,
         "must_edit": [brief(m) for m in ordered if m["role"] in ("must_edit", "contract")][:80],

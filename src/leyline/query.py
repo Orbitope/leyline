@@ -56,6 +56,43 @@ def module_edges(con) -> list[dict]:
     return sorted(out, key=lambda e: -e["total"])
 
 
+def cross_repo(con, limit: int = 20) -> dict:
+    """Links between the repositories of a workspace: calls, imports, type use and inheritance whose two
+    ends are in different repos, the functions most called across, and the flows that cross."""
+    pairs: dict[tuple, dict] = {}
+    for r in con.execute("SELECT s.repo_id AS a, d.repo_id AS b, COUNT(*) AS n FROM calls c JOIN nodes s ON s.id = c.src_id"
+                         " JOIN nodes d ON d.id = c.dst_id WHERE s.repo_id != d.repo_id GROUP BY a, b"):
+        pairs.setdefault((r["a"], r["b"]), {})["calls"] = r["n"]
+    for r in con.execute("SELECT s.repo_id AS a, d.repo_id AS b, e.kind AS k, COUNT(*) AS n FROM edges e"
+                         " JOIN nodes s ON s.id = e.src_id JOIN nodes d ON d.id = e.dst_id"
+                         " WHERE s.repo_id != d.repo_id AND e.kind != 'contains' GROUP BY a, b, k"):
+        pairs.setdefault((r["a"], r["b"]), {})[r["k"]] = r["n"]
+    called = [{"id": r["dst_id"], "name": r["name"], "repo": r["repo_id"], "callers": r["n"]} for r in con.execute(
+        "SELECT c.dst_id, d.name, d.repo_id, COUNT(DISTINCT c.src_id) AS n FROM calls c JOIN nodes s ON s.id = c.src_id"
+        " JOIN nodes d ON d.id = c.dst_id WHERE s.repo_id != d.repo_id GROUP BY c.dst_id ORDER BY n DESC, c.dst_id LIMIT ?", (limit,))]
+    # A flow crosses when a step is in another repo than its entry, and comes back when a step in the
+    # entry's repo was reached from a step in another (a framework calling the code that uses it).
+    crossing = returning = 0
+    if pairs:
+        rows = con.execute(
+            "SELECT f.id AS flow, e.repo_id AS home, s.seq, s.parent_seq, n.repo_id AS repo FROM flows f"
+            " JOIN nodes e ON e.id = f.entry_id JOIN flow_steps s ON s.flow_id = f.id JOIN nodes n ON n.id = s.callable_id"
+            " WHERE f.layer = 'fact' ORDER BY f.id, s.seq")
+        cur, repo_at, crossed, back = None, {}, False, False
+        for r in rows:
+            if r["flow"] != cur:
+                crossing, returning = crossing + crossed, returning + back
+                cur, repo_at, crossed, back = r["flow"], {}, False, False
+            repo_at[r["seq"]] = r["repo"]
+            crossed = crossed or r["repo"] != r["home"]
+            back = back or (r["repo"] == r["home"] and repo_at.get(r["parent_seq"], r["home"]) != r["home"])
+        crossing, returning = crossing + crossed, returning + back
+    return {"repos": [r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'repo' ORDER BY id")],
+            "pairs": [{"from": a, "to": b, **kinds, "total": sum(kinds.values())} for (a, b), kinds in sorted(pairs.items())],
+            "most_called_across": called,
+            "flows_crossing": crossing, "flows_crossing_and_back": returning}
+
+
 def overview(con) -> dict:
     """The top-level map: repos, modules, how modules depend on each other, and what was analyzed."""
     repos = []
@@ -87,8 +124,11 @@ def overview(con) -> dict:
                  **({"stats": json.loads(r["stats"])} if r["stats"] and r["stats"] != "{}" else {})}
                 for r in con.execute("SELECT * FROM extractor_coverage ORDER BY repo_id, status, extractor")]
     systems = systems_list(con)
+    ws = con.execute("SELECT value FROM meta WHERE key = 'workspace'").fetchone()
     return {
         "repos": repos,
+        # Repositories indexed together: names resolve across them, and these are the links between them.
+        **({"workspace": {"repos": json.loads(ws[0]), "links": cross_repo(con)["pairs"]}} if ws else {}),
         "systems": systems,
         "module_edges": module_edges(con),
         "externals": externals,
@@ -392,7 +432,7 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
     for i in reached:
         m = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (i,)).fetchone()
         mod = (m[0] if m and m[0] else "?")
-        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "count": 0, "direct": []})
+        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "repo": mod.split(":", 1)[0], "count": 0, "direct": []})
         g["count"] += 1
         if dist[i] == 1 and len(g["direct"]) < 15:
             g["direct"].append(i)
@@ -400,8 +440,12 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
     through = [{"id": r["id"], "name": r["name"]} for r in con.execute(
         f"SELECT DISTINCT f.id, f.name FROM flows f JOIN flow_steps s ON s.flow_id = f.id"
         f" WHERE s.callable_id IN ({marks}) ORDER BY f.name", list(targets))]
+    by_repo: dict[str, int] = defaultdict(int)
+    for g in by_module.values():
+        by_repo[g["repo"]] += g["count"]
     return {"id": node_id, "reached_by": len(reached), "depth_limit": max_depth,
             "crosses_module_boundary": any(m != (home[0] if home else None) for m in by_module),
+            "by_repo": dict(by_repo), "crosses_repo_boundary": any(r != row["repo_id"] for r in by_repo),
             "by_module": sorted(by_module.values(), key=lambda g: -g["count"]),
             "flows_through": {"total": len(through), "items": through[:40]},
             "note": "Callers found from syntax. Code reached only through outside frameworks is not counted."}

@@ -26,16 +26,17 @@ from . import store
 
 
 def _functions(con):
-    """path -> [(first body line, last line, node id)] for every function on the map."""
+    """(repo, path) -> [(first body line, last line, node id)] for every function on the map."""
     out = defaultdict(list)
-    for r in con.execute("SELECT id, path, span_start, span_end, attrs FROM nodes WHERE kind IN ('callable', 'test') AND path IS NOT NULL"):
+    for r in con.execute("SELECT id, repo_id, path, span_start, span_end, attrs FROM nodes"
+                         " WHERE kind IN ('callable', 'test') AND path IS NOT NULL"):
         if not r["span_start"]:
             continue
         a = json.loads(r["attrs"] or "{}")
         end = r["span_end"] or r["span_start"]
         # The line that declares a function runs when its file loads or its parent runs. Only the body counts.
         first = a.get("body_line") or (r["span_start"] + 1 if end > r["span_start"] else r["span_start"])
-        out[r["path"]].append((min(first, end), end, r["id"]))
+        out[(r["repo_id"], r["path"])].append((min(first, end), end, r["id"]))
     return out
 
 
@@ -52,38 +53,43 @@ def _owners(funcs, lines):
     return hit
 
 
-def _relative(path: str, root: Optional[str], known: set) -> Optional[str]:
+def _relative(path: str, roots: dict, known: set) -> Optional[tuple]:
+    """A measured file's (repo, path) on the map. `roots` is repo id -> the directory it was indexed from."""
     p = path.replace("\\", "/")
-    if root and p.startswith(root.rstrip("/") + "/"):
-        p = p[len(root.rstrip("/")) + 1:]
-    if p in known:
-        return p
-    hits = [k for k in known if p.endswith("/" + k) or k.endswith("/" + p)]   # a different checkout location
-    return max(hits, key=len) if hits else None
+    for repo, root in roots.items():
+        if root and p.startswith(root.rstrip("/") + "/") and (repo, p[len(root.rstrip("/")) + 1:]) in known:
+            return repo, p[len(root.rstrip("/")) + 1:]
+    exact = sorted(k for k in known if k[1] == p)
+    if exact:
+        return exact[0]
+    hits = [k for k in known if p.endswith("/" + k[1]) or k[1].endswith("/" + p)]   # a different checkout location
+    return max(hits, key=lambda k: (len(k[1]), k)) if hits else None
 
 
 def _numbits(blob: bytes) -> list[int]:
     return [i * 8 + b for i, byte in enumerate(blob) for b in range(8) if byte & (1 << b)]
 
 
-def _test_node(con, context: str, cache: dict) -> Optional[str]:
-    """`tests/test_x.py::TestC::test_m[param]|run` -> the test function's node id."""
+def _test_node(con, context: str, cache: dict, home: str = "") -> Optional[str]:
+    """`tests/test_x.py::TestC::test_m[param]|run` -> the test function's node id. In a workspace, a test
+    in `home` (the repo whose code was measured) wins over one at the same path in another repo."""
     name = context.split("|", 1)[0]
     name = re.sub(r"\[.*\]$", "", name)
     if name in cache:
         return cache[name]
     node = None
+    order, extra = (" ORDER BY repo_id != ?", (home,)) if home else ("", ())
     if "::" in name:
         path, *parts = name.split("::")
-        row = con.execute("SELECT id FROM nodes WHERE kind IN ('callable', 'test') AND path = ? AND id LIKE ?",
-                          (path, "%." + ".".join(parts))).fetchone()
+        row = con.execute("SELECT id FROM nodes WHERE kind IN ('callable', 'test') AND path = ? AND id LIKE ?" + order,
+                          (path, "%." + ".".join(parts), *extra)).fetchone()
         if row is None:
-            row = con.execute("SELECT id FROM nodes WHERE kind IN ('callable', 'test') AND path LIKE ? AND id LIKE ?",
-                              ("%" + path, "%." + ".".join(parts))).fetchone()
+            row = con.execute("SELECT id FROM nodes WHERE kind IN ('callable', 'test') AND path LIKE ? AND id LIKE ?" + order,
+                              ("%" + path, "%." + ".".join(parts), *extra)).fetchone()
         node = row[0] if row else None
     elif name:
-        row = con.execute("SELECT id FROM nodes WHERE kind IN ('callable', 'test') AND (id LIKE ? OR name = ?)",
-                          ("%" + name, name)).fetchone()   # dynamic_context = test_function gives a dotted name
+        row = con.execute("SELECT id FROM nodes WHERE kind IN ('callable', 'test') AND (id LIKE ? OR name = ?)" + order,
+                          ("%" + name, name, *extra)).fetchone()   # dynamic_context = test_function gives a dotted name
         node = row[0] if row else None
     cache[name] = node
     return node
@@ -95,7 +101,7 @@ def import_file(con, path: str | Path, run: str = "default") -> dict:
     if not path.is_file():
         return {"error": f"no file at {path}"}
     head = path.read_bytes()[:64]
-    root = next((r[0] for r in con.execute("SELECT value FROM meta WHERE key LIKE 'root:%'")), None)
+    roots = {r[0].split(":", 1)[1]: r[1] for r in con.execute("SELECT key, value FROM meta WHERE key LIKE 'root:%'")}
     funcs = _functions(con)
     known = set(funcs)
     rows: list[tuple] = []
@@ -107,9 +113,10 @@ def import_file(con, path: str | Path, run: str = "default") -> dict:
         cache: dict = {}
         per: dict[tuple, set] = defaultdict(set)       # (file path, context id) -> lines
         files = dict(src.execute("SELECT id, path FROM file"))
-        rel = {i: _relative(p, root, known) for i, p in files.items()}
+        rel = {i: _relative(p, roots, known) for i, p in files.items()}
         files_matched = sum(1 for v in rel.values() if v)
         files_unknown = sum(1 for v in rel.values() if not v)
+        home = max(roots, key=lambda r: sum(1 for v in rel.values() if v and v[0] == r)) if len(roots) > 1 else ""
         for fid, cid, a, b in src.execute("SELECT file_id, context_id, fromno, tono FROM arc"):
             if rel.get(fid):
                 per[(rel[fid], cid)].update(x for x in (a, b) if x > 0)
@@ -124,7 +131,7 @@ def import_file(con, path: str | Path, run: str = "default") -> dict:
             for node, n in _owners(funcs[file], lines).items():
                 merged[(test, node)] += n
         for (test, node), n in merged.items():
-            tid = _test_node(con, test, cache) if test else None
+            tid = _test_node(con, test, cache, home) if test else None
             if test:
                 tests_seen.add(test)
                 if tid:
@@ -137,8 +144,8 @@ def import_file(con, path: str | Path, run: str = "default") -> dict:
         per_file: dict[str, set] = defaultdict(set)
         for cls in tree.getroot().iter("class"):
             name = cls.get("filename") or ""
-            rel = _relative(name, root, known) or next(
-                (r for s in sources for r in [_relative(s.rstrip("/") + "/" + name, root, known)] if r), None)
+            rel = _relative(name, roots, known) or next(
+                (r for s in sources for r in [_relative(s.rstrip("/") + "/" + name, roots, known)] if r), None)
             if not rel:
                 files_unknown += 1
                 continue
