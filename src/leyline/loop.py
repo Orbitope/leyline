@@ -94,12 +94,24 @@ def changed_files(db: str | Path) -> list[str]:
     return sorted(set(out))
 
 
+def made_by_another_version(db: str | Path) -> bool:
+    """True when the map was made by another version of Leyline (or one that did not say), so what it found may
+    differ from what this version would find in the same files."""
+    from .incremental import code_version
+    con = store.connect(db)
+    try:
+        row = con.execute("SELECT value FROM meta WHERE key = 'made_by'").fetchone()
+    finally:
+        con.close()
+    return row is None or row[0] != code_version()
+
+
 def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional[dict]:
     """Re-index the store's repositories when their code has changed (only what changed is done again, see
     leyline.incremental; `full` does everything). Returns the index stats, or None."""
     from .indexer import index
 
-    if not force and not changed_files(db):
+    if not force and not changed_files(db) and not made_by_another_version(db):
         return None
     con = store.connect(db)
     try:

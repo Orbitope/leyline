@@ -3175,6 +3175,8 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         with con:   # so the overview and the map page can say what is not in the map
             for r, v in left.items():
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"left_out:{r}", json.dumps(v)))
+            # Which Leyline made this map: a newer one maps again even where no file changed (see loop.refresh).
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('made_by', ?)", (incremental.code_version(),))
         # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
         # large repo) from adding to what clustering and the pattern matchers hold.
         repo, timing, repos = ix.repo, ix.timing, dict(ix.repos)

@@ -378,3 +378,20 @@ def test_the_map_summary_names_files_left_out_and_a_compiler_check_together():
          "exact": {"exact:roslyn": {"status": "ok", "calls_confirmed": 5}}}
     text = loop.map_text(m)
     assert "Not mapped: 2 files" in text and "5 calls confirmed" in text
+
+
+def test_a_map_made_by_another_version_of_leyline_is_made_again(tmp_path):
+    """plan, check and pr re-map only changed files; a map an older Leyline made is made again even with none."""
+    from leyline import loop, store
+    from leyline.indexer import index
+    root = tmp_path / "r"
+    root.mkdir()
+    (root / "a.py").write_text("def f():\n    return 1\n")
+    db = tmp_path / "s.db"
+    index(root, db, "r", "off")
+    assert loop.refresh(db) is None                      # nothing changed, same Leyline
+    con = store.connect(db)
+    with con:
+        con.execute("UPDATE meta SET value = 'older' WHERE key = 'made_by'")
+    con.close()
+    assert loop.refresh(db) is not None and not loop.made_by_another_version(db)
