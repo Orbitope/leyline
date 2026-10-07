@@ -700,7 +700,8 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
     assert tasks["1.1"]["labels"] == ["Engine.start"] and tasks["1.1"]["action"] == "behavior"
     assert tasks["1.2"]["new"] == [{"name": "shout", "parent": "f2:python:py.src.pkg.core.Engine", "label": "Engine.shout"}]
     assert {s["name"]: s["test_exists"] for s in b["scenarios"]} == {"Start": True, "Shout": False}
-    assert any("names no code" in g for g in b["gaps"]) and any("Shout" in g for g in b["gaps"]) and not b["ready"]
+    assert tasks["1.3"]["by_you"] and not any("1.3" in g for g in b["gaps"])      # names no code: the person checks it
+    assert any("Shout" in g for g in b["gaps"]) and not b["ready"]
     page = (ch / "leyline.md").read_text()
     assert "## 1. What code will be written" in page and "## 3. How you will know it was done" in page and "Engine.start" in page
     assert (tmp_path / "snapshots" / "spec-loud-engine.db").exists()
@@ -716,7 +717,7 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
     assert "error" in spec.add_finding(c, b["change_id"], "logic", "high", "No evidence", [])
     f = spec.add_finding(c, b["change_id"], "logic", "high", "Engine.child copies the name and will not be upper case.",
                          ["f2:python:py.src.pkg.core.Engine.child"], "Add a scenario for child.")
-    assert spec.findings(c, b["change_id"])["open"] == 1 and "open, high" in spec.brief_text(spec.brief(c, ch))
+    assert spec.findings(c, b["change_id"])["open"] == 1 and "- **high** (logic, " in spec.brief_text(spec.brief(c, ch))
     spec.resolve_finding(c, f["id"], "rejected", "child is out of scope")
     assert spec.findings(c, b["change_id"])["open"] == 0
 
@@ -733,7 +734,7 @@ def test_spec_loop_from_openspec_folder_to_verified_change(tmp_path):
 
     v = spec.verify(c, ch, after_run="after")
     done = {t["key"]: t["state"] for t in v["tasks"]}
-    assert done["1.1"] == "done" and done["1.2"] == "done" and done["1.3"] == "cannot be checked"
+    assert done["1.1"] == "done" and done["1.2"] == "done" and done["1.3"] == "checked by you"
     assert {s["name"]: s["state"] for s in v["scenarios"]} == {"Start": "passes", "Shout": "passes"}
     assert all(s["reaches_the_change"] for s in v["scenarios"])
     assert [n["name"] for n in v["drift"]] == ["Engine.child"]                       # the edit outside the spec

@@ -33,14 +33,17 @@ why not.
    - `tasks.md`: `- [ ] 1.1 <task>` lines.
    - `design.md` only when there is a real decision to record.
 4. **Follow three conventions**, because the check depends on them:
-   - Name code in backticks in tasks: `` `Vehicle.Speed` ``, `` `SignalController.Tick` ``. New code is
-     `` `Owner.NewName` `` so its home is stated.
+   - Name code in backticks in tasks: `` `Vehicle.Speed` ``, `` `SignalController.Tick` ``. New code
+     states its home: `` `Owner.NewName` `` for a member; `` `module.new_func` ``,
+     `` `path/to/file.py: new_func` `` or `` `new_func` in `file.py` `` for a top-level function. A task
+     that names no code (docs) is left for the person to check; it does not block.
    - Start each task with what it does: add, remove, rename, change the signature of. One task, one
      thing a person could tick.
    - Name each scenario so a test can carry the same name. Add a task to write that test, quoting
      the scenario's name: `- [ ] 3.1 Add the test "<scenario name>"`.
 5. **Record the tests as they pass now**, before anyone edits code: run the test suite and pass its
-   output to `plan` as `test_output` (one PASS or FAIL line per test; `pytest -rA` prints that), or the
+   output to `plan` as `test_output` (TAP from vitest or node --test, `pytest -rA`, or one PASS or FAIL
+   line per test; several runners' output can go in one text), or the
    results as `test_results`. Without it, `check` cannot tell a test the change broke from one that
    already failed. If you cannot run the tests, say so and give the person the command
    (`<test command> | leyline plan <id> --tests -`).

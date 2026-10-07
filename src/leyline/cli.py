@@ -46,6 +46,10 @@ def _spec(con, args) -> int:
                              args.evidence, args.proposal)
         _print(r)
         return 1 if "error" in r else 0
+    elif args.action == "forget":   # the copy of the code from before the change, kept to compare with
+        from . import diff
+        cid = "spec-" + Path(args.target).name
+        print(f"Deleted the baseline of {cid}." if diff.drop_snapshot(con, cid) else f"No baseline is kept for {cid}.")
     elif args.action == "resolve":
         _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
     return 0
@@ -153,7 +157,7 @@ def _loop(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It needs one PASS or FAIL line per test"
+        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, or one PASS or FAIL line per test"
               " (`pytest -rA` prints them); other formats can go through the record_test_run MCP tool.", file=sys.stderr)
         return 2
     name = args.change
@@ -229,7 +233,7 @@ def _main(argv=None) -> int:
                                            " re-mapping first if the code changed. Exits 1 while something blocks implementation.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
     p.add_argument("--tests", metavar="FILE", help="test runner output from before the change (- for stdin), kept to compare"
-                                                  " with after; one PASS or FAIL line per test, as pytest -rA prints")
+                                                  " with after; TAP, pytest -rA, or one PASS or FAIL line per test")
     p.add_argument("--new-baseline", action="store_true",
                    help="compare from the code as it is now, forgetting the picture kept from the first plan")
     p = sub.add_parser("check", description="After the change is made: re-map, record the test output, and say whether the"
@@ -273,7 +277,7 @@ def _main(argv=None) -> int:
     p.add_argument("--no-sources", action="store_true", help="leave source text out of the page")
     p = sub.add_parser("record-tests", description="store a test run read from a test runner's output")
     p.add_argument("run", help="a label for the run, such as before or after")
-    p.add_argument("file", help="runner output with one PASS or FAIL line per test; - for stdin")
+    p.add_argument("file", help="runner output (TAP, pytest -rA, or one PASS or FAIL line per test); - for stdin")
     p = sub.add_parser("rules", description="check the architecture rules")
     p.add_argument("--confirm", type=int, metavar="ID", help="confirm a suggested rule")
     p = sub.add_parser("review", description="compare an implemented change with its proposal")
@@ -285,7 +289,7 @@ def _main(argv=None) -> int:
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
     p = sub.add_parser("spec", description="a change stated as an OpenSpec folder: brief it, review it, verify it")
-    p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve", "file"])
+    p.add_argument("action", choices=["brief", "verify", "facts", "findings", "resolve", "file", "forget"])
     p.add_argument("--new-baseline", action="store_true",
                    help="brief: compare from the code as it is now, forgetting the picture kept from the first brief")
     p.add_argument("--reviewer", help="file, facts: logic or performance")

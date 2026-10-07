@@ -52,7 +52,8 @@ You tell your agent: "engine names should come back in upper case, and add a `sh
 
 and two scenarios, `Start` and `Shout`, in `specs/engine/spec.md`. Then you plan it, passing the tests'
 output from before any code changes so that `check` can tell a test the change breaks from one that
-already failed (any runner that prints one PASS or FAIL line per test works; `pytest -rA` does):
+already failed (TAP from vitest, node --test or tap, `pytest -rA`, or any runner that prints one PASS or FAIL
+line per test):
 
 ```bash
 (cd py && PYTHONPATH=src pytest -rA tests) | leyline plan loud-engine --tests -
@@ -235,10 +236,14 @@ repository is not indexed again.
 The brief ties each task to code and each scenario to a test, by three conventions and no markup:
 
 - Code named in backticks in `tasks.md` is looked up on the map (`` `Vehicle.Speed` ``). A name not on
-  the map is new code; `` `Owner.NewName` `` says where it goes.
+  the map is new code: `` `Owner.NewName` `` says where a member goes, and `` `module.new_func` ``,
+  `` `path/to/file.py: new_func` `` or `` `new_func` in `file.py` `` where a top-level function goes. A
+  path that is on the map counts with or without backticks. Other words in backticks (an issue code, a
+  value, a doc file) are noted, not checked. A task that names no code is left for the person to check.
 - A task that starts with add, remove, rename or "change the signature" is read that way. Anything
   else is a change in behavior.
-- A scenario is proven by a test with the same name.
+- A scenario is proven by a test with the same name: one on the map, or one made at run time (a name built
+  from a template, a pytest parameter) whose result in the test run carries that name.
 
 It then lists what the change reaches that no task covers, the patterns it sits in, the gaps that
 block implementation, and the code that uses the same things and that no task names: other callers of
@@ -258,6 +263,10 @@ outside the spec.
 
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
 the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
+That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once, holding only what the
+comparison reads (nodes and their hashes, links, flows, a hash per source line), and deleted when the
+change is checked done as agreed or with `leyline spec forget <id>`. `leyline map` writes
+`.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.
 
@@ -275,8 +284,8 @@ the first brief, so `verify` still compares with the code as it was; `--new-base
 
 ### Reviewing a change after it is made
 
-`propose_change` copies the store to `.leyline/snapshots/<change id>.db` before it returns. Once the
-change is implemented:
+The first `propose_change` of a change keeps a baseline in `.leyline/snapshots/<change id>.db` (what the
+comparison reads, not a copy of the store). Once the change is implemented:
 
 ```
 <run the tests> > before.txt        # before the change, on the old code
