@@ -294,9 +294,13 @@ def test_check_says_done_when_done_and_not_yet_when_broken(repo):
     assert "proven by the test run (the test is generated, so it is not on the map)" in page
     assert "not ticked" not in page and "**Yes.**" in page
     assert "Check task 3.1 by hand" in " ".join(loop.next_after_check(v, "zero-warn"))
-    # Done: the baseline is no longer kept, and a later check says why there is nothing to compare with.
-    assert not snap.exists() and v["baseline_dropped"]
-    assert "checked done as agreed" in loop.check(db, ch)["error"]
+    # Done: the baseline stays, so a regression after "done" is still caught, and check runs again (Signal item 10).
+    assert snap.exists()
+    v = work / "tool/validator.ts"
+    v.write_text(v.read_text().replace('    if (n === 0) out.push("ZERO");\n', ""))
+    again = loop.check(db, ch, diff.parse_test_output(tap({**AFTER, "flags a zero": "fail"}) + pytest_out(["a", "zero"])))
+    assert "error" not in again and not again["done_as_agreed"]
+    assert {t["key"]: t["state"] for t in again["tasks"]}["1.1"] == "not done"
 
 
 def test_drift_is_still_reported(repo):

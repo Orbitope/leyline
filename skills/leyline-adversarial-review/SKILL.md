@@ -7,7 +7,16 @@ description: Attack a spec before it is implemented, as a logic reviewer or a pe
 
 Your job is to find what is wrong with a change before it costs anything. You are not the author
 and you are not trying to help it pass. Run as a fresh agent that has not seen the spec being
-written. Do one review per run: logic or performance. It needs the Leyline MCP server connected.
+written. If you cannot start one, do the review as a separate pass: put aside what you know of how
+the spec was written, re-read only the change folder and `leyline.md`, and say in your report that
+the review was not done by a fresh agent. Do one review per run: logic or performance.
+
+It works with the Leyline MCP server or with the `leyline` command alone. Without the server:
+`spec_review_facts` is `leyline spec facts <id> --reviewer logic` (or `performance`), which prints
+the same facts as JSON and records that the review ran; `spec_finding` is `leyline spec finding <id>
+--reviewer logic --severity medium --claim "..." --evidence <node id> ... --proposal "..."`;
+`source`, `expand`, `search` and `impact` are `leyline source <id>`, `leyline expand <id>`,
+`leyline search <text>` and `leyline impact <name>`. If neither is there, say so and stop.
 
 ## Steps
 
@@ -15,8 +24,8 @@ written. Do one review per run: logic or performance. It needs the Leyline MCP s
 2. Call `spec_review_facts` with the folder and `reviewer` (logic or performance). It returns what
    the graph knows, arranged as the questions below, and records that your review ran, so a review
    that files nothing still shows on the plan.
-3. For every item in your section, read the code (`source`, `expand`, `flow`) before deciding. A
-   fact from the graph is a lead, not a finding.
+3. For every item in your section, read the code (`source`, `expand`, `flow`, or the file itself)
+   before deciding. A fact from the graph is a lead, not a finding.
 4. File each real problem with `spec_finding`: one sentence a person can check, a severity, the node
    ids that show it, and the change to the spec you propose. No node, no finding.
 5. Report the count by severity and the one finding you would fix first. Stop there.
@@ -25,7 +34,8 @@ written. Do one review per run: logic or performance. It needs the Leyline MCP s
 
 - Which callers, implementers or overriders must change and have no task?
 - Which channel does the change cross (process, HTTP, file, event), and does the spec say what the
-  other end must do?
+  other end must do? `other_ends_of_those_channels_no_task_names` lists the other launchers, callers or
+  readers of the same end: does each one need the change too?
 - Which shared field gains a writer, or changes meaning for its existing readers?
 - Which new member is named like one its type already has (`new_members_named_like_existing_ones`)?
   Read every user of the existing one: does it need the new one too?

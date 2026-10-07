@@ -595,12 +595,16 @@ def parse_test_output(text: str) -> list[dict]:
     return list(out.values())
 
 
+def _n(n: int, word: str, plural: str = "") -> str:
+    return f"{n} {word if n == 1 else plural or word + 's'}"
+
+
 def review_text(r: dict) -> str:
     p, g = r["prediction"], r["graph"]["nodes"]
     lines = [f"Review of {r['change_id']}: {r['intent']}", "",
              f"Prediction: {p['as_predicted']} of {p['predicted']} predicted edits happened, "
-             f"{p['not_predicted']} edits were not predicted, {p['predicted_untouched']} predicted edits did not happen. "
-             f"{p['new_as_declared']} new nodes belong to what the proposal declared."]
+             f"{_n(p['not_predicted'], 'edit was', 'edits were')} not predicted, {_n(p['predicted_untouched'], 'predicted edit', 'predicted edits')} did not happen. "
+             f"{_n(p['new_as_declared'], 'new node belongs', 'new nodes belong')} to what the proposal declared."]
     for n in r["not_predicted"]:
         lines.append(f"  not predicted: {n['name']}  {n['path']}:{n['line']}")
     for n in r["predicted_untouched"]:
@@ -608,12 +612,12 @@ def review_text(r: dict) -> str:
     lines.append(f"Graph: {len(g['added'])} added, {len(g['removed'])} removed, {len(g['resigned'])} signatures changed, "
                  f"{len(g['edited'])} bodies edited; {r['graph']['links']['added']} links added, {r['graph']['links']['removed']} removed.")
     for d in r["graph"]["structure"]["new_dependencies"]:
-        lines.append(f"  new dependency: {d['from']} -> {d['to']} ({d['links']} links)")
+        lines.append(f"  new dependency: {d['from']} -> {d['to']} ({_n(d['links'], 'link')})")
     lines.append(f"Flows with a changed path: {r['graph']['flows']['changed']}")
     for x in r["graph"]["flows"]["now_pass_through"][:5]:
-        lines.append(f"  {x['flows']} flows now pass through {x['name']}")
+        lines.append(f"  {_n(x['flows'], 'flow now passes', 'flows now pass')} through {x['name']}")
     for x in r["graph"]["flows"]["no_longer_pass_through"][:5]:
-        lines.append(f"  {x['flows']} flows no longer pass through {x['name']}")
+        lines.append(f"  {_n(x['flows'], 'flow no longer passes', 'flows no longer pass')} through {x['name']}")
     lines.append(f"Rules: {r['rules']['checked']} checked, {r['rules']['failing']} failing, {len(r['rules']['new_violations'])} newly failing.")
     t = r["tests"]
     if t:
@@ -666,11 +670,8 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
         return {"error": f"No change {change_id!r}."}
     snap = snapshot_path(con, change_id)
     if not snap.exists():
-        done = json.loads(row["attrs"] or "{}").get("verified")
-        if done:
-            return {"error": f"This change was checked done as agreed on {done[:10]}, and the code as it was before it was"
-                             " then forgotten. To check later edits, plan the change again with a new baseline."}
-        return {"error": "No snapshot was kept for this change, so there is nothing to compare with."}
+        return {"error": "No snapshot is kept for this change (it was forgotten, or its folder archived), so there is"
+                         " nothing to compare with. Plan the change again to take a new one."}
     before = _open(snap)
     try:
         d = compare(before, con)
@@ -736,15 +737,15 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
     tests = test_delta(con, before_run, after_run) if before_run and after_run else None
     verdict = []
     if not_predicted:
-        verdict.append({"level": "medium", "what": f"{len(not_predicted)} edits were not in the proposal."})
+        verdict.append({"level": "medium", "what": f"{_n(len(not_predicted), 'edit was', 'edits were')} not in the proposal."})
     if untouched:
-        verdict.append({"level": "medium", "what": f"{len(untouched)} predicted edits did not happen."})
+        verdict.append({"level": "medium", "what": f"{_n(len(untouched), 'predicted edit', 'predicted edits')} did not happen."})
     if d["structure"]["new_dependencies"]:
-        verdict.append({"level": "high", "what": f"{len(d['structure']['new_dependencies'])} new dependencies between modules."})
+        verdict.append({"level": "high", "what": f"{_n(len(d['structure']['new_dependencies']), 'new dependency', 'new dependencies')} between modules."})
     if new_violations:
-        verdict.append({"level": "high", "what": f"{len(new_violations)} rules now fail that passed before."})
+        verdict.append({"level": "high", "what": f"{_n(len(new_violations), 'rule now fails', 'rules now fail')} that passed before."})
     if tests and tests["newly_failing"]:
-        verdict.append({"level": "high", "what": f"{len(tests['newly_failing'])} tests fail that passed before."})
+        verdict.append({"level": "high", "what": f"{_n(len(tests['newly_failing']), 'test fails', 'tests fail')} that passed before."})
     if tests is None:
         verdict.append({"level": "medium", "what": "No test runs were recorded, so behavior is unchecked."})
     report = {

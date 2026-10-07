@@ -59,9 +59,11 @@ def enclosing(nodes, i: str) -> list[str]:
     return out
 
 
-def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
+def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: Optional[dict] = None) -> dict:
     """Work out what a change reaches. Each target is {id, action, note?}; for action `add` it is
-    {action: "add", name, parent, uses?: [ids], used_by?: [ids], note?}."""
+    {action: "add", name, parent, uses?: [ids], used_by?: [ids], note?}. `test_entries` maps entry points that are
+    tests of their own (a script that runs its checks and prints a result for each) to what to call them."""
+    test_entries = test_entries or {}
     nodes, anc = _load(con)
     problems = []
     for t in targets:
@@ -116,7 +118,9 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
         elif note and not cur.get("note"):
             cur["note"] = note
 
-    touched: set[str] = set()          # callables whose body or contract changes
+    touched: set[str] = set()          # callables whose body or contract changes, and readers of a changed field
+    readers: set[str] = set()          # of those, the readers: reached through what they read, not changed
+    own: set[str] = set()              # the code the targets themselves hold
     breaking: set[str] = set()
     new_nodes = []
     for t in targets:
@@ -144,6 +148,7 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                     members.append(k)
                 elif nodes[k]["kind"] in ("type", "file"):
                     stack.append(k)
+        own.update(members)
         if n["kind"] == "field":
             # Everything that reads or assigns the field depends on what it holds.
             how: dict[str, set] = defaultdict(set)
@@ -155,6 +160,7 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                 mark(user, "must_edit" if t["action"] in BREAKING else "direct", note, 1)
                 if t["action"] != "rename" and nodes[user]["kind"] in ("callable", "test"):
                     members.append(user)   # what it computes may change, so its callers are reached
+                    readers.add(user)
         if n["kind"] == "system":
             for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'groups' AND src_id = ?", (i,)):
                 stack = [r[0]]
@@ -242,13 +248,16 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                 f" ON s.flow_id = f.id WHERE s.callable_id IN ({marks_sql}) GROUP BY f.id ORDER BY hits DESC, f.name",
                 sorted(touched)):
             a = json.loads(f["attrs"]) if f["attrs"] else {}
-            flows.append({"id": f["id"], "name": f["name"], "kind": a.get("kind"), "trigger": a.get("detail"),
-                          "touched_steps": f["hits"], "entry": f["entry_id"]})
-            if a.get("kind") == "test":
+            self_test = f["entry_id"] in test_entries
+            flows.append({"id": f["id"], "name": test_entries[f["entry_id"]] if self_test else f["name"],
+                          "kind": "test" if self_test else a.get("kind"), "trigger": a.get("detail"),
+                          "touched_steps": f["hits"], "entry": f["entry_id"], **({"self_test": True} if self_test else {})})
+            if a.get("kind") == "test" or self_test:
                 mark(f["entry_id"], "test", "passes through the change; run it", None)
         for r in con.execute(
                 f"SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
-                f" WHERE json_extract(f.attrs, '$.kind') = 'test' AND s.callable_id IN ({marks_sql})", sorted(touched)):
+                f" WHERE (json_extract(f.attrs, '$.kind') = 'test' OR f.entry_id IN ({','.join('?' * len(test_entries))}))"
+                f" AND s.callable_id IN ({marks_sql})", [*sorted(test_entries), *sorted(touched)]):
             tested.add(r[0])
         # Tests that were measured running the changed code, whether or not a static path leads there.
         from . import coverage as measured
@@ -266,7 +275,8 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                     next(f for f in flows if f["entry"] == r["test_id"])["measured"] = True
             for r in con.execute(f"SELECT DISTINCT node_id FROM covered WHERE node_id IN ({marks_sql})", sorted(touched)):
                 tested.add(r[0])
-    untested = sorted(t for t in touched if t not in tested and nodes[t]["kind"] == "callable")
+    changed_fns = [t for t in touched if nodes[t]["kind"] == "callable" and (t in own or t not in readers)]
+    untested = sorted(t for t in changed_fns if t not in tested)
 
     def module_of(i):
         return (anc.get(i) or (None, None))[1]
@@ -315,8 +325,8 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                       + ("Nothing type-checks the two sides against each other, so a change in what is sent or expected fails only at run time."
                          if behavioral else "A signature change cannot break it, but it will see any change in behavior.")})
     if untested:
-        risks.append({"level": "high" if len(untested) == len([t for t in touched if nodes[t]['kind'] == 'callable']) else "medium",
-                      "what": f"{len(untested)} of {len([t for t in touched if nodes[t]['kind'] == 'callable'])} changed functions are on no test's path."})
+        risks.append({"level": "high" if len(untested) == len(changed_fns) else "medium",
+                      "what": f"{len(untested)} of {len(changed_fns)} changed functions are on no test's path."})
     if guessed_links:
         risks.append({"level": "low", "what": f"{guessed_links} direct caller links are guesses by name, so the caller list may be wrong."})
     if any(t["action"] in BREAKING for t in targets) and not must:
@@ -352,12 +362,13 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
 
 
 def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, depth: int = 4,
-            source: str = "mcp", change_id: Optional[str] = None, keep_baseline: bool = True) -> dict:
+            source: str = "mcp", change_id: Optional[str] = None, keep_baseline: bool = True,
+            test_entries: Optional[dict] = None) -> dict:
     """Assess a change, store it as a draft proposal, and save a view of its blast radius.
     `change_id` keeps one id across revisions (a spec folder's name); without it the id follows the content.
     The first proposal of a change keeps a baseline of the code to compare with later; a revision keeps that
     baseline, unless `keep_baseline` is False, which takes a new one from the code as it is."""
-    report = assess(con, intent, targets, depth)
+    report = assess(con, intent, targets, depth, test_entries)
     if "error" in report:
         return report
     cid = change_id or "chg-" + hashlib.sha1((intent + json.dumps(targets, sort_keys=True)).encode()).hexdigest()[:8]

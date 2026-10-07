@@ -7,8 +7,24 @@ description: Turn a change someone wants into an OpenSpec change folder checked 
 
 The person decides the design. You write it down in a form that can be checked, and Leyline checks
 it against the code. The person should finish able to say three things in a sentence each: what
-code will be written, what it will affect, and how they will know it was done. It needs the Leyline
-MCP server connected. If `plan` is missing, say so and stop.
+code will be written, what it will affect, and how they will know it was done.
+
+It works with the Leyline MCP server or with the `leyline` command alone. Without the server, use the
+command for each tool this skill names:
+
+| MCP tool | Command |
+| --- | --- |
+| `map` | `leyline map <repo>` |
+| `plan` (with `test_output`) | `<test command> \| leyline plan <id> --tests -` (`--new-baseline` for `new_baseline`) |
+| `check` (with `test_output`) | `<test command> \| leyline check <id> --tests -` |
+| `overview`, `search`, `expand`, `impact`, `source` | `leyline overview`, `leyline search <text>`, `leyline expand <id>`, `leyline impact <name>`, `leyline source <id>` |
+| `spec_review_facts` | `leyline spec facts <id> --reviewer logic` (or `performance`) |
+| `spec_finding` | `leyline spec finding <id> --reviewer logic --severity medium --claim "..." --evidence <node id> --proposal "..."` |
+| `spec_findings`, `spec_resolve` | `leyline spec findings <id>`, `leyline spec resolve <finding id> accepted\|rejected\|deferred "why"` |
+
+Where this skill says a result field (`next`, `status.blocking`, `page`), the command prints the same
+thing: the `Next:` line, the "Before implementation" list, and the plan itself. If neither the server nor
+the command is there, say so and stop.
 
 The path has three Leyline calls, the same three commands the person can type:
 
@@ -38,7 +54,9 @@ why not.
      `` `path/to/file.py: new_func` `` or `` `new_func` in `file.py` `` for a top-level function. A task
      that names no code (docs) is left for the person to check; it does not block.
    - Start each task with what it does: add, remove, rename, change the signature of. One task, one
-     thing a person could tick.
+     thing a person could tick. The code right after the verb (and any joined to it by "and" or a
+     comma) is what the task changes; other code in the sentence, such as `` `SimConfig.QueueSpeed` `` in
+     "counting vehicles slower than ...", is context the plan shows as "mentions" and does not count.
    - Name each scenario so a test can carry the same name. Add a task to write that test, quoting
      the scenario's name: `- [ ] 3.1 Add the test "<scenario name>"`.
 5. **Record the tests as they pass now**, before anyone edits code: run the test suite and pass its
@@ -51,8 +69,10 @@ why not.
    gets its owner, a must-edit with no task gets a task or a sentence in the proposal saying why not,
    a scenario with no test gets a task. Call it again until `status.blocking` is empty or each
    remaining item is a choice the person made.
-   Then read the lines under "Uses the same things, and no task names it". Each is code that shares a
-   caller, a field or a look-alike new member with the change. For each, either add a task or be able
+   Then read the lines under "Must agree with the change" (other ends of a channel the change crosses,
+   such as a second program that reads the same pipe) and "Shares a caller or a field with the change,
+   and no task names it". Each is code that shares a channel, a caller, a field or a look-alike new
+   member with the change. For each, either add a task or be able
    to say why it is right to leave alone. Do not pass this list to the person undigested.
 7. **Show the person `leyline.md`** (also returned as `page`). It is one page. Do not summarise it
    into something longer. Say which lines you are least sure of.
