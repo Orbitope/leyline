@@ -677,10 +677,12 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
     if reviewer:
         spec.record_review(con, cid, reviewer)
     r, t = f["reaches"], f["tests"]
+    from . import learnings
     return {
         "change_id": cid, "title": a.get("title"), "what_it_says_it_does": about or "(no description: judge it by the code)",
         "changed": f["changed"], "size": f["size"],
         "house_rules_to_read_first": _house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
+        "learnings_that_apply": learnings.applying(con, cid),   # past decisions on this code: read these first
         "logic": {
             "signature_changed_callers_not_edited": r["signature_changed_callers_not_edited"],
             "removed_but_still_called": r["removed_but_still_called"],

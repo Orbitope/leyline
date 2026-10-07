@@ -27,6 +27,8 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
 2. Call `spec_review_facts` with the folder and `reviewer` (logic or performance). It returns what
    the graph knows, arranged as the questions below, and records that your review ran, so a review
    that files nothing still shows on the plan.
+   - Read `learnings_that_apply` first: past findings on this code that a person rejected, with their reason.
+     A finding you file that repeats one comes back with `learned`; it is kept and marked on the page.
 3. For every item in your section, read the code (`source`, `expand`, `flow`, or the file itself)
    before deciding. A fact from the graph is a lead, not a finding.
 4. File each real problem with `spec_finding`: one sentence a person can check, a severity, the node
@@ -96,6 +98,8 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
 - Do not rewrite the spec, or push to someone else's branch. Propose the change in the finding and let the
   person decide.
 - Do not file style or naming preferences.
+- Do not refile what a learning already settled, unless the code changed in a way its reason did not cover.
+  Then say in the claim what changed.
 - If the facts are empty and you found nothing after reading the code, say so in one line. A review
   that finds nothing is a valid result.
 - Say what you could not check and why.

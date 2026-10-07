@@ -1010,6 +1010,7 @@ def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list
         L += ["", "Open:"] + [f"- **{f['severity']}** ({f['reviewer']}, {f['id']}): {f['claim']}"
                               + (f" Proposed: {f['proposal']}" if f["proposal"] else "")
                               + (" (Its evidence is not near the change: question it first.)" if f.get("evidence_far_from_change") else "")
+                              + (f" (Matches a past decision: {f['learned']['reason']})" if f.get("learned") else "")
                               for f in opened]
     closed = sorted((f for f in found if f["status"] != "open"), key=lambda f: order.get(f["severity"], 3))
     if closed:   # a settled finding is one line: the full text stays in `leyline spec findings`
@@ -1018,7 +1019,8 @@ def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list
             text = _first_sentence(text, 160)
             return text if text.endswith((".", "!", "?")) else text + "."
         L += [f"- {f['severity']}: {said(f['claim'])} **{f['status'].capitalize()}**"
-              + (f": {said(f['resolution'])}" if f["resolution"] else ".") for f in closed]
+              + (f": {said(f['resolution'])}" if f["resolution"] else ".")
+              + (f" (Matched a past decision: {said(f['learned']['reason'])})" if f.get("learned") else "") for f in closed]
     return L
 
 
@@ -1150,6 +1152,8 @@ def add_finding(con, change_id: str, reviewer: str, severity: str, claim: str, e
         out["warning"] = ("None of the evidence is on the change's blast radius (what it changes, what must change with"
                           " it, the other ends of its channels, or one call from those). Kept, and marked so the person"
                           " questions it first; if the link is real, add evidence that shows it.")
+    from . import learnings
+    out.update(learnings.on_finding(con, fid, reviewer, claim.strip(), kept))   # a repeat of a past decision is marked
     return out
 
 
@@ -1159,7 +1163,10 @@ def resolve_finding(con, finding_id: str, status: str, resolution: str = "") -> 
         return {"error": "status must be accepted, rejected, deferred or open"}
     with con:
         n = con.execute("UPDATE findings SET status = ?, resolution = ? WHERE id = ?", (status, resolution, finding_id)).rowcount
-    return {"id": finding_id, "status": status} if n else {"error": f"no finding {finding_id!r}"}
+    if not n:
+        return {"error": f"no finding {finding_id!r}"}
+    from . import learnings   # a rejection with a reason is kept, so later reviews do not ask again
+    return {"id": finding_id, "status": status, **learnings.on_resolve(con, finding_id, status, resolution)}
 
 
 def near_change(con, change_id: str, evidence: list[str]) -> Optional[bool]:
@@ -1181,7 +1188,9 @@ def near_change(con, change_id: str, evidence: list[str]) -> Optional[bool]:
 
 
 def findings(con, change_id: str) -> dict:
+    from . import learnings
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
+    learned = learnings.by_finding(con)
     out = []
     for r in con.execute("SELECT * FROM findings WHERE change_id = ? ORDER BY created", (change_id,)):
         ev = json.loads(r["evidence"] or "[]")
@@ -1189,7 +1198,8 @@ def findings(con, change_id: str) -> dict:
         out.append({"id": r["id"], "reviewer": r["reviewer"], "severity": r["severity"], "claim": r["claim"],
                     "proposal": r["proposal"], "status": r["status"], "resolution": r["resolution"] or "",
                     "evidence": [{"id": e, "name": names.get(e, e)} for e in ev],
-                    **({"evidence_far_from_change": True} if near is False else {})})
+                    **({"evidence_far_from_change": True} if near is False else {}),
+                    **({"learned": learned[r["id"]]} if r["id"] in learned else {})})
     return {"change_id": change_id, "open": sum(1 for f in out if f["status"] == "open"), "findings": out}
 
 
@@ -1544,8 +1554,10 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
     perf_tests = _speed_tests(con, set(fns), b.get("self_tests"))
     la = b["left_alone"]
     imp = b["impact"] if "error" not in b["impact"] else {}
+    from . import learnings
     return {
         "change_id": b["change_id"], "title": b["title"],
+        "learnings_that_apply": learnings.applying(con, b["change_id"], tasked),   # past decisions: read these first
         "logic": {
             "must_edit_with_no_task": b["must_edit_uncovered"],
             "channels_crossed": imp.get("channels") or [],

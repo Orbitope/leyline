@@ -853,6 +853,16 @@ def spec_resolve(finding_id: Annotated[str, Field(description="A finding id from
     return spec_loop.resolve_finding(_db(), finding_id, status, resolution)
 
 
+@_tool(items=50)
+def learnings(retire: Annotated[Optional[str], Field(description="A learning id to retire. Only when the person says"
+                                                               " the decision no longer holds.")] = None,
+              why: Annotated[str, Field(description="With retire: the person's reason.")] = "") -> dict:
+    """Past decisions on review findings: each finding a person rejected, the reason in their words, and the code it
+    is about. `spec_review_facts` lists the ones that apply to a change as `learnings_that_apply`."""
+    from . import learnings as learned
+    return learned.retire(_db(), retire, why) if retire else learned.listing(_db())
+
+
 @_tool(items=25, keep=("tasks", "scenarios", "why_not"))
 def spec_verify(change: ChangeArg,
                 before_run: Annotated[Optional[str], Field(description="Label of a recorded test run from before.")] = None,
