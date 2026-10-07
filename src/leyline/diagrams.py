@@ -348,11 +348,15 @@ def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages:
 
 
 def unbacked(con, d: dict) -> list[dict]:
-    """The arrows of a diagram with no edge behind them on the map. Every arrow should have one."""
+    """The arrows of a diagram with no edge behind them on the map. Every arrow should have one. `con` is the store
+    the diagram claims to show: the map as it is, or a change's baseline (a diagram of the code as it was is checked
+    against the baseline, never the store)."""
     nodes = _Nodes(con)
     bad = []
     for a in d.get("arrows") or []:
-        if a["kind"] == "call":
+        if nodes.get(a["from"]) is None or nodes.get(a["to"]) is None:   # an end this map does not hold
+            ok = False
+        elif a["kind"] == "call":
             ok = con.execute("SELECT 1 FROM calls WHERE src_id = ? AND dst_id = ? LIMIT 1", (a["from"], a["to"])).fetchone()
         elif a["kind"] == "dispatch":
             ok = con.execute("SELECT 1 FROM edges WHERE kind = 'overrides' AND src_id = ? AND dst_id = ?", (a["to"], a["from"])).fetchone()
@@ -461,12 +465,39 @@ def for_change(before, after, changed: list[str], removed: list[str] = ()) -> di
     nodes = _Nodes(after)
     changed = [i for i in changed if not nodes.is_test(i)] or list(changed)
     out = {"after": sequence(after, changed), "changes": edge_changes(before, after, changed, removed)}
-    if drawable(before):
-        nodes = _Nodes(before)
-        was = [i for i in list(changed) + list(removed) if nodes.get(i) is not None]
-        if was:
-            out["before"] = sequence(before, was)
+    if not drawable(before):
+        out["before_missing"] = "old"
+        return out
+    was = _was(before, nodes, changed, removed)
+    if not was:
+        out["before_missing"] = "new"
+        return out
+    # Drawn from the baseline alone: every node, call, step and channel link it reads is the code as it was.
+    d = sequence(before, was)
+    bad = unbacked(before, d)
+    if bad:   # never show an arrow the baseline does not hold
+        out["before_missing"], out["before_unbacked"] = "unbacked", bad
+    elif d.get("mermaid"):
+        out["before"] = d
     return out
+
+
+def _was(before, now: _Nodes, changed: list[str], removed: list[str]) -> list[str]:
+    """The baseline's ids for the changed code: the same id, or for a method whose parameter list changed the one
+    old id with its owner and name, and the removed code."""
+    nodes = _Nodes(before)
+    out = []
+    for i in list(changed) + list(removed):
+        if nodes.get(i) is not None:
+            out.append(i)
+            continue
+        base = _base(i)
+        if base != i:
+            old = [r[0] for r in before.execute("SELECT id FROM nodes WHERE substr(id, 1, ?) = ? AND substr(id, ?, 1) = '('",
+                                                (len(base), base, len(base) + 1))]
+            if len(old) == 1 and now.get(old[0]) is None:
+                out.append(old[0])
+    return list(dict.fromkeys(out))
 
 
 # -- the lines a page shows ---------------------------------------------------------------------------------------
@@ -521,12 +552,24 @@ def section(view: Optional[dict], heading: str) -> list[str]:
     if not view or view.get("error"):
         return []
     L = ["", heading, ""]
-    L += markdown(view.get("after"), "The changed code as it runs now:") or ["Nothing in the changed code is on the map as a function to draw."]
     if view.get("before"):
-        L += [""] + markdown(view["before"], "As it ran before the change:", "The code the change edits is shaded.")
+        L += markdown(view["before"], "**Before**: the code the change edits, as it ran at the baseline (drawn from the"
+                      " baseline alone):", "The code the change edits is shaded.") + [""]
+    elif view.get("before_missing"):
+        L += [_NO_BEFORE.get(view["before_missing"], _NO_BEFORE["unbacked"]), ""]
+    L += markdown(view.get("after"), "**After**: the changed code as it runs now:") or [
+        "Nothing in the changed code is on the map as a function to draw."]
     L += ["", "**What changed in how it runs** (calls and channel links into or out of the changed code, compared with"
               " the baseline):", ""] + change_lines(view.get("changes"))
     return L
+
+
+_NO_BEFORE = {
+    "old": "The baseline was taken by an older Leyline, which kept which functions called which but not in what"
+                " order, so the code as it was is listed below, not drawn.",
+    "new": "All of the changed code is new, so there is nothing to draw as it was.",
+    "unbacked": "The code as it was is not drawn: some of its arrows have no link behind them in the baseline.",
+}
 
 
 def safe(fn, *args, **kw) -> Optional[dict]:
