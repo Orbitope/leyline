@@ -178,12 +178,14 @@ class _Out:
 
 def extract(lang: str, tree, res: FileResult, file_id: str, consts: Optional[dict] = None) -> None:
     """Record the channel ends in one parsed file. A failure here loses this file's channels, not its parse."""
+    where = _Where(res, file_id)
     try:
-        where = _Where(res, file_id)
         out = _Out(res)
         {"python": _Python, "csharp": _CSharp, "typescript": _TypeScript}[lang](tree, where, out, consts or {}).run()
     except RecursionError:
         pass
+    from . import formats   # keys built in one place and taken apart in another
+    formats.extract(lang, tree, where, _Out(res), consts)
 
 
 # -- Python ------------------------------------------------------------------------------------------------
@@ -1776,3 +1778,5 @@ def resolve(ix) -> None:
     r.queues()
     r.db()
     r.rpc()
+    from . import formats
+    formats.resolve(ix)

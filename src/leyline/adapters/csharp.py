@@ -58,7 +58,7 @@ def _cs_strings(node) -> list[str]:
             for c in n.children:
                 if c.type == "interpolation":
                     parts.append("{}")
-                elif c.is_named:
+                elif c.is_named and not c.type.startswith("interpolation_"):   # not the $ that opens it
                     parts.append(_text(c))
             out.append("".join(parts))
         elif n.type in ("string_literal", "verbatim_string_literal", "raw_string_literal"):
@@ -67,6 +67,44 @@ def _cs_strings(node) -> list[str]:
         else:
             stack.extend(reversed(n.children))
     return [x for x in out if x]
+
+
+# Calls whose first string is never a request: logging, string work, routing and parsing.
+NOT_REQUESTS = frozenset("""WriteLine Write Log LogInformation LogDebug LogWarning LogError LogTrace LogCritical Format
+Concat Join Split Replace StartsWith EndsWith Contains IndexOf Equals Compare Parse TryParse Match IsMatch Matches
+Combine GetFullPath Exists Map MapGroup MapFallback UseRouting Route Redirect RedirectPermanent Throw Assert
+Created CreatedAtRoute CreatedAtAction Accepted AcceptedAtRoute LocalRedirect AddRoute MapForwarder""".split())
+
+
+def _relative_url(path: str):
+    """A request path with no leading slash, said against a client's base address: "api/items/1" -> /api/items/1.
+    None for anything that is not plainly a path of two or more parts."""
+    path = path[2:] if path.startswith("{}/") else path
+    path = path.split("?", 1)[0]
+    if not path or path.startswith(("http:", "https:")) or any(ch.isspace() for ch in path):
+        return None
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2 or "." in parts[0] or "." in parts[-1] or not re.fullmatch(r"[\w\-{}:]+", parts[0]):
+        return None
+    return "/" + "/".join(parts)
+
+
+def _controller_prefix(method_node, method_name: str):
+    """The route an ASP.NET controller's [Route("api/[controller]")] gives its actions, or None without one."""
+    cls = method_node.parent
+    while cls is not None and cls.type not in ("class_declaration", "record_declaration"):
+        if cls.type in CALLABLE_DECLS or cls.type == "compilation_unit":
+            return None
+        cls = cls.parent
+    if cls is None:
+        return None
+    text = " ".join(_text(a) for a in cls.children if a.type == "attribute_list")
+    m = re.search(r"\bRoute\s*\(\s*@?\"([^\"]*)\"", text)
+    if not m:
+        return None
+    cname = _text(cls.child_by_field_name("name"))
+    cname = cname[:-len("Controller")] if cname.endswith("Controller") and len(cname) > len("Controller") else cname
+    return m.group(1).replace("[controller]", cname).replace("[action]", method_name).strip("/")
 
 
 def pathlike(s: str) -> bool:
@@ -511,9 +549,18 @@ class _Walker:
             if names:
                 self.res.type_refs.append(TypeRef(cid, names, "return", ret.start_point[0] + 1))
         attrs_text = " ".join(_text(a) for a in node.children if a.type == "attribute_list")
+        prefix = _controller_prefix(node, name)
         for m in HTTP_ATTR.finditer(attrs_text):
-            self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + m.group(3).lstrip("/"), node.start_point[0] + 1,
+            path = m.group(3)
+            if prefix is not None and not path.startswith(("/", "~")):   # [Route("api/[controller]")] on the class
+                path = f"{prefix}/{path}" if path else prefix
+            path = path.lstrip("~")
+            self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + path.lstrip("/"), node.start_point[0] + 1,
                                                m.group(2).upper() if m.group(2) else None))
+        if prefix is not None:   # [HttpGet] with no template: the action answers at the controller's own route
+            for m in re.finditer(r"\[\s*(?:[^\]]*,\s*)?Http(Get|Post|Put|Delete|Patch)\s*(?:\(\s*\)\s*)?[\],]", attrs_text):
+                self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + prefix.lstrip("/"), node.start_point[0] + 1,
+                                                   m.group(1).upper()))
         found = set(re.findall(r"[A-Za-z_]+", attrs_text)) & TEST_ATTRIBUTES
         if found:
             self.res.nodes[-1].attrs["is_test"] = True
@@ -630,6 +677,8 @@ class _Walker:
                                                        node.start_point[0] + 1, None, _cs_strings(args) if args is not None else []))
                 ctor_args = [a.named_children[-1] for a in args.children
                              if a.type == "argument" and a.named_children] if args is not None else []
+                if names[0] in ("RestRequest", "HttpRequestMessage"):
+                    self._request_object(names[0], ctor_args, cid, node.start_point[0] + 1)
                 self.res.calls.append(CallSite(cid, ".ctor", names[0], names[0], argc,
                                                node.start_point[0] + 1, type_id, node.start_point[1],
                                                tuple(_arg_hint(a, scope) for a in ctor_args) if len(ctor_args) == argc else ()))
@@ -755,6 +804,39 @@ class _Walker:
                     return self.field_types.get(type_id or "", {}).get(name)
         return None
 
+    def _map_group(self, receiver: str) -> str:
+        """The route prefix of a minimal-API group a MapGet is called on: `app.MapGroup("api/x")` written in
+        place, or a variable this file sets to one (`var api = app.MapGroup("api/x")`, groups of groups too)."""
+        if not hasattr(self, "_groups"):
+            text = self.tree.root_node.text.decode("utf8", "replace")
+            found: dict[str, set] = {}
+            for m in re.finditer(r"\b(\w+)\s*=\s*([\w.]+?)\s*\.\s*MapGroup\s*\(\s*@?\"([^\"]*)\"", text):
+                found.setdefault(m.group(1), set()).add((m.group(2).rsplit(".", 1)[-1], m.group(3)))
+            self._groups = {k: next(iter(v)) for k, v in found.items() if len(v) == 1}
+        m = re.search(r"MapGroup\s*\(\s*@?\"([^\"]*)\"\s*\)[^\"]*$", receiver)
+        if m:
+            base = receiver[:m.start()].rstrip(". ")
+            return (self._map_group(base) + "/" + m.group(1).strip("/")).strip("/") if base else m.group(1).strip("/")
+        prefix, seen = [], set()
+        while receiver in self._groups and receiver not in seen:
+            seen.add(receiver)
+            receiver, part = self._groups[receiver]
+            prefix.insert(0, part.strip("/"))
+        return "/".join(p for p in prefix if p)
+
+    def _request_object(self, kind: str, ctor_args, cid: str, line: int) -> None:
+        """new RestRequest("api/items", Method.Post) or new HttpRequestMessage(HttpMethod.Get, "/api/items"): a
+        request built as an object and sent later. A path a route may serve (see Indexer._resolve_endpoints)."""
+        strings = [a for a in ctor_args if a.type in STRINGS]
+        if not strings:
+            return
+        path = (_cs_strings(strings[0]) or [""])[0]
+        url = path if path.startswith("/") and path.count("/") >= 2 else _relative_url(path)
+        if not url:
+            return
+        m = re.search(r"\b(?:Http)?Method\.(Get|Post|Put|Delete|Patch)\b", " ".join(_text(a) for a in ctor_args), re.I)
+        self.res.endpoints.append(Endpoint("http", "maybe", cid, url.split("?", 1)[0], line, m.group(1).upper() if m else None))
+
     def _endpoint(self, full: str, name: str, args, arg_nodes, cid: str, line: int) -> None:
         """Is this call one end of an HTTP or file channel?"""
         first = arg_nodes[0] if arg_nodes else None
@@ -762,7 +844,25 @@ class _Walker:
             path = (_cs_strings(first) or [""])[0]
             if path.startswith(("/", "http://", "https://")) or name in HTTP_MAP:
                 role, method = ("serve", HTTP_MAP[name]) if name in HTTP_MAP else ("call", HTTP_CLIENT[name])
+                if role == "serve":
+                    group = self._map_group(full.rsplit(".", 1)[0])
+                    if group:   # api = app.MapGroup("api/catalog"); api.MapGet("/items/{id}", ...)
+                        path = group.rstrip("/") + "/" + path.lstrip("/") if path.strip("/") else group
                 self.res.endpoints.append(Endpoint("http", role, cid, path if path.startswith(("/", "http")) else "/" + path, line, method))
+                return
+            rel = _relative_url(path)
+            if rel:   # client.GetAsync("api/items/1") against a base address, or $"{baseUrl}/api/items"
+                self.res.endpoints.append(Endpoint("http", "maybe", cid, rel, line, HTTP_CLIENT[name]))
+                return
+        if first is not None and first.type in STRINGS and name not in HTTP_CLIENT | HTTP_MAP \
+                and not FILE_CALL.search(full.replace("?", "")) and not full.endswith(("Path.Combine", "Path.Join")) \
+                and name not in NOT_REQUESTS:
+            # A request through the project's own wrapper (Get<T>("/api/items/1")): a path a route may serve.
+            path = (_cs_strings(first) or [""])[0]
+            path = path[2:] if path.startswith("{}/") else path
+            if path.startswith("/") and path.count("/") >= 2 and not any(ch.isspace() for ch in path) \
+                    and "." not in path.rsplit("/", 1)[-1]:
+                self.res.endpoints.append(Endpoint("http", "maybe", cid, path.split("?", 1)[0], line, None))
                 return
         m = FILE_CALL.search(full.replace("?", ""))
         if m:

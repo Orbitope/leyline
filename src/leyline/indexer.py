@@ -2788,7 +2788,8 @@ class Indexer:
             a, b = segments(route.address), segments(request.address)
             if len(a) != len(b) or (route.method and request.method and route.method != request.method):
                 return False
-            return all(x == y or x.startswith(("<", "{", ":")) for x, y in zip(a, b))
+            # ASP.NET's [controller] is the class's name, which clients write in lower case
+            return all(x == y or x.startswith(("<", "{", ":")) or x.lower() == y.lower() for x, y in zip(a, b))
         seen = set()
         for req, _ in requests:
             cands = [r for r, _ in routes if fits(r, req)]
@@ -2926,8 +2927,8 @@ class Indexer:
         for e in self.edges:
             if e.kind == "communicates":
                 a = e.attrs or {}
-                if a.get("channel") in ("file", "db"):
-                    continue  # writing a file or a row does not run whoever reads it later
+                if a.get("channel") in ("file", "db", "format"):
+                    continue  # writing a file, a row or a key does not run whoever reads it later
                 # A registered implementation is listed ahead of the other implementations of its interface.
                 order = 10 ** 9 - 2 if a.get("channel") == "di" and "registered_in" in a else 10 ** 9
                 out[e.src_id].append((a.get("launched_at") or a.get("line") or order, e.dst_id, a.get("channel", "channel"),
@@ -3088,7 +3089,7 @@ class Indexer:
                 st = dict(self.stats.get(a.NAME, {}))
                 status = "ok" if st.get("files") else "no_files"
                 store.write_coverage(con, repo, a.NAME, a.VERSION, status, commit, {**st, **ws} if st else st)
-            for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
+            for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file", "format"):
                 store.write_coverage(con, repo, f"communicates:{channel}", "0.1", "ok", commit,
                                      dict(self.channel_stats.get(channel, {})))
             store.write_coverage(con, repo, "flows:static", "0.1", "ok", commit, {"flows": flows, "steps": steps, **ws})

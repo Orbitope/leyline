@@ -227,6 +227,18 @@ def _address_words(address: str) -> set:
     return {w for w in words if len(w) >= 3}
 
 
+def _names_format(address: str, text: str) -> bool:
+    """An edited line touches a key format when it writes one of the format's fixed parts as a piece of a key
+    (`/text`, `nodes/`) or as a word the reader compares (`"text"`)."""
+    for w in re.split(r"[/:]", address):
+        if len(w) < 2 or w == "*":
+            continue
+        e = re.escape(w)
+        if re.search(rf"(?<![\w-]){e}(?=[/:])|[/:]{e}(?![\w-])|[\"'`]{e}[\"'`]", text):
+            return True
+    return False
+
+
 def _params(text: str, start: int, name: str) -> Optional[str]:
     """The parameter list of a function whose text starts at line `start` (from 1): the brackets after its name,
     past any decorators, with the spacing made plain. None when it cannot be found."""
@@ -291,19 +303,21 @@ def _touching(con, names, crossings: list, changed: set, own: Optional[dict], ad
                    for a in (json.loads(r[0] or "{}") for r in con.execute(
                        "SELECT attrs FROM edges WHERE kind = 'communicates' AND dst_id = ?", (end,))))
 
-    def touches(end, address):
+    def touches(end, address, channel=""):
         inside = [i for i in changed if within(i, end)]
         if not inside:
             return False
         if not address or own is None or answers(end, address):
             return True
+        if channel == "format":
+            return any(_names_format(address, text(i)) for i in inside)
         words = _address_words(address)
         return any(w and w in text(i) for i in inside for w in words)
     kept, must, across = [], [], []
     for c in crossings:
         address = c.get("address") or ""
-        hub = touches(c["hub"], address)
-        moved = [sp for sp in c.get("spokes", []) if touches(sp["id"], address)]
+        hub = touches(c["hub"], address, c["channel"])
+        moved = [sp for sp in c.get("spokes", []) if touches(sp["id"], address, c["channel"])]
         if not hub and not moved:
             continue
         what = f"{c['channel']} {address}".strip()
@@ -315,6 +329,8 @@ def _touching(con, names, crossings: list, changed: set, own: Optional[dict], ad
                 must.append({"id": sp["id"], "name": sp["name"], "channel": c["channel"], "address": address,
                              "hub": c["hub_name"], "why": (f"starts {c.get('program') or c['hub_name']}, whose input or output the edit changed"
                                                            if c["channel"] == "process"
+                                                           else f"takes apart keys of the form {address}, which the edit to {c['hub_name']} changed"
+                                                           if c["channel"] == "format"
                                                            else f"reads the {what} data, which the edit to {c['hub_name']} changed" if c["data"]
                                                            else f"calls {what}, whose answer the edit to {c['hub_name']} changed")})
         elif c["data"]:   # a read changed: the writer need not change, but the read must match what it writes
@@ -764,13 +780,13 @@ def _by_folder(paths: list[str]) -> list[str]:
 
 def _crossing_line(c: dict) -> str:
     """A channel the edit touches, as the page says it: which end's edit, and how many others it reaches."""
-    what = f"{c['channel']} {c.get('program') or c.get('address') or ''}".strip()
+    what = f"{'key format' if c['channel'] == 'format' else c['channel']} {c.get('program') or c.get('address') or ''}".strip()
     others = [sp["name"] for sp in c.get("spokes", []) if not sp["changed"]]
     also = f", and the edit to {_names(c['spokes_touched'], 3)} changes how it is used" if c.get("spokes_touched") else ""
     if c["hub_touched"]:
         verb = "starts as" if c["channel"] == "process" else "writes" if c["data"] else "answers"
         return (f"Crosses the {what}: the edit changes what `{c['hub_name']}` {verb}{also}. {_n(len(others), 'other end')}"
-                " depend on it with no compile-time link, so a mismatch fails only at run time.")
+                f" depend{'s' if len(others) == 1 else ''} on it with no compile-time link, so a mismatch fails only at run time.")
     return (f"Crosses the {what}: the edit to {_names(c['spokes_touched'], 3)} changes what is sent to `{c['hub_name']}`,"
             " with no compile-time link between them.")
 
