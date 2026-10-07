@@ -783,6 +783,9 @@ def spec_review_facts(change: ChangeArg,
     if change.startswith("pr-") and not Path(change).is_dir():   # a pull request reviewed with review_pr
         from . import pr
         return pr.review_facts(_db(), change, reviewer)
+    if change.startswith("quick-") and not Path(change).is_dir():   # a small change started with `quick`
+        from . import quick as quick_mod
+        return quick_mod.review_facts(_db(), change, reviewer)
     folder, err = _change(change)
     if err:
         return {"error": err}
@@ -821,6 +824,49 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
             "reaches": r["reaches"], "tests": r["tests"], "other_files": r["other_files"], "house_rules": r["house_rules"],
             "next": [f"Run the leyline-adversarial-review skill on {r['change_id']}: spec_review_facts with reviewer logic,"
                      " then performance; file findings with spec_finding. Show the person the page."]}
+
+
+@_tool(needs_store=False, items=15, keep=("items", "next"),
+       more="Lists were cut to keep this answer short; `page` has the whole answer.")
+def quick(what: Annotated[Optional[str], Field(description="Before the edit: the change in one sentence, such as"
+                                                           " \"make the retry count 3\". Code in backticks in it counts as"
+                                                           " named.")] = None,
+          names: Annotated[Optional[list[str]], Field(description="The code it touches, as written in the code:"
+                                                                  " `Owner.name`, `module.func`, a constant's name. With"
+                                                                  " done: more code the change turned out to touch.")] = None,
+          done: Annotated[Optional[str], Field(description="After the edit: the change_id (quick-<slug>) the first call"
+                                                           " returned.")] = None,
+          test_output: TestOutput = None, test_results: TestResults = None,
+          coverage_path: Annotated[Optional[str], Field(description="With done: coverage measured on the same test run.")] = None,
+          change_id: Annotated[Optional[str], Field(description="Name it quick-<change_id>. Default: from the sentence.")] = None) -> dict:
+    """A small change (a constant, one function and its caller) with no spec folder. Before editing, call it with
+    `what`, `names` and the current test output: it says what the change touches, what must be edited with it, the
+    channels it touches and the tests that run it, and keeps a baseline. After editing, call it with `done` and the
+    new test output: one verdict (`done`), each item proven, partial, contradicted, inconclusive or needs a person, the
+    edits outside the named code and the callers left broken. When `grown` is not empty, write a spec and use `plan`."""
+    from . import quick as quick_mod
+    results, err = _results(test_output, test_results)
+    if err:
+        return {"error": err}
+    with _lock:
+        try:
+            if done:
+                if not Path(_path()).is_file():
+                    return {"error": "Nothing is mapped here yet: call `quick` with `what` and `names` before editing."}
+                v = quick_mod.done(_path(), done if done.startswith("quick-") else "quick-" + done, results, coverage_path, names)
+                if "error" in v:
+                    return v
+                return {"done": v["done"], "page": quick_mod.done_text(v), "next": quick_mod.next_after_done(v, for_agent=True),
+                        **{k: v[k] for k in ("change_id", "items", "outside", "broken", "tests_broke", "ran", "grown")}}
+            if not what:
+                return {"error": "Pass `what` (the change in a sentence) and `names` before editing, or `done` after."}
+            b = quick_mod.start(_path(), what, names, results, ".", change_id)
+        finally:
+            _generation[0] += 1
+    if "error" in b:
+        return b
+    return {"change_id": b["change_id"], "page": quick_mod.start_text(b), "next": quick_mod.next_after_start(b, for_agent=True),
+            **{k: b[k] for k in ("named", "values", "unplaced", "must_edit", "channels", "tests_to_run", "grown")}}
 
 
 @_tool

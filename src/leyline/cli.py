@@ -18,8 +18,8 @@ DEFAULT_DB = ".leyline/leyline.db"
 
 def _spec(con, args) -> int:
     from . import loop, spec
-    if args.action != "resolve" and args.target.startswith("pr-") and not Path(args.target).is_dir():
-        return _pr_spec(con, args)   # a pull request reviewed with `leyline pr`: no folder behind it
+    if args.action != "resolve" and args.target.startswith(("pr-", "quick-")) and not Path(args.target).is_dir():
+        return _pr_spec(con, args)   # a pull request (`leyline pr`) or a quick change (`leyline quick`): no folder
     if args.action != "resolve":   # a change folder or its id, as plan and check take it
         folder = loop.find_change(args.target, args.db)
         if folder is None and args.action in ("brief", "verify", "facts"):
@@ -69,7 +69,11 @@ def _pr_spec(con, args) -> int:
     from . import diff, pr, spec
     cid = args.target
     if args.action == "facts":
-        r = pr.review_facts(con, cid, args.reviewer)
+        if cid.startswith("quick-"):
+            from . import quick
+            r = quick.review_facts(con, cid, args.reviewer)
+        else:
+            r = pr.review_facts(con, cid, args.reviewer)
         _print(r)
         return 1 if "error" in r else 0
     if args.action == "findings":
@@ -80,6 +84,10 @@ def _pr_spec(con, args) -> int:
         r = spec.add_finding(con, cid, args.reviewer or "", args.severity or "", args.claim or "", args.evidence, args.proposal)
         _print(r)
         return 1 if "error" in r else 0
+    if args.action == "forget" and cid.startswith("quick-"):
+        from . import quick
+        print(f"Deleted the baseline of {cid}." if quick.forget(con, cid) else f"No baseline is kept for {cid}.")
+        return 0
     if args.action == "forget":
         gone = diff.drop_snapshot(con, cid)
         diff.snapshot_path(con, cid).with_suffix(".base").unlink(missing_ok=True)
@@ -119,6 +127,59 @@ def _pr(args) -> int:
     print(f"written to {r['page']}")
     print(f"Next: have it reviewed (`leyline spec facts {r['change_id']} --reviewer logic`, then `performance`;"
           " the leyline-adversarial-review skill runs both).")
+    return 0
+
+
+def _quick(args) -> int:
+    """`leyline quick "<what>" --about <names>` before a small change, `leyline quick --done quick-<slug>` after it."""
+    from . import loop, quick
+    db = args.db or loop.find_store(Path(args.path)) or str(Path(args.path) / DEFAULT_DB)
+    if args.to_spec:
+        target = args.what or args.done
+        if not target or not Path(db).exists():
+            print("leyline: --to-spec <spec id> needs a quick change started here: `leyline quick --to-spec <id> quick-<slug>`",
+                  file=sys.stderr)
+            return 2
+        con = store.connect(db)
+        try:
+            r = quick.to_spec(con, target, args.to_spec)
+        finally:
+            con.close()
+        if "error" in r:
+            print(f"leyline: {r['error']}", file=sys.stderr)
+            return 1
+        sid = args.to_spec.removeprefix("spec-")
+        print(f"{r['change_id']} now starts from {r['from']}'s baseline ({r['tests']} test results from before).\n"
+              f"Next: run `leyline plan {sid}` (it keeps this baseline), then `<your test command> | leyline check {sid} --tests -`.")
+        return 0
+    try:
+        results = _tests_arg(args.tests)
+    except OSError as e:
+        print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
+        return 2
+    if results == []:
+        print("leyline: found no test results in that output. It reads TAP, pytest -rA, or one PASS or FAIL line per test.",
+              file=sys.stderr)
+        return 2
+    if args.done:
+        r = quick.done(db, args.done if args.done.startswith("quick-") else "quick-" + args.done, results, args.coverage,
+                       args.about)
+        if "error" in r:
+            print(f"leyline: {r['error']}", file=sys.stderr)
+            return 1
+        _print(r) if args.json else print(quick.done_text(r), end="")
+        return 0 if r["done"] else 1
+    if not args.what:
+        print("leyline: say what the change is (`leyline quick \"make the retry count 3\" --about RETRIES`), or pass"
+              " --done quick-<slug> after it", file=sys.stderr)
+        return 2
+    if _not_dirs([args.path]):
+        return 2
+    r = quick.start(db, args.what, args.about, results, args.path, args.id, args.new_baseline)
+    if "error" in r:
+        print(f"leyline: {r['error']}", file=sys.stderr)
+        return 1
+    _print(r) if args.json else print(quick.start_text(r), end="")
     return 0
 
 
@@ -248,7 +309,12 @@ that it was done as agreed. The usual path is three commands:
 
 Each command ends with the next step. To review a change someone else wrote, with no spec:
 
-  leyline pr [base]                     what the checkout's change reaches and did not change, for review"""
+  leyline pr [base]                     what the checkout's change reaches and did not change, for review
+
+A small change needs no spec folder:
+
+  leyline quick "<what>" --about NAMES  before: what it touches and reaches, the tests that run it
+  leyline quick --done quick-<slug>     after: one verdict, and whether it grew into something to spec"""
 
 ADVANCED = """advanced commands (leyline <command> -h for each):
   index         index without the summary; prints the full statistics
@@ -431,6 +497,22 @@ def _main(argv=None) -> int:
     p.add_argument("--id", help="name the review pr-<id> (default: the PR number, else the branch name)")
     p.add_argument("--path", default=".", help="the checkout (default: here)")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("quick", description="A small change with no spec folder. Before editing: name the code (--about,"
+                                            " or in backticks), and see what it touches, what must change with it and the"
+                                            " tests that run it. After: --done quick-<slug> compares with the baseline and"
+                                            " gives one verdict. Exits 1 after while the change is not done.")
+    p.add_argument("what", nargs="?", help="the change in a sentence, such as \"make the retry count 3\"")
+    p.add_argument("--about", nargs="+", metavar="NAME", help="the code it touches: `Owner.name`, `module.func`, a constant")
+    p.add_argument("--done", metavar="ID", help="after the change: the quick-<slug> the first run printed")
+    p.add_argument("--tests", metavar="FILE", help="test runner output (- for stdin): before the edit with the sentence,"
+                                                  " after it with --done; TAP, pytest -rA, or one PASS or FAIL line per test")
+    p.add_argument("--coverage", metavar="FILE", help="with --done: coverage measured on that test run")
+    p.add_argument("--id", help="name it quick-<id> (default: from the sentence)")
+    p.add_argument("--to-spec", metavar="SPEC_ID", help="it grew: hand its baseline and test run to openspec/changes/<SPEC_ID>"
+                                                       " (`leyline quick --to-spec <id> quick-<slug>`)")
+    p.add_argument("--new-baseline", action="store_true", help="start over from the code as it is now")
+    p.add_argument("--path", default=".", help="the repository (default: here)")
+    p.add_argument("--json", action="store_true")
     # Advanced commands: no help= keeps them out of the list at the top of --help; ADVANCED lists them.
     p = sub.add_parser("drift", description="Compare the code that the living specs (openspec/specs/) and finished changes"
                                             " name in backticks with the map: what is gone, has moved, has changed signature"
@@ -546,6 +628,8 @@ def _main(argv=None) -> int:
         return _loop(args)
     if args.cmd == "pr":
         return _pr(args)
+    if args.cmd == "quick":
+        return _quick(args)
     if args.cmd == "affected-tests":
         return _affected(args)
     if args.cmd == "drift":
