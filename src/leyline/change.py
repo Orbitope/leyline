@@ -14,7 +14,7 @@ from collections import defaultdict
 from typing import Optional
 
 ACTIONS = ("behavior", "signature", "remove", "rename", "add")
-DATA_CHANNELS = ("file", "db")   # one side writes, the other reads later; nothing runs across
+DATA_CHANNELS = ("file", "db", "format")   # one side writes, the other reads later; nothing runs across
 BREAKING = ("signature", "remove", "rename")
 ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect", "note"]
 
@@ -224,7 +224,9 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
                     continue
                 dist[src] = d
                 nxt.append(src)
-                if d == 1:
+                if d == 1 and via in DATA_CHANNELS:   # a reader of what it writes makes no call to change
+                    mark(src, "direct", f"reads what it writes ({via})" + (" (link is a guess)" if guess else ""), 1)
+                elif d == 1:
                     role = "must_edit" if cur in breaking else "direct"
                     mark(src, role, ("its call must change" if cur in breaking else "calls it directly")
                          + (" (link is a guess)" if guess else ""), 1)

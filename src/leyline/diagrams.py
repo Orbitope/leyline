@@ -108,6 +108,8 @@ def _channel_text(channel: str, address: str, nodes: _Nodes, dst: str) -> str:
     if channel in ("db", "file"):   # nothing runs across: the reader reads what was written, later
         what = ("table " if channel == "db" else "file ") + address if address else "a " + ("table" if channel == "db" else "file")
         return f"writes {what}, which {nodes.fn(dst)}() reads later"
+    if channel == "format":   # a key built here and taken apart there
+        return f"builds keys {address}, which {nodes.fn(dst)}() takes apart"
     if channel == "process":
         return f"starts {address or 'a program'}"
     if channel == "di":

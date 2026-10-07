@@ -54,6 +54,21 @@ def _text(node) -> str:
     return node.text.decode("utf8", "replace") if node is not None else ""
 
 
+def _url_text(node) -> str:
+    """A string literal's text, with each f-string hole written {}: f"/api/users/{uid}" -> /api/users/{}."""
+    return "".join(_text(c) if c.type == "string_content" else "{}"
+                   for c in node.children if c.type in ("string_content", "interpolation"))
+
+
+def _kw_string(args, name: str):
+    """The string a keyword argument is given (`method="POST"`), or None."""
+    for a in args.named_children if args is not None else ():
+        if a.type == "keyword_argument" and _text(a.child_by_field_name("name")) == name:
+            v = a.child_by_field_name("value")
+            return _url_text(v) if v is not None and v.type == "string" else None
+    return None
+
+
 def _squash(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
@@ -626,12 +641,33 @@ class _Walker:
         """Is this call one end of an HTTP or file channel?"""
         full = _text(fn)
         last = full.rsplit(".", 1)[-1]
+        if node.parent is not None and node.parent.type == "decorator" and cid not in self.fn_nodes:
+            # @app.post("/x") at the top of a module declares a route and requests nothing. Inside a test it is kept:
+            # the test declares the route to call it, often as client.get() with the path left out.
+            return
         first = args.named_children[0] if args is not None and args.named_children else None
         if fn.type == "attribute" and last in HTTP_VERBS | {"open"} and first is not None and first.type == "string":
-            path = "".join(_text(c) for c in first.children if c.type == "string_content")
+            path = _url_text(first)
             if path.startswith(("/", "http://", "https://")):
-                self.res.endpoints.append(Endpoint("http", "call", cid, path, line, None if last == "open" else last.upper()))
+                method = None if last == "open" else last.upper()
+                if last == "open":   # a test client's open("/x", method="POST")
+                    method = _kw_string(args, "method")
+                    method = method.upper() if method else None
+                self.res.endpoints.append(Endpoint("http", "call", cid, path, line, method))
                 return
+            if path.startswith("{}/") and len(path) > 3:   # f"{BASE}/api/x": the host is in a variable
+                self.res.endpoints.append(Endpoint("http", "maybe", cid, path[2:].split("?", 1)[0], line,
+                                                   None if last == "open" else last.upper()))
+                return
+        if fn.type == "attribute" and last in HTTP_VERBS and first is not None and first.type == "binary_operator" \
+                and _text(first.child_by_field_name("operator")) == "+":
+            right = first.child_by_field_name("right")
+            path = _url_text(right) if right is not None and right.type == "string" else ""
+            if path.startswith("/") and path.count("/") >= 2:   # BASE_URL + "/api/x"
+                self.res.endpoints.append(Endpoint("http", "maybe", cid, path.split("?", 1)[0], line, last.upper()))
+                return
+        if self._wrapped_request(fn, full, last, args, cid, line):
+            return
         role = None
         if full == "open" or full.endswith((".open",)) and last == "open" and fn.type == "attribute" and _text(fn.child_by_field_name("object")) in ("io", "codecs", "gzip"):
             mode = ""
@@ -651,6 +687,38 @@ class _Walker:
             self.res.endpoints.append(Endpoint("file", role, cid, "", line, None, _strings(args) if args is not None else []))
         if full in PATH_BUILDERS and args is not None:
             self.res.path_strings.setdefault(cid, []).extend(_strings(args))
+
+    def _wrapped_request(self, fn, full, last, args, cid, line) -> bool:
+        """A request through something the name does not give away: a session helper's request("GET", "/x"), an
+        api_get("/api/x/1") of the project's own, a url= keyword. Recorded as a path a route may serve; the indexer
+        links it only when exactly one route fits (see Indexer._resolve_endpoints)."""
+        if args is None or full in FILE_WRITE | FILE_READ | PATH_BUILDERS | LAUNCHERS or full == "open" \
+                or last in ("join", "open", "exists", "glob", "rglob", "joinpath", "startswith", "endswith", "split",
+                            "replace", "format", "match", "search", "sub", "compile", "fullmatch", "findall", "strip",
+                            "rstrip", "lstrip", "removeprefix", "removesuffix", "print", "info", "debug", "warning", "error",
+                            "route", "websocket", "add_url_rule", "add_api_route", "api_route", "url_for", "redirect",
+                            "Blueprint", "APIRouter", "Rule", "path", "re_path", "mount", "include_router"):
+            return False
+        named = args.named_children
+        method, url = None, None
+        if last == "request" and len(named) > 1 and named[0].type == "string" and named[1].type == "string":
+            verb = _url_text(named[0])
+            if verb.lower() in HTTP_VERBS:
+                method, url = verb.upper(), _url_text(named[1])
+        if url is None and named and named[0].type == "string":
+            url = _url_text(named[0])
+        if url is None:
+            url = _kw_string(args, "url") or _kw_string(args, "path")
+        if not url:
+            return False
+        url = url[2:] if url.startswith("{}/") else url
+        if not url.startswith("/") or url.count("/") < 2 or any(ch.isspace() for ch in url) or "." in url.rsplit("/", 1)[-1]:
+            return False
+        if method is None:
+            m = _kw_string(args, "method")
+            method = m.upper() if m and m.lower() in HTTP_VERBS else None
+        self.res.endpoints.append(Endpoint("http", "maybe", cid, url.split("?", 1)[0], line, method))
+        return True
 
     # -- bodies --------------------------------------------------------------
     def _body(self, node, cid, class_id, scope, qual=None) -> None:

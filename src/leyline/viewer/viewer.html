@@ -409,9 +409,11 @@ const CHAN = {
   queue: ["sends a message handled in", "handles its messages", "sends messages handled here", "through a message"],
   db: ["writes a table read in", "reads a table it writes", "writes a table read here", "through a table"],
   rpc: ["makes a remote call served in", "serves its remote call", "makes a remote call served here", "over RPC"],
+  format: ["builds keys taken apart in", "takes apart the keys it builds", "builds keys taken apart here", "through a key's shape"],
 };
 Object.assign(LABEL, { http: "sends a request to", file: "writes a file read by", di: "dependency injection",
-  queue: "sends a message to", db: "writes a table read by", rpc: "makes a remote call to" });
+  queue: "sends a message to", db: "writes a table read by", rpc: "makes a remote call to",
+  format: "builds keys taken apart by" });
 // One flat list of links: [kind, src, dst, rank (2 exact, 1 from syntax, 0 guessed), count, line, channel info]
 const LINKS = [];
 for (const [k, s, d, x, extra] of D.edges) if (GROUPS[k]) LINKS.push([k, s, d, x, 1, 0, k === "communicates" ? extra : null]);

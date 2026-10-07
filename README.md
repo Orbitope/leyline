@@ -766,7 +766,14 @@ moves, and carries a `channel` and an `address`.
   (`@app.route("/x")`, `@app.get`), ASP.NET attributes (`[HttpGet("x")]`) and `MapGet`-style calls;
   requests from `.get("/x")`-style calls and `HttpClient` methods with a literal path. A request is
   linked to a route declared inside the same test first, then to the only route in the repository
-  that matches; if several match, it is counted as ambiguous and left unlinked.
+  that matches; if several match, it is counted as ambiguous and left unlinked. An ASP.NET
+  controller's `[Route("api/[controller]")]`, and a minimal API's `MapGroup("api/x")`, start the
+  routes declared under them. A path handed to
+  something the name does not give away is linked only when exactly one route serves it: a wrapper
+  (`apiFetch("/api/x")`, `api_get("/api/x/1")`, `Get<T>("/api/x")`), `server.inject({ url })`, a
+  session's `request("GET", "/x")`, a test client's `open("/x", method=...)`, a base address in a
+  variable (`f"{BASE}/api/x"`, `BASE + "/api/x"`), `HttpClient` with a relative path
+  (`GetAsync("api/x")`), RestSharp's `new RestRequest("api/x")` and `new HttpRequestMessage(...)`.
 - **file**: from a function that writes a file to one that reads it, when the path fragments written
   in the two agree: the same file name, or the same directory and the same extension
   (`policies/*.bin`). These are always a `guess`, since paths are usually built at run time. Flows
@@ -798,8 +805,22 @@ moves, and carries a `channel` and an `address`.
   `getService('X')`) to the method of the same name on a class that implements the service
   (`GreeterServicer`, `Greeter.GreeterBase`, `@GrpcMethod`). When several servers implement it, the
   ones nearest the caller by directory are linked.
+- **format** (TypeScript, Python, C#): from a function that builds keys of one shape to a function
+  that takes them apart, where no call joins the two. The address is the shape
+  (`dialogue/*/nodes/*/text`). A builder is a template with holes and two or more fixed parts
+  between `/` or `:` separators, starting with a fixed part: a template literal, an f-string, an
+  interpolated string, `"%s/x/%s" %`, `String.Format` or a chain of `+`. A hole that calls another
+  builder (`${nodeKey(d, n)}/text`) takes that builder's shape. A reader is a regular expression over
+  the shape (where a constant holding it is used), a `startsWith` test of a literal with two fixed
+  parts, or code that compares a split key's pieces by position (`parts[2] === "nodes"`, through
+  `slice`, aliases and destructuring). They are linked when two or more of the reader's fixed parts
+  sit at the same places in the builder's shape and none disagrees; when the pieces come from a
+  parameter and two shapes share a tail, the reader is taken to read the shape its own file builds,
+  else the one most files build. Routes, file paths, git's `refs/...` and keys built in tests are
+  left out. A `guess` unless three fixed parts agree. Like files and tables, flows do not follow
+  these, and a pull request that edits the builder's template lists the readers as "must agree".
 
-All four meet by a name written in code, so each link is `heuristic` at best. Each change brief
+All five meet by a name or a shape written in code, so each link is `heuristic` at best. Each change brief
 lists the channels a change crosses, with their address.
 
 ### Systems
