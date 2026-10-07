@@ -279,23 +279,38 @@ def plan_text(b: dict, name: str) -> str:
     return "\n".join(L)
 
 
-def next_after_plan(b: dict, name: str) -> list[str]:
+def next_after_plan(b: dict, name: str, for_agent: bool = False) -> list[str]:
+    """What to do after a plan: commands to type, or (for_agent) the MCP tools to call."""
     st = spec.brief_status(b)
     if st["blocking"]:
         if any(x.startswith("decide") for x in st["blocking"]) and not b["gaps"]:
+            if for_agent:
+                return ["Next: ask the person to decide each open high finding (in status.blocking). Record each decision with"
+                        " `spec_resolve` (accepted means the spec changes; edit it to match), then call `plan` again."]
             return [f"Next: decide each open high finding: `leyline spec resolve <finding id> accepted|rejected|deferred \"why\"`"
                     f" (accepted means the spec changes), then run `leyline plan {name}` again."]
+        if for_agent:
+            return [f"Next: fix the spec for each item in status.blocking (edit the files in {b['dir']}), then call `plan`"
+                    " again."]
         return [f"Next: fix the spec for each item under \"Before implementation\" (edit the files in {_show(b['dir'])}, or ask"
                 f" your agent), then run `leyline plan {name}` again."]
     out = []
     if not b.get("baseline_tests") and b.get("baseline") != "kept":
-        out.append(f"while the code is unchanged, record how the tests pass now: `<your test command> | leyline plan {name}"
+        out.append("while the code is unchanged, run the tests and call `plan` again with their output as test_output"
+                   " (one PASS or FAIL line per test; `pytest -rA` prints that)." if for_agent else
+                   f"while the code is unchanged, record how the tests pass now: `<your test command> | leyline plan {name}"
                    " --tests -`. The output needs one PASS or FAIL line per test; `pytest -rA` prints that.")
     if not st["reviewed"]:
-        out.append(f"have the plan reviewed before code is written (ask your agent to run the leyline-adversarial-review"
+        out.append("have the plan reviewed before code is written: call `spec_review_facts` with reviewer=logic, and"
+                   " again with reviewer=performance (ideally each in a fresh agent), file real problems with"
+                   " `spec_finding`, then call `plan` again. Or, if the person accepts the plan as it is, implement it."
+                   if for_agent else
+                   f"have the plan reviewed before code is written (ask your agent to run the leyline-adversarial-review"
                    f" skill), then run `leyline plan {name}` again. Or, if you accept the plan as it is, implement it.")
     else:
-        out.append(f"implement it (ask your agent to do the tasks), then run `leyline check {name} --tests <test output>`.")
+        out.append("implement the tasks, then run the tests and call `check` with their output as test_output."
+                   if for_agent else
+                   f"implement it (ask your agent to do the tasks), then run `leyline check {name} --tests <test output>`.")
     return ["Next: " + out[0], *("Then: " + x for x in out[1:])]
 
 
@@ -344,24 +359,33 @@ def check_text(v: dict, name: str) -> str:
     return "\n".join(L)
 
 
-def next_after_check(v: dict, name: str) -> list[str]:
+def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
+    """What to do after a check: commands to type, or (for_agent) the MCP tools to call."""
     if v["done_as_agreed"]:
-        return ["Next: nothing left to check; the change was done as agreed. Review the diff and commit it."]
+        return ["Next: nothing left to check; the change was done as agreed. Show the person the verdict and the diff."
+                if for_agent else "Next: nothing left to check; the change was done as agreed. Review the diff and commit it."]
+    again = "call `check` again" if for_agent else f"run `leyline check {name}` again"
     out = []
     if v.get("tests_missing") or v.get("tests_old"):
         out.append(("the test results on record are from before the code last changed. " if v.get("tests_old") else "")
-                   + f"run the tests and pass the output: `<your test command> | leyline check {name} --tests -`"
-                   " (one PASS or FAIL line per test; `pytest -rA` prints that).")
+                   + ("run the tests and call `check` again with their output as test_output (one PASS or FAIL line per"
+                      " test; `pytest -rA` prints that)." if for_agent else
+                      f"run the tests and pass the output: `<your test command> | leyline check {name} --tests -`"
+                      " (one PASS or FAIL line per test; `pytest -rA` prints that)."))
     if any(t["state"] in ("not done", "partly") for t in v["tasks"]):
-        out.append(f"finish the tasks marked not done or partly (ask your agent), then run `leyline check {name}` again.")
+        out.append(f"finish the tasks marked not done or partly{'' if for_agent else ' (ask your agent)'}, then {again}.")
     if v["drift"]:
-        out.append(f"for each change not in the spec, decide: add a task for it (then `leyline plan {name}`) or undo it.")
+        out.append("for each change not in the spec, ask the person: add a task for it (then call `plan`) or undo it."
+                   if for_agent else
+                   f"for each change not in the spec, decide: add a task for it (then `leyline plan {name}`) or undo it.")
     if any(s["state"] in ("fails", "no test") for s in v["scenarios"]) or (v["tests"] and v["tests"]["newly_failing"]):
         out.append("fix what fails, or add the missing tests, then check again.")
     if v["open_high_findings"]:
-        out.append("decide the open high review findings: `leyline spec resolve <finding id> accepted|rejected|deferred \"why\"`.")
+        out.append("ask the person to decide the open high review findings, and record each decision with `spec_resolve`."
+                   if for_agent else
+                   "decide the open high review findings: `leyline spec resolve <finding id> accepted|rejected|deferred \"why\"`.")
     if v["new_dependencies"] or v["rules_newly_failing"]:
         out.append("look at the new links between modules and the rules that now fail: keep them in the spec, or undo them.")
     if not out:
-        out.append(f"fix what the verdict lists, then run `leyline check {name}` again.")
+        out.append(f"fix what the verdict lists, then {again}.")
     return ["Next: " + out[0], *("Also: " + x for x in out[1:])]
