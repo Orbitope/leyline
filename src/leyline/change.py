@@ -14,6 +14,7 @@ from collections import defaultdict
 from typing import Optional
 
 ACTIONS = ("behavior", "signature", "remove", "rename", "add")
+DATA_CHANNELS = ("file", "db")   # one side writes, the other reads later; nothing runs across
 BREAKING = ("signature", "remove", "rename")
 ROLE_ORDER = ["changed", "new", "contract", "must_edit", "direct", "test", "indirect", "note"]
 
@@ -66,9 +67,17 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
     for r in con.execute("SELECT src_id, dst_id, MIN(precision = 'guess') AS guess FROM calls GROUP BY src_id, dst_id"
                          " ORDER BY dst_id, src_id"):
         callers[r["dst_id"]].append((r["src_id"], "calls", bool(r["guess"])))
+    addresses: dict[tuple, str] = {}
     for r in con.execute("SELECT src_id, dst_id, precision, attrs FROM edges WHERE kind = 'communicates'"):
-        ch = (json.loads(r["attrs"]) if r["attrs"] else {}).get("channel", "channel")
-        callers[r["dst_id"]].append((r["src_id"], ch, r["precision"] == "guess"))
+        a = json.loads(r["attrs"]) if r["attrs"] else {}
+        ch = a.get("channel", "channel")
+        if ch in DATA_CHANNELS:
+            # Data, not control: a change to what is written reaches whoever reads it, so the reader depends on the writer.
+            callers[r["src_id"]].append((r["dst_id"], ch, r["precision"] == "guess"))
+            addresses[(r["dst_id"], r["src_id"])] = a.get("address") or ""
+        else:
+            callers[r["dst_id"]].append((r["src_id"], ch, r["precision"] == "guess"))
+            addresses[(r["src_id"], r["dst_id"])] = a.get("address") or ""
     bases: dict[str, list] = defaultdict(list)
     impls: dict[str, list] = defaultdict(list)
     for r in con.execute("SELECT src_id, dst_id FROM edges WHERE kind = 'overrides'"):
@@ -174,7 +183,8 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4) -> dict:
                 if d == 1 and guess:
                     guessed_links += 1
                 if via not in ("calls",) and src not in dist:
-                    channel_links.append({"from": src, "to": cur, "channel": via, "guessed": bool(guess)})
+                    channel_links.append({"from": src, "to": cur, "channel": via, "guessed": bool(guess),
+                                          "address": addresses.get((src, cur), ""), "data": via in DATA_CHANNELS})
                 if src in dist:
                     continue
                 dist[src] = d

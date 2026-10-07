@@ -90,7 +90,7 @@ def test_overview_rolls_up_to_modules(con):
     assert edge["calls"] >= 3 and edge["imports"] >= 1
     status = {c["extractor"]: c["status"] for c in o["coverage"]}
     assert status["communicates:event"] == "ok" and status["communicates:process"] == "ok"
-    assert status["communicates:http"] == "ok" and status["communicates:queue"] == "not_analyzed"
+    assert status["communicates:http"] == "ok" and status["communicates:queue"] == "ok"
 
 
 def test_expand_and_search(con):
