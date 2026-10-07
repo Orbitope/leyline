@@ -251,7 +251,7 @@ def generate(con, repo_id: str) -> dict:
     guess = q("SELECT COUNT(*) FROM calls WHERE precision = 'guess'")[0][0]
     total = q("SELECT COUNT(*) FROM calls")[0][0]
     open_calls = sum((json.loads(c["stats"] or "{}").get("calls_unresolved", 0) + json.loads(c["stats"] or "{}").get("calls_guess_declined", 0))
-                     for c in cov if c["extractor"].startswith("tree-sitter"))
+                     for c in cov if c["extractor"].startswith(("tree-sitter", "generic")))
     stop("What this map cannot see", "repo", repo_id,
          f"Links come from reading syntax, not from a compiler. Of {total:,} call links, {guess:,} are guesses by name, and "
          f"{open_calls:,} call sites could not be tied to a function at all. "

@@ -95,6 +95,9 @@ class Indexer:
         self.calls: list[tuple] = []
         self.results: dict[str, FileResult] = {}  # file id -> adapter output
         self.file_lang: dict[str, str] = {}
+        self.file_of_path: dict[str, str] = {}
+        self._decl_cache: dict[str, dict] = {}
+        self._text_cache: dict[str, list] = {}
         self.stats: dict[str, Counter] = defaultdict(Counter)
         self.flows: list[tuple] = []
         self.call_col: dict[tuple, int] = {}
@@ -165,6 +168,7 @@ class Indexer:
                 print(f"leyline: failed to parse {f}: {exc}", file=sys.stderr)
                 continue
             self.results[file_id] = res
+            self.file_of_path[f] = file_id
             self.file_lang[file_id] = adapter.LANGUAGE
             self.stats[adapter.NAME]["files"] += 1
             lines = data.split(b"\n")
@@ -179,6 +183,7 @@ class Indexer:
 
         def resolve():
             self._projects(files)
+            self._attach_methods()
             self._build_indexes()
             self._resolve_imports()
             self._script_entries()
@@ -417,10 +422,86 @@ class Indexer:
             self.file_of[ep.id] = fid
             self.edges.append(Edge("exposes", ep.id, top))
 
+    def _attach_methods(self) -> None:
+        """A method written outside its type's body (Go's func (t *T) Run(), Rust's impl T { ... } in another
+        file) belongs to the type of that name, looked for in the same directory first."""
+        types: dict[tuple, list[str]] = defaultdict(list)
+        for n in self.nodes.values():
+            if n.kind == "type":
+                types[(n.language, n.name)].append(n.id)
+        for n in list(self.nodes.values()):
+            owner = n.attrs.get("owner_name") if n.kind == "callable" else None
+            if not owner or (n.parent_id in self.nodes and self.nodes[n.parent_id].kind == "type"):
+                continue
+            cands = types.get((n.language, owner), [])
+            here = (n.path or "").rpartition("/")[0]
+            near = [t for t in cands if (self.nodes[t].path or "").rpartition("/")[0] == here] or cands
+            if len(near) == 1:
+                n.parent_id = near[0]
+                n.attrs["type_id"] = near[0]
+                for res in (self.results.get(self.file_of_path.get(n.path, "")),):
+                    for c in (res.calls if res else ()):
+                        if c.src_id == n.id and c.enclosing_type is None:
+                            c.enclosing_type = near[0]
+
     def _find_module(self, fid: str, target: str) -> Optional[str]:
+        if getattr(BY_LANGUAGE.get(self.file_lang[fid]), "GENERIC", False):
+            hits = self._generic_import(fid, target)
+            for h in hits[1:]:
+                self.import_targets[fid].add(h)
+            return hits[0] if hits else None
         if self.file_lang[fid] == "python":
             return self._py_module(fid, target)
         return self._path_module(target)
+
+    def _generic_import(self, fid: str, target: str) -> list[str]:
+        """Files an import names, whatever the language writes: a relative path (./x, ../x.h), a dotted or ::
+        path (com.foo.Bar, crate::a::b), or a package path ("github.com/x/y/pkg" names a directory)."""
+        if not hasattr(self, "_suffixes"):
+            self._suffixes: dict[str, list[str]] = defaultdict(list)
+            self._dirs: dict[str, list[str]] = defaultdict(list)
+            for f in self.results:
+                path = self.nodes[f].path
+                stem = re.sub(r"\.[A-Za-z0-9]+$", "", path)
+                parts = stem.split("/")
+                for i in range(len(parts)):
+                    self._suffixes["/".join(parts[i:])].append(f)
+                    if parts[-1] in ("mod", "index", "__init__", "lib") and i < len(parts) - 1:
+                        self._suffixes["/".join(parts[i:-1])].append(f)
+                d = parts[:-1]
+                for i in range(len(d)):
+                    self._dirs["/".join(d[i:])].append(f)
+        lang = self.file_lang[fid]
+        here = self.nodes[fid].path.rpartition("/")[0]
+        t = target.strip().strip("\"'<>`")
+        if not t:
+            return []
+        m = re.fullmatch(r"(\.+)([\w.]*)", t)
+        if m:   # Python's relative import: one dot is this package, each further dot one level up
+            base = here
+            for _ in range(len(m.group(1)) - 1):
+                base = base.rpartition("/")[0]
+            t = "./" + posixpath.join(posixpath.relpath(base or ".", here or "."), m.group(2).replace(".", "/")) if m.group(2) else "./"
+            if not m.group(2):
+                return [f for f in self._suffixes.get(posixpath.join(base, "__init__") if base else "__init__", [])][:1]
+        if t.startswith("."):
+            joined = posixpath.normpath(posixpath.join(here, t))
+            key = re.sub(r"\.[A-Za-z0-9]+$", "", joined)
+            return [f for f in self._suffixes.get(key, []) if self.nodes[f].path.startswith(key)] or self._dirs.get(key, [])[:0]
+        t = re.sub(r"^(crate|self|super)::", "", t)
+        key = re.sub(r"(::|\.|\\)", "/", t) if not "/" in t else re.sub(r"\.[A-Za-z0-9]+$", "", t)
+        key = key.rstrip("/*").strip("/")
+        same_lang = lambda fs: [f for f in fs if self.file_lang[f] == lang]
+        for k in (key, key.rsplit("/", 1)[0] if "/" in key else None):   # import a.b.C names a file a/b/C, or a symbol C in a/b
+            if not k:
+                continue
+            hits = same_lang(self._suffixes.get(k, []))
+            if hits:
+                return hits[:8] if len(hits) <= 8 else []
+            hits = same_lang(self._dirs.get(k, []))        # a package or module directory
+            if hits and len({self.nodes[h].path.rpartition("/")[0] for h in hits}) == 1:
+                return hits[:40]
+        return []
 
     def _path_module(self, target: str) -> Optional[str]:
         """A TypeScript import: ./path from the repo root (the adapter resolved it), or a workspace package."""
@@ -884,8 +965,170 @@ class Indexer:
                                            "guess" if self._guessed else "heuristic", call.line))
                         self.call_col[(call.src_id, t.id, call.line)] = call.col
 
+    _DECL = [  # (pattern, group of the name, group of the type): how typed languages write a variable's type
+        (re.compile(r"\b([A-Z]\w*)(?:<[^<>;=()]*>)?(?:\[\])?\??\s*[*&]?\s+(\w+)\s*(?=[=;,)]|$)"), 2, 1),      # Foo x  (C#, Java, C++)
+        (re.compile(r"\b(\w+)\s*:\s*&?(?:mut\s+|readonly\s+)?\(?([A-Z]\w*)"), 1, 2),                          # x: Foo  (TS, Kotlin, Swift, Rust, Python)
+        (re.compile(r"\b(\w+)\s*(?::=|=)\s*(?:new\s+|&|await\s+)?([A-Z]\w*)(?:<[^<>]*>)?(?:::new)?\s*[({]"), 1, 2),  # x = new Foo( / Foo{ / Foo::new(
+        (re.compile(r"\b(\w+)\s+\*?([A-Z]\w*)\s*[,)]"), 1, 2),                                                     # (x *Foo)  (Go parameters)
+        (re.compile(r"\bvar\s+(\w+)\s+\*?([A-Z]\w*)"), 1, 2),                                                      # var x Foo  (Go)
+    ]
+
+    def _generic_var_type(self, lang: str, src_id: str, var: str, enclosing_type: Optional[str]) -> Optional[str]:
+        """The type a variable or field is declared with, read from the text of the function and of its type."""
+        if not re.fullmatch(r"[A-Za-z_]\w*", var):
+            return None
+        for holder in (src_id, enclosing_type):
+            if not holder or holder not in self.nodes:
+                continue
+            decls = self._decl_cache.get(holder)
+            if decls is None:
+                n = self.nodes[holder]
+                fid = self.file_of.get(holder)
+                text = self._file_text(fid) if fid else []
+                body = "\n".join(text[(n.span_start or 1) - 1:n.span_end or n.span_start or 1])
+                decls = {}
+                for pat, gn, gt in self._DECL:
+                    for m in pat.finditer(body):
+                        name, tname = m.group(gn), m.group(gt)
+                        if name not in decls and tname not in ("String", "Self", "None", "Some", "Ok", "Err") or (
+                                name in decls and decls[name] is None and self.types_by_name.get((lang, tname))):
+                            decls[name] = tname if self.types_by_name.get((lang, tname)) else None
+                self._decl_cache[holder] = decls
+            if var in decls:
+                if decls[var] is None:
+                    return "external"     # declared with a type that is not in the repo
+                return self._type(lang, decls[var], src_id) or (self.types_by_name.get((lang, decls[var])) or [None])[0]
+        return None
+
+    def _file_text(self, fid: str) -> list[str]:
+        if fid not in self._text_cache:
+            try:
+                self._text_cache[fid] = (self.root / self.nodes[fid].path).read_text(errors="replace").splitlines()
+            except OSError:
+                self._text_cache[fid] = []
+        return self._text_cache[fid]
+
+    def _near(self, fid: str) -> set:
+        """Files this one imports, and the files those import in turn (a package's index re-exporting its parts)."""
+        key = ("near", fid)
+        if key not in self._vis_cache:
+            first = set(self.import_targets.get(fid, ()))
+            self._vis_cache[key] = first | {t for f in first for t in self.import_targets.get(f, ())}
+        return self._vis_cache[key]
+
+    def _generic_call(self, lang: str, fid: str, call: CallSite) -> Optional[list[Node]]:
+        """A call read by the generic adapter: only the name and what the text shows of the receiver are known.
+        Nearest first: the caller's own type, its file, its directory, a type or package named by the receiver,
+        then a name declared once in the whole repo, which is a guess."""
+        name = call.name
+        cands = self.by_name.get((lang, name), [])
+        types = self.types_by_name.get((lang, name), [])
+        if not cands and not types:
+            return None
+        r = call.receiver
+
+        def by_args(fns):
+            """Overloads: keep those declared with as many parameters as the call passes, when that narrows it."""
+            fns = list(fns)
+            if len(fns) > 1 and call.argc >= 0:
+                # A declaration with fewer parameters than the call passes cannot take it; of the rest, the one
+                # with the fewest is likeliest (the others' extra parameters would need defaults).
+                fit = [f for f in fns if f.attrs.get("params_seen") is None or f.attrs["params_seen"] >= call.argc]
+                if fit and all(f.attrs.get("params_seen") is not None for f in fit):
+                    least = min(f.attrs["params_seen"] for f in fit)
+                    fit = [f for f in fit if f.attrs["params_seen"] == least]
+                return fit or fns
+            return fns
+
+        def ctor_of(tids):
+            out = []
+            for t in tids:
+                out += self.members.get(t, {}).get(name, []) or [m for c in CTORS for m in self.members.get(t, {}).get(c, [])]
+                self.edges.append(Edge("instantiates", call.src_id, t, "heuristic"))
+            return by_args(out) or None
+        near_files = self._near(fid)
+        here = self.nodes[fid].path.rpartition("/")[0]
+        if r in (None, "this", "base"):
+            chain = self._chain(call.enclosing_type)
+            for t in chain[1:] if r == "base" else chain:
+                found = self.members.get(t, {}).get(name)
+                if found:
+                    return by_args(found)
+            if r is not None:
+                return [] if cands else None
+            for scope in (lambda c: self.file_of.get(c.id) == fid,
+                          lambda c: self.nodes[self.file_of[c.id]].path.rpartition("/")[0] == here if c.id in self.file_of else False):
+                local = [c for c in cands if scope(c) and not c.attrs.get("type_id")]
+                if local:
+                    return local[:1]
+            if types and r is None:
+                local_t = [t for t in types if self.file_of.get(t) == fid] or \
+                    [t for t in types if self.file_of.get(t) in near_files] or \
+                    [t for t in types if self.nodes[self.file_of.get(t, fid)].path.rpartition("/")[0] == here] or types
+                if len(local_t) == 1:
+                    return ctor_of(local_t)
+            free = [c for c in cands if not c.attrs.get("type_id")]
+            imported = [c for c in free if self.file_of.get(c.id) in self.import_targets.get(fid, ())] or \
+                [c for c in free if self.file_of.get(c.id) in near_files]
+            if imported:
+                return by_args(imported) if len({c.parent_id for c in imported}) == 1 else []
+            if len(free) == 1 and (lang, name) not in self.outside_names:
+                self._guessed = True
+                return free
+            return [] if free else None
+        if r not in ("?", None, "this", "base"):
+            tid = self._generic_var_type(lang, call.src_id, r, call.enclosing_type)
+            if tid == "external":
+                return None
+            if tid:
+                for t in self._chain(tid):
+                    found = self.members.get(t, {}).get(name)
+                    if found:
+                        return by_args(found)
+        if r == "?":
+            pool = [c for c in cands if c.attrs.get("type_id")]
+            if not pool:
+                return None
+        else:
+            # The receiver names a type (static call) or a package / module directory (Go's pkg.Func, Rust's mod::f).
+            owned = [c for t in self.types_by_name.get((lang, r), []) for c in self.members.get(t, {}).get(name, [])]
+            if owned:
+                return by_args(owned)
+            in_dir = [c for c in cands if c.id in self.file_of and
+                      self.nodes[self.file_of[c.id]].path.rpartition("/")[0].rsplit("/", 1)[-1] == r and not c.attrs.get("type_id")]
+            if in_dir:
+                return in_dir[:1]
+            in_file = [c for c in cands if c.id in self.file_of and
+                       self.nodes[self.file_of[c.id]].name.rsplit(".", 1)[0] == r]
+            if in_file:
+                return in_file[:1]
+            if types and r not in self.types_by_name.get((lang, r), ()) and self._generic_var_type(lang, call.src_id, r, call.enclosing_type) is None:
+                # module.Type(...): a type reached through the module or package the receiver names
+                via = [t for t in types if self.file_of.get(t) in near_files
+                       or (self.nodes[self.file_of[t]].path.rpartition("/")[0].rsplit("/", 1)[-1] == r if t in self.file_of else False)]
+                if len(via) == 1:
+                    return ctor_of(via)
+            if r[:1].isupper() and not self.types_by_name.get((lang, r)):
+                return None      # a type from outside: Foo.bar()
+            pool = cands
+        near = [c for c in pool if self.file_of.get(c.id) in near_files or self.file_of.get(c.id) == fid]
+        if near and len({c.parent_id for c in near}) == 1 and r == "?":
+            self._guessed = True
+            return near
+        if (lang, name) in self.outside_names or len(name) <= 2:
+            self.stats[BY_LANGUAGE[lang].NAME]["calls_guess_declined"] += 1
+            return None
+        owners = {c.parent_id for c in pool}
+        if len(owners) == 1:
+            self._guessed = True
+            self.stats[BY_LANGUAGE[lang].NAME]["calls_by_unique_name"] += 1
+            return pool
+        return []
+
     def _resolve_call(self, lang: str, fid: str, call: CallSite) -> Optional[list[Node]]:
         """None = defined outside the workspace; [] = defined here but not pinned down."""
+        if getattr(BY_LANGUAGE.get(lang), "GENERIC", False):
+            return self._generic_call(lang, fid, call)
         name, argc = call.name, call.argc
         self._last_src = call.src_id
         if lang == "typescript":   # one hop is too strict where a store or a module object sits between caller and function
@@ -1430,7 +1673,7 @@ def index(root: str | Path, db_path: str | Path, repo_id: Optional[str] = None, 
         stats["tour"] = tours.generate(con, ix.repo)
         ix.timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
         stats["stale_annotations"] = store.refresh_stale(con)
-        files = sum(v.get("files", 0) for k, v in stats.items() if k.startswith("tree-sitter"))
+        files = sum(v.get("files", 0) for k, v in stats.items() if k.startswith(("tree-sitter", "generic")))
         lines = con.execute("SELECT COALESCE(SUM(span_end), 0) FROM nodes WHERE kind = 'file' AND repo_id = ?", (ix.repo,)).fetchone()[0]
         total = round(time.perf_counter() - began, 3)
         stats["timing"] = {"total_seconds": total, **ix.timing, "files": files, "lines": lines,

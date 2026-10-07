@@ -85,6 +85,10 @@ def main(argv=None) -> int:
     ap.add_argument("--version", action="version", version=__version__)
     ap.add_argument("--db", default=os.environ.get("LEYLINE_DB", DEFAULT_DB), help="path to the store")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("grade", help="measure the call links found against a compiler's (a SCIP index, or roslyn for C#)")
+    p.add_argument("root", help="the repository")
+    p.add_argument("compiler", help="a .scip file, or roslyn")
+    p.add_argument("--prefix", default="", help="the folder the SCIP index's paths are relative to, inside the repository")
     p = sub.add_parser("index", help="index a repository into the store")
     p.add_argument("path", nargs="?", default=".")
     p.add_argument("--repo", help="repo id (defaults to the directory name)")
@@ -162,6 +166,12 @@ def main(argv=None) -> int:
         os.environ["LEYLINE_DB"] = args.db
         from .server import main as serve
         serve()
+        return 0
+    if args.cmd == "grade":
+        from . import grade
+        g = grade.grade(args.root, args.compiler, args.prefix, db=str(Path(args.db).with_suffix(".grade.db")))
+        g.pop("_samples", None)
+        _print(g)
         return 0
     if not Path(args.db).exists():
         print(f"leyline: no store at {args.db}. Run `leyline index` first.", file=sys.stderr)

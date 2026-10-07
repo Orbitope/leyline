@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leyline-code"
-version = "0.0.10"
+version = "0.1.0"
 description = "Map a codebase into a layered graph: deterministic facts, LLM inferences, and your intent."
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
@@ -20,6 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 scip = ["protobuf>=7.35"]
+# Grammars for the generic adapter. Any tree-sitter grammar package works; these are the common ones.
+languages = ["tree-sitter-go", "tree-sitter-rust", "tree-sitter-java", "tree-sitter-kotlin", "tree-sitter-swift",
+             "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-ruby", "tree-sitter-php", "tree-sitter-scala",
+             "tree-sitter-lua", "tree-sitter-bash", "tree-sitter-gdscript"]
 
 [project.scripts]
 leyline = "leyline.cli:main"
@@ -29,5 +33,5 @@ packages = ["src/leyline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["fixture", "fixture2", "fixture3"]
+norecursedirs = ["fixture", "fixture2", "fixture3", "fixture4"]
 python_files = ["test_index.py"]

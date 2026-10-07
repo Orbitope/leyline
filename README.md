@@ -274,7 +274,36 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 
 ## What is indexed
 
-Languages: C# and Python, through tree-sitter.
+### Languages
+
+Any language with a tree-sitter grammar is indexed by one **generic adapter** that knows no
+language. It reads what grammars have in common: node names (`function_declaration`,
+`class_definition`, `call_expression`), the grammar's own tags query where it ships one, and how
+typed languages write a variable's type (`Foo x`, `x: Foo`, `x = new Foo(`). From that it gets
+declarations, nesting, calls with what the text shows of the receiver, imports matched to files by
+path, tests by naming convention, and `main`. Adding a language is one line in
+`adapters/generic.py` and a `pip install tree-sitter-<language>`.
+
+Installed by default: C#, Python, TypeScript and JavaScript. `pip install 'leyline-code[languages]'`
+adds Go, Rust, Java, Kotlin, Swift, C, C++, Ruby, PHP, Scala, Lua, Bash and GDScript.
+
+C#, Python and TypeScript also have **hand-written adapters** that see more: receiver types,
+overloads, field reads and writes, events, routes. They are used for those languages unless
+`LEYLINE_GENERIC=1`. For other languages, a **SCIP index** (from the language's own indexer,
+`--scip FILE`) replaces the generic adapter's guesses with the compiler's links.
+
+`leyline grade <repo> <index.scip | roslyn>` measures either adapter against a compiler. Precision
+counts only call sites the compiler resolved; recall counts the compiler's links between functions
+on the map.
+
+| Language (repository) | Compiler | Hand-written: right / found | Generic: right / found |
+| --- | --- | --- | --- |
+| TypeScript (Parlance, 160k lines) | scip-typescript | 100% / 98% | 99% / 97% |
+| Python (Flask) | scip-python | 99% / 68% | 96% / 87% |
+| C# (Signal) | Roslyn | 99.7% / 97% | 98% / 83% |
+
+Where the generic adapter loses, it is on calls made on a variable whose type it cannot read from
+the text. The hand-written Python adapter misses calls inside decorators (`@app.route(...)`).
 
 | Record | Precision | Notes |
 | --- | --- | --- |

@@ -756,3 +756,30 @@ def test_typescript(tmp_path):
     flows = {r[0] for r in c.execute("SELECT entry_id FROM flows")}
     assert tests["adds a node"] in flows and "f3:typescript:pkg.app.src.main.<module>" in flows   # main() at the top of a file
     c.close()
+
+
+def test_generic_languages(tmp_path):
+    """Go, Rust and Java through the one generic adapter: no code in Leyline knows these languages."""
+    db = tmp_path / "g.db"
+    stats = index(Path(__file__).parent / "fixture4", db, "f4")
+    assert {"generic-go", "generic-rust", "generic-java"} <= set(stats)
+    c = store.connect(db)
+    calls = {(r[0].split(":", 2)[2], r[1].split(":", 2)[2]) for r in c.execute("SELECT src_id, dst_id FROM calls")}
+    # Go: a package-qualified call, a method on a typed parameter, a method declared outside its struct
+    assert ("go.main.main", "go.shapes.shape.NewSquare") in calls
+    assert ("go.main.report", "go.shapes.shape.Square.Area") in calls
+    assert ("go.main.main", "go.main.report") in calls
+    # Rust: Type::new(), a method through a local's constructor type, a macro is not a function
+    assert ("rs.src.main.main", "rs.src.geo.Circle.new") in calls
+    assert ("rs.src.main.main", "rs.src.geo.Circle.area") in calls
+    assert ("rs.src.main.main", "rs.src.geo.shout!") in calls
+    assert ("rs.src.main.main", "rs.src.geo.format") not in calls          # format!() is the standard macro
+    # Java: overloaded constructors told apart by argument count; methods on a declared local
+    assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.Counter~2") in calls
+    assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.add") in calls
+    assert ("java.com.acme.App.App.main", "java.com.acme.Counter.Counter.get") in calls
+    tests = {r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'test' OR json_extract(attrs, '$.is_test') = 1")}
+    assert {"TestReport", "prints the area", "area_is_positive"} <= tests
+    entries = {r[0] for r in c.execute("SELECT path FROM nodes WHERE kind = 'entry_point'")}
+    assert {"go/main.go", "rs/src/main.rs", "java/com/acme/App.java"} <= entries
+    c.close()
