@@ -454,6 +454,33 @@ def test_a_quick_change_over_mcp(repo):
     serve(repo, script)
 
 
+def test_skills_are_prompts_and_a_tool_with_nothing_mapped(tmp_path):
+    """An agent connected to the server finds the skills without installing them: as prompts, and with `skills`."""
+    from leyline import agent_skills
+    shipped = {s.name: s for s in agent_skills.available()}
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    async def script(a: Agent, tools, init):
+        start = init.instructions.index("Start here")
+        assert [init.instructions.index(f"`{t}`", start) for t in ("map", "plan", "quick", "review_pr", "check")] == \
+            sorted(init.instructions.index(f"`{t}`", start) for t in ("map", "plan", "quick", "review_pr", "check"))
+        assert "leyline-ask" in init.instructions[start:]
+        prompts = {p.name: p for p in (await a.s.list_prompts()).prompts}
+        assert set(prompts) == set(shipped) and {"leyline-ask", "leyline-pr-review"} <= set(prompts)
+        assert prompts["leyline-ask"].description == shipped["leyline-ask"].description
+        got = await a.s.get_prompt("leyline-quick-change", {"request": "make the retry count 3"})
+        text = got.messages[0].content.text
+        assert text.startswith("# Make a quick change with Leyline") and text.endswith("The person asked: make the retry count 3")
+        listed = await a.call("skills")
+        assert {s["name"] for s in listed["skills"]} == set(shipped) and "prompt" in listed["how"]
+        one = await a.call("skills", skill="ask")
+        assert one["name"] == "leyline-ask" and one["text"] == shipped["leyline-ask"].body
+        assert "No skill named 'nope'" in await a.fail("skills", skill="nope")
+    serve(empty, script)
+    assert not (empty / ".leyline").exists()
+
+
 def test_every_tool_was_called():
     """Runs last in this file: each tool the server lists was called by some test above."""
     if not LISTED or len(CALLED) < 10:

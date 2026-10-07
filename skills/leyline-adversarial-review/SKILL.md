@@ -37,6 +37,9 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
 
 ## A pull request: set it up first
 
+When the person asked for the whole review of a pull request, follow the leyline-pr-review skill: it runs this
+one twice and writes the summary. Alone, this skill is the attack step.
+
 1. Check the branch out (`gh pr checkout <number>`), then call `review_pr` with `base` (the branch it merges
    into) and `about` (its title and description), or `github` with the number; without the server,
    `leyline pr <base> --about "..."` or `leyline pr --github <number>`. It returns the review's id,

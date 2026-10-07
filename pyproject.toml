@@ -36,6 +36,11 @@ leyline = "leyline.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/leyline"]
 
+# The agent skills are kept once, in skills/ at the top of the repository (every folder there); the wheel carries them
+# as leyline/skills/, where `leyline skills` and the MCP server find them. tests/test_skills.py checks the two agree.
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "leyline/skills"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["fixture", "fixture2", "fixture3", "fixture4", "fixture5", "fixture6", "fixture_ws"]

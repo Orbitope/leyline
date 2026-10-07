@@ -1,5 +1,35 @@
 # Leyline
 
+## Working through an agent
+
+Leyline is meant to be driven by a coding agent: you ask in plain words, the agent uses Leyline's map and follows
+one of its skills, and you read the answer or the page it writes. Set it up once, in the repository you will work on:
+
+```bash
+pip install leyline-code                       # or, from a checkout: pip install -e .
+claude mcp add leyline -- leyline serve        # connect Claude Code to Leyline's MCP server
+leyline skills install                         # copy the skills into .claude/skills (and .agents/skills if you have one)
+```
+
+Start a new agent session, then ask. Nothing needs mapping first: the agent maps the code when it needs to.
+
+| Skill | What it does | Ask, for example |
+| --- | --- | --- |
+| `leyline-ask` | Answers a question about the code, citing it, and says how sure it is | "Who calls `saveOne`, and is that link certain?" |
+| `leyline-explain-flow` | Explains how something runs, step by step, from the map | "What happens when a user saves a dialogue?" |
+| `leyline-explore-module` | Says what one part of the code holds and where to start reading | "What is in `editor/host`, and where do I start?" |
+| `leyline-change-impact` | Says what a described change would touch, break and need tested | "What would changing the validator's output format affect?" |
+| `leyline-spec` | Plans a change as an OpenSpec folder, checked against the code, then checks it after | "Plan adding an export button, with tests." |
+| `leyline-quick-change` | Makes a small fix with no spec and says whether it was done; says when it needs a spec | "Make the retry count 3." |
+| `leyline-pr-review` | Reviews a pull request: what changed, what it breaks, findings, what to fix first | "Review pull request 123." |
+| `leyline-adversarial-review` | Attacks a plan or a pull request as a logic or a performance reviewer | "Stress-test the plan for loud-engine." |
+| `leyline-tour` | Writes a guided reading order through the code, saved on the map | "Write a tour of the payment code for a new hire." |
+
+`leyline skills list` describes them, `leyline skills show <name>` prints one, and running `leyline skills install`
+again updates them, leaving alone any you edited (`--force` replaces those). An agent connected to `leyline serve`
+can also load each skill as an MCP prompt of the same name, or through the `skills` tool, without installing them.
+The rest of this page is what the agent does underneath, and the commands for doing it yourself.
+
 ## Start here
 
 Leyline lets a person design a change to a codebase while a coding agent writes it. Before any code is
@@ -132,8 +162,7 @@ claude mcp add leyline -- leyline serve                 # this repository only
 claude mcp add -s user leyline -- leyline serve         # or: every project you open
 ```
 
-and, once, from Leyline's own checkout, `mkdir -p ~/.claude/skills && cp -r skills/* ~/.claude/skills/`
-to give Claude Code the four skills below.
+and `leyline skills install` to give Claude Code the skills (see [Working through an agent](#working-through-an-agent)).
 
 Claude Code starts the server in the directory it was opened in, and the server reads the store there,
 `.leyline/leyline.db`. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
@@ -777,6 +806,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |
 | `save_tour(title, stops, audience?)` | Save a tour written for the user |
 | `views()`, `view(view_id, limit?)` | List saved views, or read one |
+| `skills(skill?)` | The skills that ship with Leyline, each with when to use it, or one skill's text. Each is also an MCP prompt of the same name |
 
 `change` is a change folder or its id. A tool that cannot answer returns an error saying what to do
 instead (no store yet: call `map`; an unknown id: find it with `search`). Each answer is at most about
@@ -1011,6 +1041,10 @@ Node ids are stable across file moves within a project:
 ```bash
 pytest
 ```
+
+A new skill is a folder under `skills/` with a `SKILL.md`. That folder is the only copy: the wheel carries it as
+`leyline/skills/`, and `leyline skills`, the MCP prompts and the `skills` tool pick it up with no other edit.
+`tests/test_skills.py` checks each skill's frontmatter and that the wheel's copy matches.
 
 ## License
 

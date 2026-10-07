@@ -316,7 +316,12 @@ Each command ends with the next step. To review a change someone else wrote, wit
 A small change needs no spec folder:
 
   leyline quick "<what>" --about NAMES  before: what it touches and reaches, the tests that run it
-  leyline quick --done quick-<slug>     after: one verdict, and whether it grew into something to spec"""
+  leyline quick --done quick-<slug>     after: one verdict, and whether it grew into something to spec
+
+To work through a coding agent, give it Leyline's skills:
+
+  leyline skills install                copy them into this repository's .claude/skills (and .agents/skills)
+  leyline skills list                   what each one is for"""
 
 ADVANCED = """advanced commands (leyline <command> -h for each):
   index         index without the summary; prints the full statistics
@@ -516,6 +521,17 @@ def _main(argv=None) -> int:
     p.add_argument("--new-baseline", action="store_true", help="start over from the code as it is now")
     p.add_argument("--path", default=".", help="the repository (default: here)")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("skills", description="The skills that ship with Leyline: instructions a coding agent follows to"
+                                             " answer questions about the code, plan, make and review changes with the map.")
+    p.add_argument("action", choices=["list", "show", "install"], help="list them, show one, or install them")
+    p.add_argument("names", nargs="*", help="show: the skill; install: only these (default: all)")
+    p.add_argument("--to", metavar="DIR", help="install: the repository (default: the one around this directory)")
+    where = p.add_mutually_exclusive_group()
+    where.add_argument("--claude", dest="where", action="store_const", const="claude", help="install into .claude/skills")
+    where.add_argument("--agents", dest="where", action="store_const", const="agents", help="install into .agents/skills")
+    where.add_argument("--both", dest="where", action="store_const", const="both",
+                       help="both (the default when the repository has an .agents folder; otherwise .claude only)")
+    p.add_argument("--force", action="store_true", help="install: replace a copy that was edited here")
     # Advanced commands: no help= keeps them out of the list at the top of --help; ADVANCED lists them.
     p = sub.add_parser("drift", description="Compare the code that the living specs (openspec/specs/) and finished changes"
                                             " name in backticks with the map: what is gone, has moved, has changed signature"
@@ -644,6 +660,9 @@ def _main(argv=None) -> int:
         return _affected(args)
     if args.cmd == "drift":
         return _drift(args)
+    if args.cmd == "skills":
+        from . import agent_skills
+        return agent_skills.cli(args)
     explicit, args.db = args.db is not None, args.db or DEFAULT_DB
     if args.cmd == "index":
         if len(args.path) > 1 and args.repo:

@@ -27,6 +27,7 @@ except ImportError:  # mcp 1.x
     from mcp.server.fastmcp.exceptions import ToolError
 
 from . import change as change_mod, coverage as measured, diff, loop, spec as spec_loop, patterns as pattern_labels, query, rules, store, tours as tour_store
+from . import agent_skills
 
 mcp = FastMCP(
     "leyline",
@@ -48,7 +49,7 @@ mcp = FastMCP(
         "Every answer from `map`, `plan` and `check` ends with `next`: do that. `plan` and `check` re-map changed code"
         " themselves. Node ids come from `search`, `overview` and `expand`; never guess one. Edges marked heuristic come"
         " from syntax and can be wrong. Long lists are cut: `cut` says what was cut and `more` how to see the rest."
-    ),
+    ) + agent_skills.start_here(),
 )
 
 LIMIT = 24_000   # characters; an answer much longer than this crowds out the rest of an agent's context
@@ -996,6 +997,36 @@ def save_tour(title: Annotated[str, Field(description="The tour's name.")], stop
     """Save a tour you wrote for the person: one feature end to end, or what someone needs before changing one
     module. Only point at things you looked at; say in each narrative what you inferred."""
     return tour_store.save(_db(), title, [dict(s) for s in stops], audience, "mcp")
+
+
+# -- skills: step-by-step instructions for whole jobs, as a tool and as prompts ----------------------
+@_tool(needs_store=False, items=0)
+def skills(skill: Annotated[Optional[str], Field(description="A skill's name from the list, such as leyline-ask: returns"
+                                                            " its text, to follow step by step.")] = None) -> dict:
+    """The skills that ship with Leyline: instructions for whole jobs done with these tools (answer a question about
+    the code, plan a change, make a small one, review a pull request). With no name, each one's name and when to use
+    it; with `skill`, its text. Each is also an MCP prompt of the same name."""
+    if skill:
+        s = agent_skills.find(skill)
+        if s is None:
+            return {"error": f"No skill named {skill!r}. Call `skills` with no skill to list them."}
+        return {"name": s.name, "description": s.description, "text": s.body}
+    return {"skills": [{"name": s.name, "description": s.description} for s in agent_skills.available()],
+            "how": "Pick the one whose description fits what the person asked, then follow its text: call `skills` with"
+                   " skill set to its name, or load the MCP prompt of the same name. The person can install them for"
+                   " their agent with `leyline skills install` in the repository."}
+
+
+def _skill_prompt(s: agent_skills.Skill) -> None:
+    def load(request: Annotated[str, Field(description="What the person asked, if anything; it is added after the"
+                                                       " skill's text.")] = "") -> str:
+        body = agent_skills.read(s.folder).body   # read on each call, so an edited skill is served as it is now
+        return body + (f"\n\nThe person asked: {request.strip()}" if request.strip() else "")
+    mcp.prompt(name=s.name, description=s.description)(load)
+
+
+for _s in agent_skills.available():
+    _skill_prompt(_s)
 
 
 def main() -> None:

@@ -11,7 +11,8 @@ wants to learn a codebase or a slice of it, or wants something to hand to anothe
 the Leyline MCP server connected. If the `tours` tool is missing, say so and stop.
 
 Leyline already writes an orientation tour on every index. Read it first (`tours`, then `tour`):
-often the user wants that, or a narrower tour that starts where it ends.
+often the user wants that, or a narrower tour that starts where it ends. To explain one flow in the
+conversation, with nothing saved, use the leyline-explain-flow skill; for what one module holds, leyline-explore-module.
 
 ## Steps
 

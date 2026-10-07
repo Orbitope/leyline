@@ -11,7 +11,8 @@ code will be written, what it will affect, and how they will know it was done.
 
 For a change of a function or two and a constant, with no design to agree (a value, a one-line fix), skip the folder:
 use `quick` (`leyline quick "<what>" --about <names>` before, `--done quick-<slug>` after), and write a spec only if its
-answer says the change grew.
+answer says the change grew. The leyline-quick-change skill says how. Code someone else already wrote, with no spec, is
+reviewed with the leyline-pr-review skill.
 
 It works with the Leyline MCP server or with the `leyline` command alone. Without the server, use the
 command for each tool this skill names:
@@ -45,7 +46,8 @@ why not.
 ## Before any code: write the spec
 
 1. **Hear the change.** Restate it in two sentences. If it could mean two designs, ask which.
-2. **Look before writing.** `overview`, `search`, `expand`, `impact` on what the change touches.
+2. **Look before writing.** `overview`, `search`, `expand`, `impact` on what the change touches (the
+   leyline-ask skill, for a question about how the code works now).
    Tell the person anything that makes the change bigger or different than they said. Do this before
    drafting: a spec written first and checked second anchors on the wrong shape.
 3. **Write the OpenSpec folder** at `openspec/changes/<kebab-id>/`:

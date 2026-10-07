@@ -10,6 +10,9 @@ touches before any code is written, or asks for a picture of some slice of the c
 Leyline MCP server connected and the repository indexed. If the `overview` tool is missing, say so and
 stop: do not guess the impact from memory.
 
+A question about the code with no change in mind goes to the leyline-ask skill. A change to plan and check with a
+spec is the leyline-spec skill; a one-line fix, leyline-quick-change.
+
 Leyline computes reach; you decide which nodes the words refer to. Keep those two jobs separate and
 tell the user which is which.
 
