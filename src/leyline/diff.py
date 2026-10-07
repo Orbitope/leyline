@@ -31,20 +31,25 @@ def snapshot_path(con, name: str) -> Path:
 
 
 # A snapshot keeps only what a later comparison reads: the nodes with their content hashes, calls and edges by
-# their two ends, which file and module each node sits in, the set of functions each flow passes through, and a
-# hash of each line of each source file (so an edit can be placed inside one function and not another). Ids are
-# stored once, in `keys`, and the views give the column names the store has, so compare() and the rules read a
-# snapshot as they read a store.
+# their two ends, which file and module each node sits in, the steps of each flow, and a hash of each line of each
+# source file (so an edit can be placed inside one function and not another). Ids are stored once, in `keys`, and
+# the views give the column names the store has, so compare() and the rules read a snapshot as they read a store.
+# It also keeps what a sequence diagram of the code as it was reads (diagrams.sequence): the line of each pair's
+# first call site and whether the map guessed it, each step's place in its flow (seq, parent_seq, depth, how it
+# was reached and from which line), and the channel, address and line of each channel link. A snapshot taken
+# before these were kept still compares; it just cannot be drawn (diagrams.drawable).
 _SNAPSHOT_SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE keys (k INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE);
 CREATE TABLE node_rows (node INTEGER PRIMARY KEY, kind TEXT, name TEXT, parent INTEGER, repo_id TEXT, path TEXT,
                         span_start INTEGER, span_end INTEGER, content_hash TEXT, layer TEXT);
 CREATE TABLE node_files (node INTEGER PRIMARY KEY, file INTEGER, module INTEGER);
-CREATE TABLE call_pairs (src INTEGER, dst INTEGER, PRIMARY KEY (src, dst)) WITHOUT ROWID;
-CREATE TABLE edge_pairs (kind TEXT, src INTEGER, dst INTEGER, PRIMARY KEY (kind, src, dst)) WITHOUT ROWID;
+CREATE TABLE call_pairs (src INTEGER, dst INTEGER, line INTEGER, guess INTEGER, PRIMARY KEY (src, dst)) WITHOUT ROWID;
+CREATE TABLE edge_pairs (kind TEXT, src INTEGER, dst INTEGER, guess INTEGER, PRIMARY KEY (kind, src, dst)) WITHOUT ROWID;
+CREATE TABLE channel_rows (src INTEGER, dst INTEGER, guess INTEGER, attrs TEXT);
 CREATE TABLE flow_rows (flow INTEGER PRIMARY KEY, name TEXT, entry INTEGER, kind TEXT);
-CREATE TABLE steps (flow INTEGER, callable INTEGER, PRIMARY KEY (flow, callable)) WITHOUT ROWID;
+CREATE TABLE steps (flow INTEGER, seq INTEGER, depth INTEGER, callable INTEGER, via INTEGER, site_line INTEGER,
+                    parent_seq INTEGER, PRIMARY KEY (flow, seq)) WITHOUT ROWID;
 CREATE TABLE source_lines (repo_id TEXT, path TEXT, hashes BLOB, PRIMARY KEY (repo_id, path));
 CREATE TABLE annotations (node_id TEXT, key TEXT, value TEXT);
 CREATE TABLE rules (id INTEGER PRIMARY KEY, kind TEXT, selector_from TEXT, selector_to TEXT, edge_kinds TEXT,
@@ -55,12 +60,24 @@ CREATE VIEW flows AS SELECT f.id, r.name, e.id AS entry_id, json_object('kind', 
     FROM flow_rows r JOIN keys f ON f.k = r.flow LEFT JOIN keys e ON e.k = r.entry;
 CREATE VIEW ancestry AS SELECT n.id AS node_id, f.id AS file_id, m.id AS module_id
     FROM node_files x JOIN keys n ON n.k = x.node LEFT JOIN keys f ON f.k = x.file LEFT JOIN keys m ON m.k = x.module;
-CREATE VIEW calls AS SELECT s.id AS src_id, d.id AS dst_id FROM call_pairs c JOIN keys s ON s.k = c.src JOIN keys d ON d.k = c.dst;
-CREATE VIEW edges AS SELECT e.kind, s.id AS src_id, d.id AS dst_id FROM edge_pairs e JOIN keys s ON s.k = e.src
-    JOIN keys d ON d.k = e.dst;
-CREATE VIEW flow_steps AS SELECT f.id AS flow_id, 0 AS seq, c.id AS callable_id FROM steps s JOIN keys f ON f.k = s.flow
-    JOIN keys c ON c.k = s.callable;
+CREATE VIEW calls AS SELECT s.id AS src_id, d.id AS dst_id, c.line AS site_start,
+    CASE WHEN c.guess THEN 'guess' END AS precision FROM call_pairs c JOIN keys s ON s.k = c.src JOIN keys d ON d.k = c.dst;
+CREATE VIEW edges AS SELECT e.kind, s.id AS src_id, d.id AS dst_id, CASE WHEN e.guess THEN 'guess' END AS precision,
+    NULL AS attrs FROM edge_pairs e JOIN keys s ON s.k = e.src JOIN keys d ON d.k = e.dst WHERE e.kind != 'communicates'
+    UNION ALL SELECT 'communicates', s.id, d.id, CASE WHEN c.guess THEN 'guess' END, c.attrs
+    FROM channel_rows c JOIN keys s ON s.k = c.src JOIN keys d ON d.k = c.dst;
+CREATE VIEW flow_steps AS SELECT f.id AS flow_id, s.seq, s.depth, c.id AS callable_id, __VIA__ AS via, s.site_line,
+    s.parent_seq FROM steps s JOIN keys f ON f.k = s.flow JOIN keys c ON c.k = s.callable;
 """
+
+
+def _snapshot_schema() -> str:
+    from . import store
+    return _SNAPSHOT_SCHEMA.replace("__VIA__", store._VIA_CASE)
+
+
+# What a channel link's attrs keep in a snapshot: what a diagram names it by, and the line it sits on.
+_CHANNEL_KEYS = ("channel", "address", "launched_at", "line")
 
 
 def line_hashes(data: bytes) -> list[int]:
@@ -103,7 +120,7 @@ def snapshot(con, name: str) -> Path:
         if p.exists():
             p.unlink()
     out = sqlite3.connect(str(tmp))
-    out.executescript(_SNAPSHOT_SCHEMA)
+    out.executescript(_snapshot_schema())
     out.close()
     con.commit()
     con.execute("ATTACH DATABASE ? AS snap", (str(tmp),))
@@ -120,13 +137,25 @@ def snapshot(con, name: str) -> Path:
                         " LEFT JOIN snap.keys p ON p.id = x.parent_id")
             con.execute("INSERT INTO snap.node_files SELECT n.k, f.k, m.k FROM main.ancestry a JOIN snap.keys n ON n.id = a.node_id"
                         " LEFT JOIN snap.keys f ON f.id = a.file_id LEFT JOIN snap.keys m ON m.id = a.module_id")
-            con.execute("INSERT OR IGNORE INTO snap.call_pairs SELECT src, dst FROM main.call_sites")
+            # One row per pair: where its first call sits in the caller, and whether every call of it is a guess.
+            con.execute("INSERT INTO snap.call_pairs SELECT src, dst, MIN(site_start), MIN(precision = 'guess')"
+                        " FROM main.call_sites GROUP BY src, dst")
             kinds = EDGE_KINDS + ("groups",)
-            con.execute(f"INSERT OR IGNORE INTO snap.edge_pairs SELECT kind, src, dst FROM main.links"
-                        f" WHERE kind IN ({','.join('?' * len(kinds))})", kinds)
+            con.execute(f"INSERT INTO snap.edge_pairs SELECT kind, src, dst, MIN(precision = 'guess') FROM main.links"
+                        f" WHERE kind IN ({','.join('?' * len(kinds))}) GROUP BY kind, src, dst", kinds)
+            chans = set()
+            for s, d, prec, raw in con.execute("SELECT src, dst, precision, attrs FROM main.links WHERE kind = 'communicates'"):
+                try:
+                    a = json.loads(raw) if raw else {}
+                except ValueError:
+                    a = {}
+                a = {k: a[k] for k in _CHANNEL_KEYS if a.get(k) is not None} if isinstance(a, dict) else {}
+                chans.add((s, d, int(prec == "guess"), json.dumps(a, sort_keys=True)))
+            con.executemany("INSERT INTO snap.channel_rows VALUES (?,?,?,?)", sorted(chans))
             con.execute("INSERT INTO snap.flow_rows SELECT f.k, x.name, e.k, json_extract(x.attrs, '$.kind')"
                         " FROM main.flows x JOIN snap.keys f ON f.id = x.id LEFT JOIN snap.keys e ON e.id = x.entry_id")
-            con.execute("INSERT OR IGNORE INTO snap.steps SELECT flow, callable FROM main.steps")
+            con.execute("INSERT OR IGNORE INTO snap.steps SELECT flow, seq, depth, callable, via, site_line, parent_seq"
+                        " FROM main.steps")
             con.execute("INSERT INTO snap.meta SELECT key, value FROM main.meta WHERE key LIKE 'root:%'")
             con.execute("INSERT INTO snap.meta VALUES ('format', 'slim')")
             where = {}

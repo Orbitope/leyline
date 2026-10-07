@@ -611,7 +611,10 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                "other_files": _other_files(root, base_sha, facts["changed"]["files"] + facts["changed"]["files_removed"]),
                "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid)}
         from . import coupling   # files that usually changed with what the branch changed, in the history before it
-        out["usually_changes_with"] = coupling.for_pr(con, rid, root, base_sha)
+        ch = facts["changed"]
+        out["usually_changes_with"] = coupling.for_pr(
+            con, rid, root, base_sha, functions=[x["id"] for x in ch["edited"] if not x.get("test")],
+            changed_ids=[x["id"] for k in ("edited", "types", "added", "removed") for x in ch[k]])
         from . import related, rereview   # earlier changes to this code; and, on a re-review, what changed since the last
         out["related_changes"] = related.find(con, spec._Names(con), _touched(facts), exclude=cid, since=base_sha)
         summary, fp = rereview.summarize(facts), diff._fingerprint(con)
@@ -886,6 +889,10 @@ def text(r: dict) -> str:
         L += [f"- {coupling_line(x)}." for x in hist["files"][:5]]
         if hist["total"] > 5:
             L.append(f"- and {hist['total'] - 5} more: `leyline spec facts {r['change_id']}`")
+    if hist.get("functions"):   # the same, by function, for the functions the branch edited
+        from .fncoupling import line as fn_line
+        L += ["", "Functions that usually changed with the functions it edited, and it did not change:", ""]
+        L += [f"- {fn_line(x)}." for x in hist["functions"][:5]]
     L += related.lines(r.get("related_changes"))
     if reach["entry_points_affected"]:
         L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6) + "."]

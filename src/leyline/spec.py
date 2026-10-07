@@ -1119,6 +1119,11 @@ def brief_text(b: dict) -> str:
         L += [f"- {coupling_line(x, 'no task names it')}." for x in hist["files"][:4]]
         if hist["total"] > 4:
             L.append(f"- and {hist['total'] - 4} more: `leyline spec facts`")
+    if hist.get("functions"):   # the same, by function, for the functions the tasks name
+        from .fncoupling import line as fn_line
+        L += ["", "**Usually changes with the functions the tasks name, and no task names it.** Each line is either right"
+                  " to leave alone or a missing task:"]
+        L += [f"- {fn_line(x, 'no task names it')}." for x in hist["functions"][:4]]
     if b["patterns"]:
         L += ["", "**Design patterns the change sits in** (found from the shape of the code):"] + [
             f"- {p['pattern']}: {p['rationale']}" for p in b["patterns"][:5]]

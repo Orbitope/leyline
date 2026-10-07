@@ -302,7 +302,8 @@ A tick in `tasks.md` never clears an item: the agent ticks tasks as it goes.
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
 the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
 That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once, holding only what the
-comparison reads (nodes and their hashes, links, flows, a hash per source line). It stays after the
+comparison reads (nodes and their hashes, links, flows, a hash per source line) and what a diagram of the code
+as it was needs (the line of each call, the order of each flow, each channel link's channel). It stays after the
 change is checked done as agreed, so `check` can run again after a later edit, and is deleted with
 `leyline spec forget <id>` or once the change folder is archived or removed. `leyline map` writes
 `.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
@@ -482,9 +483,13 @@ an interface into an implementation, or a channel link, drawn with an open arrow
 /api/x`, `writes table orders, which load() reads later`); a link the map guessed by name is dotted. The changed
 code is shaded. A diagram keeps to about 8 participants and 25 arrows, and says how many calls it left out.
 
-After a change, the page also lists what changed in how it runs: calls and channel links into or out of the changed
-code, added and removed since the baseline. A baseline keeps which pairs were linked but not in what order, so the
-code as it was is listed, not drawn. `diagrams.unbacked` checks a diagram's arrows against the map.
+After a change, the check page and the pull request page show two diagrams, **Before** and **After**, then list what
+changed in how it runs: calls and channel links into or out of the changed code, added and removed since the
+baseline. The Before diagram is drawn from the baseline alone, never from the map as it is now, and is shown only
+when every one of its arrows is a link the baseline holds (`diagrams.unbacked(baseline, d)`; given the map, it
+checks a diagram of the code as it is). A baseline taken by an older Leyline kept which pairs were linked but not in
+what order: it still compares, and the code as it was is listed, not drawn. Keeping the order made a baseline of
+Parlance about 22% larger (8.2 MB to 10.0 MB).
 
 ### Reviewing a change after it is made
 
@@ -664,8 +669,16 @@ did (a rule that comes with a new test case each time), unless it is at the top 
 1,000 commits within two years, merges and commits that changed more than 50 files left out, renames followed.
 It is worked out once per commit and kept in the store. `plan` lists the files that usually change with the files
 the tasks touch and that no task names, and `pr` those that usually changed with what the branch changed and that
-it did not; `leyline spec facts` has the whole list. Coupling is by file, not by function: a past commit's line
-numbers do not say which function they were in without parsing every file as it was then.
+it did not; `leyline spec facts` has the whole list.
+
+The same is worked out by function, for the functions the tasks name (in `plan`) or the branch edited (in `pr`), up
+to 6 of them: "`spec.py.verify` changed in 8 of the 9 commits that changed `spec.py.brief`". A past commit's line
+numbers say which function they were in only against the file as it was then, so this reads, for each function, the
+last 20 commits that changed its lines (`git log -L`), parses its file as it was at each with the same parser the map
+uses, and puts each changed line in the innermost function around it; then reads the same way the 4 other files that
+changed in most of those commits. The same thresholds apply (3 commits, half of them). Which functions a commit
+changed in a file is kept in the store, so only the first plan pays for it (about a second on this repository; a
+function renamed or moved counts only from then).
 
 ### An outline for an agent
 

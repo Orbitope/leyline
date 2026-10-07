@@ -22,11 +22,9 @@ commit that changed more than BULK files (a formatter run, a licence header, a v
 those files were touched at once, not that they belong together. Renames are followed, so a file's older commits
 count under its name now; files that no longer exist are not reported.
 
-File level only, not function level. Function-level coupling would map each commit's diff hunks to the functions they
-fall in, but a hunk's line numbers are those of its own commit and the map only knows where functions are now; mapping
-them back means parsing every changed file at every commit (or trusting git's hunk-header guess, which names the
-enclosing class, or nothing, for an indented method in most languages). That is neither cheap nor right on a large
-repository, so it is not done.
+File level here. Function-level coupling maps each commit's diff hunks to the functions they fall in, and a hunk's
+line numbers are those of its own commit, so it means parsing old versions of files: too slow for a whole history,
+so leyline.fncoupling does it only for the few functions a plan names or a pull request edits (for_spec, for_pr).
 
 The result is kept in the store (coupling_runs, coupling_files, coupling_pairs, coupling_dirs) under the commit it
 was read from, so it is worked out once per commit.
@@ -324,7 +322,7 @@ def for_spec(con, names, links: list[dict], limit: int = 30) -> dict:
             r = names.by_id.get(i)
             if r is not None and r["path"]:
                 by_repo.setdefault(i.split(":", 1)[0], set()).add(r["path"])
-    out, runs = [], []
+    out, runs, fns = [], [], []
     for repo, root in store.roots(con).items():
         if not Path(root).is_dir():
             continue
@@ -341,10 +339,32 @@ def for_spec(con, names, links: list[dict], limit: int = 30) -> dict:
         runs.append(run)
         written = {w + "/" for w in _words(texts) if "/" in w}   # paths not in the history yet, such as a new folder
         out += [{**x, "repo": repo} for x in missed(con, run, touched, _covered(named | set(touched) | written))]
+        # Functions that usually changed with the functions the tasks name, and that no task names.
+        tasked = [i for l in links for i in l.get("nodes") or [] if i.split(":", 1)[0] == repo]
+        fns += _functions(con, repo, root, run["sha"], tasked, tasked)
     if not runs:
         return {}
     out.sort(key=lambda x: (-x["confidence"], -x["together"], bool(x.get("folder")), x["path"]))
-    return {"about": about(_merged(runs)), "files": out[:limit], "total": len(out)}
+    return {"about": about(_merged(runs)), "files": out[:limit], "total": len(out), "functions": fns[:limit]}
+
+
+MAX_FUNCTIONS = 6   # functions whose own history is read, per plan or pull request (each costs a few parses)
+
+
+def _functions(con, repo: str, root, sha: str, targets: list[str], named: Iterable[str]) -> list[dict]:
+    """leyline.fncoupling for up to MAX_FUNCTIONS of `targets`, leaving out partners `named` covers (the function
+    itself, or something it sits in or that sits in it)."""
+    from . import fncoupling
+    named = set(named)
+
+    def covered(g):
+        return any(g == n or g.startswith(n + ".") or g.startswith(n + "/") or n.startswith(g + ".") for n in named)
+    targets = [i for i in dict.fromkeys(targets) if (con.execute("SELECT kind FROM nodes WHERE id = ?", (i,)).fetchone()
+                                                      or [None])[0] in fncoupling.KINDS][:MAX_FUNCTIONS]
+    if not targets:
+        return []
+    r = fncoupling.missed(con, repo, Path(root), sha, targets, covered)
+    return [{**x, "repo": repo} for x in r.get("functions") or []]
 
 
 def changed_since(root: Path, base: str) -> list[str]:
@@ -357,9 +377,12 @@ def changed_since(root: Path, base: str) -> list[str]:
     return sorted(p for p in out if not p.startswith(".leyline/"))
 
 
-def for_pr(con, repo: str, root: Path, base_sha: str, limit: int = 30) -> dict:
+def for_pr(con, repo: str, root: Path, base_sha: str, limit: int = 30, functions: Iterable[str] = (),
+           changed_ids: Iterable[str] = ()) -> dict:
     """For the files a branch changed, the files that usually changed with them in the history before the branch and
-    that the branch did not change. {"about", "files", "total"}, or {} with no history to read."""
+    that the branch did not change. {"about", "files", "total", "functions"}, or {} with no history to read. With
+    `functions` (functions the branch edited), also the functions that usually changed with them and that are not in
+    `changed_ids`."""
     try:
         run = ensure(con, repo, root, base_sha)
     except Exception:
@@ -368,7 +391,8 @@ def for_pr(con, repo: str, root: Path, base_sha: str, limit: int = 30) -> dict:
         return {}
     changed = changed_since(Path(root), base_sha)
     found = missed(con, run, changed, _covered(set(changed)))
-    return {"about": about(run) + " before the branch", "files": found[:limit], "total": len(found)}
+    fns = _functions(con, repo, root, base_sha, list(functions), set(functions) | set(changed_ids)) if functions else []
+    return {"about": about(run) + " before the branch", "files": found[:limit], "total": len(found), "functions": fns[:limit]}
 
 
 def _merged(runs: list[dict]) -> dict:

@@ -160,7 +160,8 @@ def test_what_changed_in_how_it_runs(app):
     c = view["changes"]
     assert [(x["from"], x["to"]) for x in c["calls_added"]] == [("Service.run", "service.py.audit")]
     assert [(x["from"], x["to"]) for x in c["calls_removed"]] == [("Service.run", "Service.check")]
-    assert "before" not in view                               # a slim baseline keeps no order: listed, not drawn
+    assert "check()" in view["before"]["mermaid"] and "audit()" not in view["before"]["mermaid"]   # drawn from the slim baseline
+    assert diagrams.unbacked(diff._open(slim), view["before"]) == []
     assert "service.py" in view["after"]["participants"] and ": audit()" in view["after"]["mermaid"]
     assert "check()" not in view["after"]["mermaid"] and diagrams.unbacked(con, view["after"]) == []
     lines = diagrams.section(view, "### How it runs now")
@@ -197,7 +198,8 @@ def test_the_plan_and_the_check_draw_how_it_runs(app):
     page = (ch / "leyline.md").read_text()
     assert "### How it runs\n" in page                      # the plan's diagram stays
     assert "### How it runs now" in page and "- `Service.run` no longer calls `Service.check`" in page
-    assert page.count("```mermaid") == 2
+    assert page.count("```mermaid") == 3                    # the plan's, and before and after the change
+    assert page.index("**Before**") < page.index("**After**")
     assert diagrams.unbacked(con, v["how_it_runs"]["after"]) == []
 
 
