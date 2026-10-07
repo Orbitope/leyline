@@ -62,11 +62,16 @@ def _module_dirs(files: list[str]) -> set[str]:
             if base == "__init__.py":
                 packages.add(d)
     # A nested __init__.py belongs to its top-most package, not to a module of its own. A project file
-    # inside another project's folder (a workspace package) is a module of its own.
-    own = {d for d in dirs if d not in packages or any(
-        f.rpartition("/")[0] == d and (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS[:3]) for f in files)}
-    return {d for d in dirs if d in own or not any(
-        d != o and d.startswith(o + "/") and o != "" for o in dirs)}
+    # inside another project's folder (a workspace package) is a module of its own. Both are looked up by
+    # directory: scanning every file per package, and every directory per directory, was quadratic.
+    projects = {f.rpartition("/")[0] for f in files
+                if f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS[:3]}
+    own = {d for d in dirs if d not in packages or d in projects}
+
+    def nested(d: str) -> bool:
+        parts = d.split("/")
+        return any("/".join(parts[:k]) in dirs for k in range(1, len(parts)))
+    return {d for d in dirs if d in own or not nested(d)}
 
 
 def _module_for(path: str, module_dirs: set[str]) -> str:
@@ -376,12 +381,23 @@ class Indexer:
         repo = repo or self.repo
         mid = f"{repo}:module:{mod_dir or '.'}"
         if mid not in self.nodes:
-            marker = next((f.rsplit("/", 1)[-1] for f in files
-                           if f.rpartition("/")[0] == mod_dir and
-                           (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in MODULE_MARKERS)), None)
+            marker = self._markers(files).get(mod_dir)
             self._add(Node(id=mid, kind="module", name=mod_dir.rsplit("/", 1)[-1] or repo,
                            parent_id=repo, path=mod_dir, attrs={"marker": marker}))
         return mid
+
+    def _markers(self, files: list[str]) -> dict:
+        """directory -> the first project marker in it, for a list of files. Made once per list: looking through
+        every file for each new module was quadratic (minutes on a repository of tens of thousands of files)."""
+        got = getattr(self, "_marker_memo", None)
+        if got is None or got[0] is not files:
+            out: dict[str, str] = {}
+            for f in files:
+                d, _, base = f.rpartition("/")
+                if d not in out and (f.endswith(".csproj") or base in MODULE_MARKERS):
+                    out[d] = base
+            got = self._marker_memo = (files, out)
+        return got[1]
 
     def _projects(self, files: list[str], repo: Optional[str] = None) -> None:
         """Project files give exact module-to-module and module-to-package edges."""
@@ -1421,9 +1437,15 @@ class Indexer:
         return ix
 
     @staticmethod
-    def _in_files(by_file: dict, files) -> list:
-        """The declarations in any of these files, in declaration order."""
-        hits = [ic for f in files for ic in by_file.get(f, ())]
+    def _in_files(by_file: dict, files, also: Optional[str] = None) -> list:
+        """The declarations in any of these files (or in `also`), in declaration order. Walks whichever side is
+        smaller: a Go package's files all import each other, so `files` can be thousands long for every call."""
+        if len(by_file) < len(files):
+            hits = [ic for f, ics in by_file.items() if f in files or f == also for ic in ics]
+        else:
+            hits = [ic for f in files for ic in by_file.get(f, ())]
+            if also is not None and also not in files:
+                hits.extend(by_file.get(also, ()))
         hits.sort(key=lambda ic: ic[0])
         return [c for _, c in hits]
 
@@ -1525,7 +1547,7 @@ class Indexer:
             pool, owners = ix["typed"], ix["typed_owners"]
             if not pool:
                 return None
-            near = self._in_files(ix["typed_file"], near_files | {fid})
+            near = self._in_files(ix["typed_file"], near_files, fid)
             if near and len({c.parent_id for c in near}) == 1:
                 self._guessed = True
                 return by_args(near)

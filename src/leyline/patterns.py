@@ -113,7 +113,7 @@ class _Graph:
 def _held(g: _Graph, abstraction: str):
     """Fields whose type is the abstraction itself (not a collection of it), by owning type."""
     out = defaultdict(list)
-    for f in g.inn["uses_type"][abstraction]:
+    for f in sorted(g.inn["uses_type"][abstraction]):   # sorted: the rationale names them in this order
         if g.kind(f) == "field" and g.edge_attrs.get(("uses_type", f, abstraction), {}).get("role") == "field_type":
             owner = g.owner(f)
             if owner:
@@ -125,7 +125,7 @@ def _collections(g: _Graph, abstraction: str):
     """Fields that hold many of the abstraction (List<I>, I[], dict of I), by owning type."""
     out = defaultdict(list)
     name = g.name(abstraction)
-    for f in g.inn["uses_type"][abstraction]:
+    for f in sorted(g.inn["uses_type"][abstraction]):
         if g.kind(f) != "field":
             continue
         role = g.edge_attrs.get(("uses_type", f, abstraction), {}).get("role")
