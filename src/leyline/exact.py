@@ -29,7 +29,23 @@ from typing import Optional
 
 from .model import Edge
 
-TOOL_VERSION = "1"
+TOOL_VERSION = "2"
+
+
+def _timeout() -> float:
+    """Seconds the compiler may take before the syntax-based links are kept instead. LEYLINE_EXACT_TIMEOUT."""
+    try:
+        return max(1.0, float(os.environ.get("LEYLINE_EXACT_TIMEOUT", "") or 1800))
+    except ValueError:
+        return 1800.0
+
+
+def _quiet(timeout: float) -> dict:
+    """subprocess.run arguments for dotnet: no first-run banner or telemetry prompt, nothing read from the terminal,
+    output read as UTF-8 whatever the locale is, and a time limit."""
+    env = {**os.environ, "DOTNET_NOLOGO": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1"}
+    return {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "stdin": subprocess.DEVNULL,
+            "timeout": timeout, "env": env}
 
 
 # -- sources ---------------------------------------------------------------------------------
@@ -45,12 +61,17 @@ def _tool() -> Optional[Path]:
         src = Path(tmp) / "src"
         src.mkdir()
         for name in ("Program.cs", "RoslynRefs.csproj"):
-            (src / name).write_text(resources.files("leyline").joinpath(f"roslyn_refs/{name}").read_text())
+            (src / name).write_text(resources.files("leyline").joinpath(f"roslyn_refs/{name}").read_text(encoding="utf-8"),
+                                    encoding="utf-8")
         empty = Path(tmp) / "no-packages"
         empty.mkdir()
         # The project has no package references; an empty source keeps restore from going to the network.
-        run = subprocess.run(["dotnet", "build", str(src), "-c", "Release", "-o", str(cache), "--source", str(empty),
-                              "--nologo", "-v", "q"], capture_output=True, text=True)
+        try:
+            run = subprocess.run(["dotnet", "build", str(src), "-c", "Release", "-o", str(cache), "--source", str(empty),
+                                  "--nologo", "-v", "q"], **_quiet(_timeout()))
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(cache, ignore_errors=True)
+            raise RuntimeError(f"building the C# reference exporter took longer than {_timeout():g} s") from None
         if run.returncode != 0 or not dll.exists():
             shutil.rmtree(cache, ignore_errors=True)
             raise RuntimeError("could not build the C# reference exporter:\n" + (run.stdout + run.stderr)[-1500:])
@@ -76,11 +97,14 @@ def roslyn(ix) -> tuple[list[dict], dict]:
     for mod, files in sorted(files_by_module.items()):
         refs = set(ix.project_refs.get(mod, ())) | imports.get(mod, set())
         modules.append({"name": mod, "files": sorted(files), "refs": sorted(r for r in refs if r != mod and r in files_by_module)})
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
         json.dump({"root": str(ix.root), "modules": modules}, f)
         manifest = f.name
     try:
-        run = subprocess.run(["dotnet", str(dll), manifest], capture_output=True, text=True)
+        run = subprocess.run(["dotnet", str(dll), manifest], **_quiet(_timeout()))
+    except subprocess.TimeoutExpired:
+        return [], {"status": "failed", "reason": f"the compiler took longer than {_timeout():g} s"
+                                                  " (LEYLINE_EXACT_TIMEOUT raises the limit)"}
     finally:
         os.unlink(manifest)
     if run.returncode != 0:
@@ -110,7 +134,11 @@ def scip(path: str | Path, root: Optional[str | Path] = None) -> list[dict]:
     for doc in index.documents:
         out.append({"k": "file", "f": doc.relative_path, "e": 0, "unbound_unknown": True})
         src_path = Path(root) / doc.relative_path if root else None
-        lines = src_path.read_text(errors="replace").splitlines() if src_path is not None and src_path.is_file() else None
+        try:
+            from .indexer import source_lines
+            lines = source_lines(src_path) if src_path is not None and src_path.is_file() else None
+        except OSError:
+            lines = None
         for occ in doc.occurrences:
             sym = occ.symbol
             if occ.symbol_roles & 1 or sym.startswith("local ") or sym not in definition:

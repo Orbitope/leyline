@@ -57,8 +57,9 @@ def _relative(path: str, roots: dict, known: set) -> Optional[tuple]:
     """A measured file's (repo, path) on the map. `roots` is repo id -> the directory it was indexed from."""
     p = path.replace("\\", "/")
     for repo, root in roots.items():
-        if root and p.startswith(root.rstrip("/") + "/") and (repo, p[len(root.rstrip("/")) + 1:]) in known:
-            return repo, p[len(root.rstrip("/")) + 1:]
+        root = (root or "").replace("\\", "/").rstrip("/")   # a Windows root is stored with backslashes
+        if root and p.startswith(root + "/") and (repo, p[len(root) + 1:]) in known:
+            return repo, p[len(root) + 1:]
     exact = sorted(k for k in known if k[1] == p)
     if exact:
         return exact[0]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional
@@ -124,7 +125,7 @@ def _tests_arg(value: Optional[str]) -> Optional[list[dict]]:
     if value is None:
         return None
     from . import diff
-    return diff.parse_test_output(sys.stdin.read() if value == "-" else Path(value).read_text())
+    return diff.parse_test_output(sys.stdin.read() if value == "-" else Path(value).read_text(encoding="utf-8", errors="replace"))
 
 
 def _loop(args) -> int:
@@ -173,6 +174,42 @@ def _loop(args) -> int:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        # A console or pipe in a legacy encoding (Windows) cannot print every file name or arrow: replace, not fail.
+        if (getattr(stream, "encoding", None) or "").lower().replace("-", "") != "utf8":
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, ValueError):
+                pass
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("\nleyline: stopped", file=sys.stderr)
+        return 130
+    except sqlite3.DatabaseError as e:
+        print(f"leyline: {_store_problem(e)}", file=sys.stderr)
+        return 2
+    except MemoryError:
+        print("leyline: ran out of memory. A repository this large needs more than this machine has free: close other"
+              " programs, or map one part of it (a subdirectory) at a time.", file=sys.stderr)
+        return 2
+
+
+def _store_problem(e: Exception) -> str:
+    """What a person can do about an error from the store, in place of the traceback."""
+    msg = str(e)
+    if "locked" in msg or "busy" in msg:
+        return ("the store is in use: another leyline run (a map, plan or check) is writing it. Try again when that"
+                " run finishes.")
+    if "not a database" in msg or "malformed" in msg or "corrupt" in msg:
+        return (f"the store is damaged or is not a Leyline store ({msg}). Delete it (and the leyline.cache.db"
+                " beside it) and run `leyline map` again.")
+    if "readonly" in msg or "unable to open" in msg or "disk I/O" in msg or "full" in msg:
+        return f"cannot write the store ({msg}): check the folder's permissions and free disk space."
+    return f"the store could not be read ({type(e).__name__}: {msg}). Running `leyline map --full` rebuilds it."
+
+
+def _main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="leyline", usage="%(prog)s [-h] [--version] [--db DB] command ...",
                                  description=ABOUT, epilog=ADVANCED,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -305,7 +342,7 @@ def main(argv=None) -> int:
     if args.cmd == "export":
         from . import export
         text = (export.fragment if args.fragment else export.page)(con, not args.no_sources)
-        Path(args.out).write_text(text)
+        Path(args.out).write_text(text, encoding="utf-8")
         print(f"wrote {args.out} ({len(text) // 1024} KB)")
         return 0
     if args.cmd == "view":
@@ -332,7 +369,7 @@ def main(argv=None) -> int:
         return 0
     if args.cmd == "record-tests":
         from . import diff
-        text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text()
+        text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8", errors="replace")
         _print(diff.record_tests(con, args.run, diff.parse_test_output(text)))
     elif args.cmd == "patterns":
         from . import patterns

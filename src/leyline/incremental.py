@@ -167,9 +167,10 @@ class Run:
 
     def __init__(self, con, db_path, ix, full: bool = False):
         self.ix, self.con = ix, con
+        from .indexer import max_file_bytes
         self.cache = _Cache(cache_path(db_path))
         self.key = json.dumps([code_version(), sorted((r, str(p)) for r, p in ix.repos.items()),
-                               ix.exact_mode, sorted(ix.scip_paths)])
+                               ix.exact_mode, sorted(ix.scip_paths), max_file_bytes()])
         gen = con.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()
         self.prior = None
         if not full and gen is not None and self.cache.get("key") == self.key and self.cache.get("generation") == gen[0]:
@@ -209,11 +210,15 @@ class Run:
         if self.full:
             return {}
         out = {}
+        from .indexer import read_source
         for f, ext, mod_dir, mod_id in work:
             row = self.rows.get(f"{repo}:file:{f}")
             if row is None:
                 continue
-            data = (root / f).read_bytes()
+            try:
+                data = read_source(root / f)
+            except OSError:   # gone since it was listed: parsed again, which reports it
+                continue
             sha = hashlib.sha1(data).hexdigest()
             if row[1] == sha and row[2] == mod_dir:
                 out[f] = (f, ext, mod_dir, mod_id, row[3], sha, row[4], row[5], row[6])

@@ -15,14 +15,27 @@ from .model import Edge, Node
 SCHEMA_VERSION = "0"
 
 
+BUSY_SECONDS = 60
+
+
+def _current(con) -> bool:
+    """Whether the store is already in this version's shape: the three views in place and the version noted."""
+    kinds = {r[0]: r[1] for r in con.execute("SELECT name, type FROM sqlite_master WHERE name IN ('flow_steps', 'calls', 'edges')")}
+    if kinds != {"flow_steps": "view", "calls": "view", "edges": "view"}:
+        return False
+    row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    return row is not None and row[0] == SCHEMA_VERSION
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path))
+    # Another leyline run may be writing (a map while a plan starts): wait for it rather than fail at once.
+    con = sqlite3.connect(str(db_path), timeout=BUSY_SECONDS)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=OFF")  # edges may point at nodes written later in a run
-    con.executescript(resources.files("leyline").joinpath("schema.sql").read_text())
+    con.executescript(resources.files("leyline").joinpath("schema.sql").read_text(encoding="utf-8"))
     have = {r[1] for r in con.execute("PRAGMA table_info(rules)")}
     for col in ("status", "source", "created"):
         if col not in have:
@@ -32,9 +45,12 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         for col in cols:
             if col not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+    if _current(con):
+        return con   # nothing to move: a reader takes no write lock, so it is not held up by a run that is writing
     # One transaction, committed here: moving an older store's rows drops the old table, and a caller that only
-    # reads and never commits would otherwise roll back the moved rows and lose them.
-    con.execute("BEGIN")
+    # reads and never commits would otherwise roll back the moved rows and lose them. IMMEDIATE takes the write
+    # lock first: a deferred one that read first could not wait for a writer and would fail at once.
+    con.execute("BEGIN IMMEDIATE")
     try:
         _flow_steps_view(con)
         _calls_view(con)

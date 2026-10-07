@@ -68,7 +68,7 @@ def parse(change_dir: str | Path) -> dict:
            "requirements": [], "problems": []}
     proposal = d / "proposal.md"
     if proposal.is_file():
-        text = proposal.read_text()
+        text = proposal.read_text(encoding="utf-8", errors="replace")
         m = re.search(r"^#\s+(.+)$", text, re.M)
         if m:
             out["title"] = re.sub(r"^(change|proposal)\s*:\s*", "", m.group(1).strip(), flags=re.I)
@@ -81,7 +81,7 @@ def parse(change_dir: str | Path) -> dict:
     tasks = d / "tasks.md"
     if tasks.is_file():
         n = 0
-        for line in tasks.read_text().splitlines():
+        for line in tasks.read_text(encoding="utf-8", errors="replace").splitlines():
             m = TASK.match(line)
             if not m:
                 continue
@@ -97,7 +97,7 @@ def parse(change_dir: str | Path) -> dict:
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
-        for line in spec.read_text().splitlines():
+        for line in spec.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith("## "):
                 section = line[3:].strip().split()[0].upper()
             elif line.startswith("### Requirement:"):
@@ -415,11 +415,11 @@ def _patterns_touched(con, tasked: set) -> list[dict]:
 def _write(path: Path, body: str) -> None:
     """Replace the generated block of a file, keeping anything a person wrote around it."""
     block = f"{BEGIN}\n{body.rstrip()}\n{END}\n"
-    if path.is_file() and BEGIN in path.read_text() and END in path.read_text():
-        old = path.read_text()
-        path.write_text(old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"))
+    old = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    if BEGIN in old and END in old:
+        path.write_text(old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"), encoding="utf-8")
     else:
-        path.write_text(block)
+        path.write_text(block, encoding="utf-8")
 
 
 def _some(xs: list[str], n: int = 4) -> str:
@@ -738,7 +738,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "done_as_agreed": not verdict, "why_not": verdict, "view_id": review.get("view_id")}
     if write:
         path = Path(parsed["dir"]) / "leyline.md"
-        body = path.read_text() if path.is_file() else ""
+        body = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         head = body[body.index(BEGIN) + len(BEGIN):body.index(END)].strip() if BEGIN in body and END in body else ""
         head = head.split("\n## 4. Was it done as agreed")[0].rstrip()
         # The state at the top of the page is now the verdict.

@@ -39,7 +39,11 @@ def _readme(con, repo_id: str) -> Optional[str]:
         p = Path(row[0]) / name
         if p.is_file():
             para: list[str] = []
-            for line in p.read_text(errors="replace").splitlines():
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in text.splitlines():
                 s = line.strip()
                 skip = (not s or s.startswith(("#", "=", "-", "!", "[", "<", "|", "..", "```", ">")) or set(s) <= set("=-~"))
                 if skip and para:

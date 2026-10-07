@@ -464,7 +464,11 @@ def source(con, node_id: str, max_lines: int = 200) -> dict:
     path = Path(root[0]) / row["path"] if root else None
     if path is None or not path.is_file():
         return {"error": f"Source file not found for {row['path']}."}
-    lines = path.read_text(errors="replace").splitlines()
+    from .indexer import source_lines
+    try:
+        lines = source_lines(path)
+    except OSError as e:
+        return {"error": f"Cannot read {row['path']}: {e.strerror or e}."}
     start, end = row["span_start"], row["span_end"] or row["span_start"]
     truncated = end - start + 1 > max_lines
     shown_end = start + max_lines - 1 if truncated else end

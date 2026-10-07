@@ -25,6 +25,9 @@ var framework = Directory.GetFiles(refDir, "*.dll").Select(f => (MetadataReferen
 var built = new Dictionary<string, CSharpCompilation>();
 var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = false };
 var pending = modules.ToList();
+// The compiler parses and binds recursively; deeply nested code (a long else-if chain, a generated expression)
+// overflows the main thread's stack, which ends the process. A worker thread gets a 1 GB stack instead.
+var work = new Thread(() => {
 while (pending.Count > 0)
 {
     // A module is ready when everything it references is built; a cycle is broken by taking the first.
@@ -101,6 +104,9 @@ while (pending.Count > 0)
     }
     Console.Error.WriteLine($"{name}: {trees.Count - 1} files, {ok} calls bound, {candidate} by candidate, {none} unbound, {outside} to code outside");
 }
+}, 1 << 30);
+work.Start();
+work.Join();
 stdout.Flush();
 
 void EmitCall(SymbolInfo info, string written, Location at, ref int ok, ref int candidate, ref int none, ref int outside)

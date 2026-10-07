@@ -34,24 +34,308 @@ string_decoder timers tls tty url util v8 vm worker_threads zlib test""".split()
 SKIP_DIRS = {".git", "node_modules", "bin", "obj", "__pycache__", ".venv", "venv", ".godot", ".leyline"}
 
 
-def _git(root: Path, *args: str) -> Optional[str]:
+# Directories of other people's code, left out even when committed: mapped, they bury the repository's own code.
+DEPENDENCY_DIRS = {"node_modules", "bower_components", "site-packages", "__pycache__"}
+# A vendor directory is only someone else's code when a package manager says so (Go modules, Composer).
+VENDOR_MARKERS = ("vendor/modules.txt", "vendor/autoload.php")
+MAX_FILE_MB = 5          # a source file larger than this is generated; parsing one costs seconds and hundreds of MB
+LONG_LINES = 2000        # average characters per line above which a file is minified or generated, not written
+
+
+def _git(root: Path, *args: str, raw: bool = False, timeout: float = 30):
     try:
-        out = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
-        return out.stdout.strip() if out.returncode == 0 else None
+        out = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
+    if out.returncode != 0:
+        return None
+    # git writes paths and names as UTF-8 bytes whatever the platform's locale is
+    return out.stdout if raw else out.stdout.decode("utf-8", "replace").strip()
+
+
+def max_file_bytes() -> int:
+    env = os.environ.get("LEYLINE_MAX_FILE_MB", "")
+    try:
+        return int(float(env) * 2**20) if env else MAX_FILE_MB * 2**20
+    except ValueError:
+        return MAX_FILE_MB * 2**20
+
+
+class Listing:
+    """The files of a repository that can be read, and the ones left out with the reason for each. `how` is git or
+    walk; `why_walk` says why git did not list them, when it is a git repository."""
+
+    def __init__(self, files: list[str], skipped: list[tuple[str, str]], how: str, why_walk: Optional[str] = None):
+        self.files, self.skipped, self.how, self.why_walk = files, skipped, how, why_walk
+
+
+def scan(root: Path) -> Listing:
+    """Every file to index: what git lists (tracked, and untracked but not ignored), or a walk of the directory when
+    it is not a git repository. Anything that cannot be read as a source file is left out, with a reason, so that
+    nothing later fails on it: entries git lists that are not files on disk (submodules, deleted files, symlinks to
+    directories or to nothing), files outside the repository, other people's code, and source files that are too
+    large, binary, minified or unreadable."""
+    root = Path(root)
+    skipped: list[tuple[str, str]] = []
+    why_walk = None
+    out = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", raw=True, timeout=600)
+    if out is not None:
+        names, how = [], "git"
+        for b in out.split(b"\0"):
+            if not b:
+                continue
+            try:
+                names.append(b.decode("utf-8"))
+            except UnicodeDecodeError:
+                skipped.append((b.decode("utf-8", "replace"), "file name is not UTF-8"))
+        names = sorted(set(n.rstrip("/") for n in names))   # an untracked nested repository is listed as "dir/"
+    else:
+        names, how = _walk(root, skipped), "walk"
+        if (root / ".git").exists():
+            try:
+                run = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, timeout=600,
+                                     stdin=subprocess.DEVNULL)
+                why_walk = run.stderr.decode("utf-8", "replace").strip().splitlines()
+                why_walk = why_walk[0] if why_walk else f"git exited with {run.returncode}"
+            except (OSError, subprocess.SubprocessError) as e:
+                why_walk = f"git could not be run ({e})"
+    vendored = {m[: -len(m.rsplit("/", 1)[-1])] for m in names
+                if any(m == v or m.endswith("/" + v) for v in VENDOR_MARKERS)}
+    try:
+        real_root = root.resolve()
+    except OSError:
+        real_root = root
+    limit = max_file_bytes()
+    files, listed = [], set(names)
+    for f in names:
+        parts = f.split("/")
+        if set(parts[:-1]) & DEPENDENCY_DIRS or any(f.startswith(v) for v in vendored):
+            skipped.append((f, "dependency directory"))
+            continue
+        why = _unusable(root, real_root, f, BY_EXTENSION, limit, listed)
+        if why:
+            skipped.append((f, why))
+        else:
+            files.append(f)
+    return Listing(files, skipped, how, why_walk)
+
+
+def _walk(root: Path, skipped: list) -> list[str]:
+    """The files under root when git cannot list them. Symlinked directories are not followed (a link back up the
+    tree would never end), nested repositories and build or tool directories are left out, and .gitignore files
+    are applied (the common patterns; see _ignore_rules)."""
+    files = []
+
+    def err(e: OSError) -> None:
+        try:
+            rel = Path(e.filename).relative_to(root).as_posix() if e.filename else "?"
+        except ValueError:
+            rel = str(e.filename)
+        skipped.append((rel, f"cannot read directory: {e.strerror or e}"))
+    rules: dict[str, list] = {}   # directory -> the ignore rules in force there, its own last
+    for d, dirs, names in os.walk(root, onerror=err):
+        rel = Path(d).relative_to(root).as_posix()
+        rel = "" if rel == "." else rel + "/"
+        here = rules.get(rel[:-1].rpartition("/")[0] + "/" if "/" in rel[:-1] else "", []) if rel else []
+        if ".gitignore" in names:
+            here = here + _ignore_rules(Path(d) / ".gitignore", rel)
+        rules[rel] = here
+        keep = []
+        for x in dirs:
+            p = os.path.join(d, x)
+            if x in SKIP_DIRS or x in DEPENDENCY_DIRS or _ignored(here, rel + x, True):
+                continue
+            if os.path.islink(p):
+                skipped.append((rel + x, "symlink to a directory"))
+            elif os.path.exists(os.path.join(p, ".git")):
+                skipped.append((rel + x, "nested repository (map it on its own, or with this one as a workspace)"))
+            else:
+                keep.append(x)
+        dirs[:] = sorted(keep)
+        for x in names:
+            try:
+                (rel + x).encode("utf-8")
+            except UnicodeEncodeError:
+                skipped.append(((rel + x).encode("utf-8", "surrogateescape").decode("utf-8", "replace"),
+                                "file name is not UTF-8"))
+                continue
+            if not _ignored(here, rel + x, False):
+                files.append(rel + x)
+    return sorted(files)
+
+
+def _ignore_rules(path: Path, base: str) -> list[tuple]:
+    """A .gitignore's patterns as (regex, negated, directories only). Covers what ignore files mostly hold: names,
+    globs with * ? [..] and **, a leading / or an inner / to anchor, a trailing / for directories, and ! to
+    take a path back. Escapes and trailing-space rules are not handled."""
+    import re as _re
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        line = line.rstrip()
+        if not line or line.startswith("#"):
+            continue
+        neg = line.startswith("!")
+        if neg:
+            line = line[1:]
+        dir_only = line.endswith("/")
+        line = line.strip("/") if dir_only else line
+        anchored = "/" in line.rstrip("/")
+        line = line.lstrip("/")
+        if not line:
+            continue
+        rx, i = "", 0
+        while i < len(line):
+            c = line[i]
+            if line.startswith("**/", i):
+                rx, i = rx + "(?:.*/)?", i + 3
+            elif line.startswith("/**", i) and i + 3 == len(line):
+                rx, i = rx + "/.*", i + 3
+            elif line.startswith("**", i):
+                rx, i = rx + ".*", i + 2
+            elif c == "*":
+                rx, i = rx + "[^/]*", i + 1
+            elif c == "?":
+                rx, i = rx + "[^/]", i + 1
+            elif c == "[" and "]" in line[i + 1:]:
+                j = line.index("]", i + 1)
+                body = line[i + 1:j]
+                rx, i = rx + "[" + ("^" + body[1:] if body.startswith("!") else body) + "]", j + 1
+            else:
+                rx, i = rx + _re.escape(c), i + 1
+        prefix = _re.escape(base) if anchored else _re.escape(base) + "(?:.*/)?"
+        out.append((_re.compile(prefix + rx + "$"), neg, dir_only))
+    return out
+
+
+def _ignored(rules: list, path: str, is_dir: bool) -> bool:
+    hit = False
+    for rx, neg, dir_only in rules:   # the last rule that matches decides, as in git
+        if (is_dir or not dir_only) and rx.match(path):
+            hit = not neg
+    return hit
+
+
+def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, listed: set) -> Optional[str]:
+    """Why a listed path cannot be indexed, or None. Only source files (those an adapter reads) are opened."""
+    import errno
+    import stat as st
+    p = root / f
+    try:
+        info = os.lstat(p)
+    except FileNotFoundError:
+        return "deleted (git still lists it)"
+    except OSError as e:
+        return f"cannot read: {e.strerror or e}"
+    except ValueError:   # UnicodeEncodeError: a name the file system's encoding (the locale's) cannot spell
+        return "file name cannot be spelled in this system's encoding (use a UTF-8 locale)"
+    if st.S_ISLNK(info.st_mode):
+        try:
+            target = p.resolve(strict=True)
+            info = os.stat(p)
+        except FileNotFoundError:
+            return "broken symlink"
+        except RuntimeError:   # a symlink loop, on Python before 3.13
+            return "symlink loop"
+        except OSError as e:
+            return "symlink loop" if e.errno == errno.ELOOP else f"cannot read: {e.strerror or e}"
+        if st.S_ISDIR(info.st_mode):
+            return "symlink to a directory"
+        try:
+            inside = target.relative_to(real_root).as_posix()
+        except ValueError:
+            return "symlink to outside the repository"
+        if inside in listed:
+            return "symlink to another listed file (indexed there)"
+    if st.S_ISDIR(info.st_mode):
+        return "submodule or nested repository (map it on its own, or with this one as a workspace)"
+    if not st.S_ISREG(info.st_mode):
+        return "not a regular file"
+    ext = "." + f.rsplit(".", 1)[-1] if "." in f.rsplit("/", 1)[-1] else ""
+    if ext not in sources:
+        return None
+    if info.st_size > limit:
+        return f"larger than {limit / 2**20:g} MB (generated?)"
+    if f.endswith((".min.js", ".min.mjs", ".min.cjs")):
+        return "minified"
+    try:
+        with open(p, "rb") as fh:
+            head = fh.read(65536)
+    except OSError as e:
+        return f"cannot read: {e.strerror or e}"
+    if _binary(head[:8192]):
+        return "binary"
+    if len(head) == 65536 and head.count(b"\n") < 65536 // LONG_LINES:
+        return "minified or generated (very long lines)"
+    return None
+
+
+_CONTROL = bytes(b for b in range(32) if b not in (9, 10, 12, 13, 27)) + b"\x7f"
+
+
+def _binary(head: bytes) -> bool:
+    """Whether the start of a file is data rather than text. A NUL byte alone does not decide it (source can hold
+    one inside a string literal); one byte in twenty being a control character does. UTF-16 text is half NULs, so a
+    byte order mark lets it through."""
+    if not head or head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return False
+    return len(head) - len(head.translate(None, _CONTROL)) > len(head) // 20
 
 
 def list_files(root: Path) -> list[str]:
-    tracked = _git(root, "ls-files", "--cached", "--others", "--exclude-standard")
-    if tracked is not None:
-        files = [f for f in tracked.splitlines() if f]
-    else:
-        files = []
-        for p in root.rglob("*"):
-            if p.is_file() and not (set(p.relative_to(root).parts) & SKIP_DIRS):
-                files.append(p.relative_to(root).as_posix())
-    return sorted(files)
+    return scan(root).files
+
+
+def _report_skipped(repo: str, skipped: list) -> None:
+    """One line per reason on stderr, with a few of the files, so a person can see what the map leaves out."""
+    quiet = ("dependency directory", "deleted (git still lists it)", "symlink to another listed file (indexed there)")
+    by = defaultdict(list)
+    for f, why in skipped:
+        by[why].append(f)
+    for why, fs in sorted(by.items(), key=lambda kv: -len(kv[1])):
+        if why in quiet:
+            print(f"leyline: {repo}: left out {len(fs)} file{'s' * (len(fs) != 1)}: {why}", file=sys.stderr)
+        else:
+            shown = ", ".join(fs[:3]) + (f" and {len(fs) - 3} more" if len(fs) > 3 else "")
+            print(f"leyline: {repo}: left out {why}: {shown}", file=sys.stderr)
+
+
+def skipped_summary(skipped: list, failed: list) -> dict:
+    """What a run left out and why, for the stats and the store: reason -> count and a few examples."""
+    out: dict = {}
+    for f, why in list(skipped) + [(f, "failed to parse: " + (w or "")) for f, w in failed]:
+        key = why if not why.startswith("failed to parse") else "failed to parse"
+        got = out.setdefault(key, {"count": 0, "examples": []})
+        got["count"] += 1
+        if len(got["examples"]) < 5:
+            got["examples"].append(f if key != "failed to parse" else f"{f}: {why[len('failed to parse: '):]}")
+    return out
+
+
+def read_source(path: Path) -> bytes:
+    """A source file's bytes as the parsers take them: UTF-8. A UTF-16 file (it starts with a byte order mark,
+    as some Windows editors write C#) is converted; lines stay where they were."""
+    data = Path(path).read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return data.decode("utf-16").encode("utf-8")
+        except UnicodeDecodeError:
+            return data
+    return data
+
+
+def source_lines(path: Path) -> list[str]:
+    """A source file's lines, numbered as the parsers number them: only a newline ends a line (str.splitlines also
+    breaks at form feeds and other separators, which put every later line out of step with the syntax tree)."""
+    return text_lines(read_source(path))
+
+
+def text_lines(data: bytes) -> list[str]:
+    return [ln[:-1] if ln.endswith("\r") else ln for ln in data.decode("utf-8", "replace").split("\n")]
 
 
 def _module_dirs(files: list[str]) -> set[str]:
@@ -119,22 +403,69 @@ def _parse_one(job):
     nothing but its arguments. The result comes back pickled because that is how it would cross from the worker
     anyway, and the same bytes are what the parse cache keeps (leyline.incremental)."""
     from .incremental import mentions
-    out = _parse_file(job)
-    res, decls = out[6], out[8]
-    if res is None:
-        return (*out[:6], None, out[7], b"")
-    return (*out[:6], pickle.dumps((res, decls), protocol=pickle.HIGHEST_PROTOCOL), None, mentions(res, decls))
+    try:
+        out = _parse_file(job)
+        res, decls = out[6], out[8]
+        if res is None:
+            return (*out[:6], None, out[7], b"")
+        return (*out[:6], pickle.dumps((res, decls), protocol=pickle.HIGHEST_PROTOCOL), None, mentions(res, decls))
+    except Exception as exc:   # MemoryError, or a result that will not pickle: the file fails, not the run
+        f, ext, mod_dir, mod_id = job[2]
+        return f, ext, mod_dir, mod_id, 1, None, None, f"{type(exc).__name__}: {exc}"[:300], b""
+
+
+DEEP_RECURSION = 25_000   # frames allowed when a file is parsed again on a large stack; past this, the work grows too fast
+
+
+def _deep(fn, *args):
+    """fn(*args) on a thread with a 1 GB stack and a recursion limit to match. The adapters walk the syntax tree
+    recursively; a file nested deeper than the default limit allows (a long else-if chain, a generated expression)
+    is read this way instead of being lost. The stack is only reserved address space until it is used."""
+    import threading
+    out: list = []
+
+    def run():
+        try:
+            out.append((True, fn(*args)))
+        except BaseException as exc:   # handed back to the caller's thread
+            out.append((False, exc))
+    old_stack, old_limit = threading.stack_size(), sys.getrecursionlimit()
+    try:
+        threading.stack_size(2**30)
+    except (ValueError, RuntimeError):   # a platform that will not give a thread a large stack
+        raise RecursionError("nested too deeply to read")
+    try:
+        sys.setrecursionlimit(max(old_limit, DEEP_RECURSION))
+        t = threading.Thread(target=run, name="leyline-deep-parse")
+        t.start()
+        t.join()
+    finally:
+        threading.stack_size(old_stack)
+        sys.setrecursionlimit(old_limit)
+    ok, value = out[0]
+    if not ok:
+        raise value
+    return value
 
 
 def _parse_file(job):
     root, repo, (f, ext, mod_dir, mod_id) = job
-    data = (Path(root) / f).read_bytes()
+    try:
+        data = read_source(Path(root) / f)
+    except OSError as exc:   # gone or made unreadable since it was listed
+        return f, ext, mod_dir, mod_id, 1, None, None, f"cannot read: {exc.strerror or exc}", None
     loc, sha = data.count(b"\n") + 1, hashlib.sha1(data).hexdigest()
     adapter = BY_EXTENSION[ext]
+    args = (repo, f, f"{repo}:file:{f}", data, mod_dir or ".")
     try:
-        res = adapter.parse(repo, f, f"{repo}:file:{f}", data, mod_dir or ".")
+        try:
+            res = adapter.parse(*args)
+        except RecursionError:
+            res = _deep(adapter.parse, *args)
+    except RecursionError:
+        return f, ext, mod_dir, mod_id, loc, sha, None, "nested too deeply to read", None
     except Exception as exc:
-        return f, ext, mod_dir, mod_id, loc, sha, None, str(exc)[:300], None
+        return f, ext, mod_dir, mod_id, loc, sha, None, f"{type(exc).__name__}: {exc}"[:300], None
     lines = data.split(b"\n")
     for n in res.nodes:
         if n.span_start and n.kind in ("type", "callable", "test", "field"):
@@ -144,10 +475,7 @@ def _parse_file(job):
     if getattr(adapter, "GENERIC", False):
         # The generic resolver reads variable types out of function and type text. Reading it here puts that
         # work in the parallel part; the text is read the way Indexer._file_text reads it, so the answer is the same.
-        try:
-            text = (Path(root) / f).read_text(errors="replace").splitlines()
-        except OSError:
-            text = None
+        text = text_lines(data)
         if text is not None:
             # Only where a call names a variable receiver is the type looked for; any other place falls back to
             # reading the text in the main process.
@@ -173,22 +501,163 @@ def _jobs() -> int:
     return max(1, min(os.cpu_count() or 1, 16))
 
 
-def _parse_all(root: Path, repo: str, work: list):
+def _start_method() -> Optional[str]:
+    """How worker processes start. fork is quickest, but it is only safe in a process with one thread (a fork
+    taken while another thread holds a lock deadlocks the child), and macOS and Windows do not have it safely or
+    at all; spawn works everywhere. LEYLINE_START_METHOD picks one (fork, forkserver or spawn)."""
+    import multiprocessing
+    import threading
+    env = os.environ.get("LEYLINE_START_METHOD")
+    methods = multiprocessing.get_all_start_methods()
+    if env:
+        if env not in methods:
+            raise ValueError(f"LEYLINE_START_METHOD={env!r}: this platform has {', '.join(methods)}")
+        return env
+    if sys.platform.startswith("linux") and "fork" in methods and threading.active_count() == 1:
+        return "fork"
+    return "spawn"
+
+
+CHUNK = 16   # files a worker takes at a time; small, so that few files are in flight when a worker dies
+
+
+def _timeout() -> float:
+    """Seconds a worker may spend on one batch of files (or, retried alone, one file) before it is taken to be
+    stuck and stopped. LEYLINE_PARSE_TIMEOUT changes it."""
+    try:
+        return max(1.0, float(os.environ.get("LEYLINE_PARSE_TIMEOUT", "") or 600))
+    except ValueError:
+        return 600.0
+
+
+def _parse_all(root: Path, repo: str, work: list, died: Optional[list] = None):
     """Parse every file, across processes when there are enough files to pay for starting them.
-    Results come back in the order given, so the index is the same however many processes ran."""
+    Results come back in the order given, so the index is the same however many processes ran.
+    A worker that dies (a crash inside a parser, or the system killing it for memory) or gets stuck loses only the
+    file it was on: the files that were in flight are parsed again one at a time, each in a fresh process, and the
+    one that kills or stalls its process is reported as failed (and named in `died`)."""
     jobs = _jobs()
     items = [(str(root), repo, w) for w in work]
     if jobs == 1 or len(items) < PARALLEL_MIN_FILES:
         yield from map(_parse_one, items)
         return
     import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor
+    from collections import deque
+    from concurrent.futures import ProcessPoolExecutor, TimeoutError as Stuck
+    from concurrent.futures.process import BrokenProcessPool
+    ctx = multiprocessing.get_context(_start_method())
+    limit = _timeout()
+
+    def pool(n):
+        return ProcessPoolExecutor(max_workers=n, mp_context=ctx, initializer=_worker_init)
+
+    chunks = [items[i:i + CHUNK] for i in range(0, len(items), CHUNK)]
+    pos = 0
+    worked = {"any": False}   # whether a worker has ever returned a result in this run
+    while pos < len(chunks):
+        ahead: deque = deque()
+        nxt = pos
+        ex = pool(jobs)
+        try:
+            while pos < len(chunks):
+                # A few chunks per worker are handed out ahead of the one awaited: enough to keep every worker
+                # busy, few enough that when one dies the file that killed it is among them.
+                while nxt < len(chunks) and len(ahead) < 4 * jobs:
+                    ahead.append(ex.submit(_parse_chunk, chunks[nxt]))
+                    nxt += 1
+                try:
+                    done = ahead[0].result(timeout=limit)
+                except Stuck:
+                    _kill(ex)
+                    raise BrokenProcessPool("stuck") from None
+                ahead.popleft()
+                pos += 1
+                worked["any"] = True
+                yield from done
+        except BrokenProcessPool:
+            suspects = [it for c in chunks[pos:nxt] for it in c]
+            ex.shutdown(wait=True)
+            yield from _parse_alone(suspects, pool, died, limit, worked)
+            if worked.get("broken"):   # workers cannot run here at all: the rest is parsed in this process
+                yield from map(_parse_one, [it for c in chunks[nxt:] for it in c])
+                return
+            pos = nxt
+        finally:
+            ex.shutdown(wait=True)
+
+
+def _worker_init() -> None:
+    # Ctrl+C reaches every process in the group; the main process stops the run, and the workers stay quiet
+    # instead of each printing a traceback.
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _kill(ex) -> None:
+    for proc in list(getattr(ex, "_processes", {}).values()):   # the pool has no public way to stop a busy worker
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _parse_chunk(items):
+    return [_parse_one(it) for it in items]
+
+
+def _parse_alone(items, pool, died, limit, worked):
+    """Parse each file in a one-worker pool, starting a new pool after a file kills or stalls one."""
+    from concurrent.futures import TimeoutError as Stuck
+    from concurrent.futures.process import BrokenProcessPool
+
+    def failed(it, why):
+        f, ext, mod_dir, mod_id = it[2]
+        print(f"leyline: {why}: {f}; it is left out", file=sys.stderr)
+        if died is not None:
+            died.append(f)
+        try:
+            data = read_source(Path(it[0]) / f)
+            loc, sha = data.count(b"\n") + 1, hashlib.sha1(data).hexdigest()
+        except OSError:
+            loc, sha = 1, None
+        return f, ext, mod_dir, mod_id, loc, sha, None, why, b""
+    ex = pool(1)
+    # Files whose worker died before any worker in this run had finished a file: until one does, it is not known
+    # whether the files kill the workers or the workers cannot run here at all.
+    lost: list = []
     try:
-        ctx = multiprocessing.get_context("fork")
-    except ValueError:
-        ctx = None   # no fork (Windows): the default start method works, it is only slower to begin
-    with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as pool:
-        yield from pool.map(_parse_one, items, chunksize=max(4, len(items) // (jobs * 16)))
+        for k, it in enumerate(items):
+            if len(lost) >= 3:
+                print("leyline: worker processes are not working here; parsing in this process instead",
+                      file=sys.stderr)
+                worked["broken"] = True
+                yield from map(_parse_one, [x for x, _ in lost] + list(items[k:]))
+                return
+            why = None
+            try:
+                got = ex.submit(_parse_one, it).result(timeout=limit)
+            except Stuck:
+                why = f"parsing took longer than {limit:g} s"
+                _kill(ex)
+            except BrokenProcessPool:
+                why = "the parser process died on this file"
+            if why is not None:
+                ex.shutdown(wait=True)
+                ex = pool(1)
+                if not worked["any"]:
+                    lost.append((it, why))
+                    continue
+                got = failed(it, why)
+            else:
+                worked["any"] = True
+                for x, w in lost:   # a worker can run, so those files did kill theirs
+                    yield failed(x, w)
+                lost = []
+            yield got
+        for x, w in lost:
+            yield failed(x, w)
+    finally:
+        ex.shutdown(wait=True)
 
 
 class FlowSteps:
@@ -321,7 +790,17 @@ class Indexer:
     def run(self, con) -> dict:
         self.timing: dict[str, float] = {}
         started = time.perf_counter()
-        self.files_of = {rid: list_files(root) for rid, root in self.repos.items()}
+        self.files_of, self.skipped, self.failed = {}, {}, {}
+        for rid, root in self.repos.items():
+            listing = scan(root)
+            self.files_of[rid], self.skipped[rid] = listing.files, listing.skipped
+            if listing.why_walk:
+                print(f"leyline: git would not list the files of {root} ({listing.why_walk}); reading the directory"
+                      " instead, with the common .gitignore patterns applied", file=sys.stderr)
+            elif listing.how == "walk":
+                print(f"leyline: {root} is not a git repository: reading every file under it, with the common"
+                      " .gitignore patterns applied", file=sys.stderr)
+            _report_skipped(rid, listing.skipped)
         for repo, root in self.repos.items():
             self._parse_repo(repo, root, self.files_of[repo])
         self.timing["parse"] = round(time.perf_counter() - started, 3)
@@ -376,6 +855,7 @@ class Indexer:
         cache = self.parse_cache
         cached = cache.lookup(repo, root, work) if cache is not None else {}
         fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached])
+        failed_here = self.failed.setdefault(repo, [])
         for w in work:
             got = cached.get(w[0]) or next(fresh)
             f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
@@ -389,6 +869,7 @@ class Indexer:
                            content_hash=sha, attrs={"loc": loc}))
             if res is None:   # one bad file must not sink the run
                 self.stats[adapter.NAME]["files_failed"] += 1
+                failed_here.append((f, failed))
                 print(f"leyline: failed to parse {f}: {failed}", file=sys.stderr)
                 continue
             self.results[file_id] = res
@@ -445,7 +926,10 @@ class Indexer:
             mid = f"{repo}:module:{d or '.'}"
             if mid not in self.nodes:
                 continue
-            text = (root / f).read_text(errors="replace")
+            try:
+                text = (root / f).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
             for ref in re.findall(r'<ProjectReference\s+Include="([^"]+)"', text):
                 target = (Path(d) / ref.replace("\\", "/")).parent
                 tdir = Path(*_normalize(target.parts)).as_posix() if target.parts else ""
@@ -560,7 +1044,7 @@ class Indexer:
             for f in files:
                 if f.rsplit("/", 1)[-1] == "package.json":
                     try:
-                        data = json.loads((self.repos[repo] / f).read_text())
+                        data = json.loads((self.repos[repo] / f).read_text(encoding="utf-8"))
                     except (OSError, ValueError):
                         continue
                     if isinstance(data, dict) and data.get("name"):
@@ -1689,7 +2173,7 @@ class Indexer:
                 # cost hundreds of MB on a large repo.
                 self._text_cache.clear()
             try:
-                self._text_cache[fid] = (self.repos[_repo_of(fid)] / self.nodes[fid].path).read_text(errors="replace").splitlines()
+                self._text_cache[fid] = source_lines(self.repos[_repo_of(fid)] / self.nodes[fid].path)
             except OSError:
                 self._text_cache[fid] = []
         return self._text_cache[fid]
@@ -2571,6 +3055,11 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         finally:
             gc.enable()
         stats.update(ix.exact_stats)
+        left = {r: skipped_summary(ix.skipped.get(r, []), ix.failed.get(r, [])) for r in ix.repos}
+        stats["left_out"] = left if len(ix.repos) > 1 else left[ix.repo]
+        with con:   # so the overview and the map page can say what is not in the map
+            for r, v in left.items():
+                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"left_out:{r}", json.dumps(v)))
         # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
         # large repo) from adding to what clustering and the pattern matchers hold.
         repo, timing, repos = ix.repo, ix.timing, dict(ix.repos)
