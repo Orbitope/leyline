@@ -90,15 +90,17 @@ class FieldUse:
 
 @dataclass(slots=True)
 class Endpoint:
-    """One end of a channel that is not a call: an HTTP route or request, a file read or written."""
+    """One end of a channel that is not a call: an HTTP route or request, a file read or written, a registration
+    in a dependency-injection container, a message published or handled, a table read or written, an RPC."""
 
-    channel: str  # http | file
-    role: str  # serve | call | write | read
+    channel: str  # http | file | di | queue | db | rpc
+    role: str  # serve | call | write | read; di: provide | inject | depend | start; queue: publish | subscribe; db: table
     src_id: str
-    address: str  # the route or request path; empty for files
+    address: str  # the route or request path (empty for files), the topic, table, service, or service/method
     line: int
-    method: Optional[str] = None
-    literals: list[str] = field(default_factory=list)  # string literals in the call
+    method: Optional[str] = None  # the HTTP method; for the other channels, the shape that was recognised
+    literals: list[str] = field(default_factory=list)  # string literals in the call; di: the implementation
+    handler: Optional[str] = None  # the function a subscription or task names, as written
 
 
 @dataclass(slots=True)

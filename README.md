@@ -518,7 +518,35 @@ moves, and carries a `channel` and an `address`.
   (`policies/*.bin`). These are always a `guess`, since paths are usually built at run time. Flows
   do not follow them: writing a file does not run its reader.
 
-Dependency injection, queues, RPC and databases are recorded as `not_analyzed`.
+- **di**: from a method of an interface to the same method of the implementation a container
+  registers for it (`services.AddScoped<IFoo, Foo>()` and `typeof` forms, Autofac's
+  `RegisterType<Foo>().As<IFoo>()`, Python `container.register(IFoo, Foo)` and `bind(IFoo).to(Foo)`,
+  Angular and NestJS `{ provide: X, useClass: Y }`, Inversify `bind<X>(…).to(Y)`), with
+  `registered_in` and `registered_at` naming the registration. An implementation read off a factory
+  (`sp => new Foo()`, `sp.GetRequiredService<Foo>()`) is a `guess`. Also from the registration to a
+  hosted service's `ExecuteAsync`, and from a FastAPI endpoint to the function its `Depends()` names.
+  Flows try the registered implementation before the other implementations.
+- **queue**: from code that publishes to the handlers of the same topic, queue or message type:
+  Kafka, RabbitMQ, Redis, NATS-style `publish`/`subscribe` with a literal or constant name, Node
+  `emit`/`on`, NestJS `@EventPattern`/`@OnEvent`, graphql-subscriptions, Celery and RQ tasks
+  (`send_receipt.delay()` reaches `send_receipt`), Django signals, and C# messages by type (MediatR
+  `Send(new X())` and `AddDomainEvent` to `IRequestHandler<X>`/`INotificationHandler<X>`, and the
+  like). A message type that is created with a handler in sight but not visibly sent (handed to an
+  outbox or a wrapper) is linked as a `guess` with `created_only`. Event names that streams and
+  sockets raise themselves (`error`, `data`, `exit`) are not linked.
+- **db**: from a function that writes a table to one that reads it: SQL in string literals and
+  constants, SQLAlchemy and SQLModel, Django managers, EF `DbSet`s and generic repositories
+  (`IRepository<Order>`), Prisma, Knex, TypeORM, Mongoose, Sequelize and document stores
+  (`db.users.find`). Table names come from `__tablename__`, `[Table]`, `ToTable`, `@Entity` and the
+  like, or the class name. A match only after folding singular and plural (`user ~ users`) is a
+  `guess`. Sites in tests and migrations are counted, not linked. Flows do not follow these.
+- **rpc**: from a call on a gRPC or Thrift stub (`GreeterStub`, `Greeter.GreeterClient`,
+  `getService('X')`) to the method of the same name on a class that implements the service
+  (`GreeterServicer`, `Greeter.GreeterBase`, `@GrpcMethod`). When several servers implement it, the
+  ones nearest the caller by directory are linked.
+
+All four meet by a name written in code, so each link is `heuristic` at best. Each change brief
+lists the channels a change crosses, with their address.
 
 ### Systems
 
@@ -538,8 +566,10 @@ An intent annotation is the user's own statement and needs no evidence. Facts ca
 ### Flows
 
 A flow is a walk of the call graph from one entry point or one test, depth-first, in source order,
-listing each function once. Flows follow calls, calls through an interface into its implementations,
-process launches, and events whose handler was subscribed earlier in the same flow. They stop at
+listing each function once. Flows follow calls, calls through an interface into its implementations
+(the registered one first), process launches, HTTP requests, messages to their handlers, remote calls,
+and events whose handler was subscribed earlier in the same flow. They do not follow files or tables:
+writing one does not run its reader. They stop at
 8 calls deep or 300 steps.
 
 Flows are static: they show what can run, not what did run. Per-test coverage will replace them with

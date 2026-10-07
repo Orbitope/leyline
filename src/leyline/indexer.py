@@ -330,6 +330,8 @@ class Indexer:
         def channels():
             self._resolve_spawns()
             self._resolve_endpoints()
+            from . import channels as more
+            more.resolve(self)   # dependency injection, queues, databases, RPC
         self._timed("channels", channels)
         self._timed("flows", self._build_flows)
         if not self.keep_results:
@@ -1888,8 +1890,8 @@ class Indexer:
         routes, requests, io = [], [], []
         for res in self.results.values():
             for e in res.endpoints:
-                if e.src_id not in self.nodes:
-                    continue
+                if e.src_id not in self.nodes or e.channel not in ("http", "file"):
+                    continue   # the other channels are linked in leyline.channels
                 (routes if (e.channel, e.role) == ("http", "serve") else requests if e.channel == "http" else io).append((e, res))
         http["routes"], http["requests"] = len(routes), len(requests)
 
@@ -2029,9 +2031,11 @@ class Indexer:
         for e in self.edges:
             if e.kind == "communicates":
                 a = e.attrs or {}
-                if a.get("channel") == "file":
-                    continue  # writing a file does not run whoever reads it later
-                out[e.src_id].append((a.get("launched_at") or a.get("line") or 10 ** 9, e.dst_id, a.get("channel", "channel"),
+                if a.get("channel") in ("file", "db"):
+                    continue  # writing a file or a row does not run whoever reads it later
+                # A registered implementation is listed ahead of the other implementations of its interface.
+                order = 10 ** 9 - 2 if a.get("channel") == "di" and "registered_in" in a else 10 ** 9
+                out[e.src_id].append((a.get("launched_at") or a.get("line") or order, e.dst_id, a.get("channel", "channel"),
                                       a.get("subscriber")))
         # A call to an interface or base method may land in any implementation.
         for base, impls in self.implementers.items():
@@ -2070,7 +2074,7 @@ class Indexer:
                         continue
                     if via == "event" and subscriber not in seen:
                         continue  # nobody in this flow subscribed, so the handler does not run here
-                    if via == "dispatch" and home and self.file_lang.get(home) == "csharp" \
+                    if via in ("dispatch", "di") and home and self.file_lang.get(home) == "csharp" \
                             and not self._dispatch_reaches(home, dst):
                         continue  # an implementation in a project this program does not reference
                     if kind == "test" and via == "runs":
@@ -2162,9 +2166,7 @@ class Indexer:
                     status = "ok" if st.get("files") else "no_files"
                     store.write_coverage(con, repo, a.NAME, a.VERSION, status, commit, {**st, **ws} if st else st)
                 for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file"):
-                    ran = channel in ("event", "process", "http", "file")
-                    store.write_coverage(con, repo, f"communicates:{channel}", "0.1" if ran else "-",
-                                         "ok" if ran else "not_analyzed", commit,
+                    store.write_coverage(con, repo, f"communicates:{channel}", "0.1", "ok", commit,
                                          dict(self.channel_stats.get(channel, {})))
                 store.write_coverage(con, repo, "flows:static", "0.1", "ok", commit,
                                      {"flows": len(self.flows), "steps": len(self.flow_steps), **ws})

@@ -68,7 +68,7 @@ def flow_callables(con, least: int, most: int) -> dict:
     return out
 
 
-VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel")
+VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel", "di", "queue", "rpc", "db")
 _VIA_CASE = "CASE s.via " + " ".join(f"WHEN {i} THEN '{v}'" for i, v in enumerate(VIA)) + " END"
 
 
