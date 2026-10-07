@@ -160,15 +160,17 @@ def _keys(con, ids) -> dict:
     return out
 
 
-def _insert_steps(con, steps) -> None:
+def _insert_steps(con, steps, reindex: bool = True) -> None:
     """steps: (flow id, seq, depth, callable id, via, site line, parent seq) rows. A collection that can list
     the flow ids and then the callable ids itself (indexer.FlowSteps) saves a pass over millions of rows."""
     ids = getattr(steps, "ids", None)
     key = _keys(con, ids() if ids else itertools.chain((s[0] for s in steps), (s[3] for s in steps)))
     via = {v: i for i, v in enumerate(VIA)}
     # Millions of rows on a large repo: the callable index is built once at the end rather than kept up to date
-    # row by row, and the rows are made as they are inserted, not held in a second list.
-    con.execute("DROP INDEX IF EXISTS steps_callable")
+    # row by row, and the rows are made as they are inserted, not held in a second list. A few rows added to a
+    # large table (reindex False) go in with the index kept.
+    if reindex:
+        con.execute("DROP INDEX IF EXISTS steps_callable")
     con.executemany("INSERT OR REPLACE INTO steps (flow, seq, depth, callable, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
                     ((key[f], seq, depth, key[c], via.get(v, via["channel"]), line, parent)
                      for f, seq, depth, c, v, line, parent in steps))
@@ -216,12 +218,12 @@ def write_calls(con, rows: Iterable[tuple], commit: str | None) -> None:
                     " VALUES (?,?,?,?,?,?,0,?)", ((key[s], key[d], disp, prec, line, line, commit) for s, d, disp, prec, line in rows))
 
 
-def write_flows(con, repo_id: str, flows, steps) -> None:
+def write_flows(con, repo_id: str, flows, steps, reindex: bool = True) -> None:
     con.executemany(
         "INSERT OR REPLACE INTO flows (id, name, origin, entry_id, weight, group_id, layer, source, attrs)"
         " VALUES (?,?,?,?,?,?,?,?,?)",
         [(f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], json.dumps(f[8])) for f in flows])
-    _insert_steps(con, steps)
+    _insert_steps(con, steps, reindex)
 
 
 def evidence_hash(con, evidence: Iterable[str]) -> str:
@@ -317,6 +319,36 @@ def rebuild_derived(con: sqlite3.Connection, systems_of: Optional[str] = None) -
             if r["kind"] not in ("repo",)
         ],
     )
+
+
+def derive_some(con, gone: Iterable[str], ids: Iterable[str]) -> None:
+    """rebuild_derived for a few nodes: drop the ancestry and search rows of `gone` and of `ids`, and make them again
+    for `ids` from the node table."""
+    ids = list(dict.fromkeys(ids))
+    drop = list(dict.fromkeys(itertools.chain(gone, ids)))
+    for i in range(0, len(drop), 900):
+        chunk = drop[i:i + 900]
+        marks = ",".join("?" * len(chunk))
+        con.execute(f"DELETE FROM ancestry WHERE node_id IN ({marks})", chunk)
+        con.execute(f"DELETE FROM search WHERE node_id IN ({marks})", chunk)
+    row = lambda i: con.execute("SELECT id, kind, name, parent_id, path FROM nodes WHERE id = ?", (i,)).fetchone()
+    for i in ids:
+        r = row(i)
+        if r is None:
+            continue
+        file_id = module_id = None
+        cur, seen = r, 0
+        while cur is not None and seen < 64:
+            if cur["kind"] == "file" and file_id is None:
+                file_id = cur["id"]
+            if cur["kind"] == "module" and module_id is None:
+                module_id = cur["id"]
+            cur = row(cur["parent_id"]) if cur["parent_id"] else None
+            seen += 1
+        con.execute("INSERT INTO ancestry VALUES (?,?,?)", (r["id"], file_id, module_id))
+        if r["kind"] != "repo":
+            con.execute("INSERT INTO search (node_id, name, qualified, path, kind) VALUES (?,?,?,?,?)",
+                        (r["id"], r["name"], _searchable(r["id"]), r["path"] or "", r["kind"]))
 
 
 def _searchable(node_id: str) -> str:

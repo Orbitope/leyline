@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS ancestry (
   node_id TEXT PRIMARY KEY, file_id TEXT, module_id TEXT
 );
 CREATE INDEX IF NOT EXISTS ancestry_module ON ancestry(module_id);
+CREATE INDEX IF NOT EXISTS ancestry_file ON ancestry(file_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(node_id UNINDEXED, name, qualified, path, kind UNINDEXED);
 
