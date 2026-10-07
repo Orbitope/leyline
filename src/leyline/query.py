@@ -102,9 +102,11 @@ def overview(con) -> dict:
             counts = {r["kind"]: r["n"] for r in con.execute(
                 "SELECT n.kind, COUNT(*) AS n FROM ancestry a JOIN nodes n ON n.id = a.node_id"
                 " WHERE a.module_id = ? AND n.id != ? GROUP BY n.kind", (m["id"], m["id"]))}
+            # `+kind` keeps SQLite on the parent index: through the kind index it read every file of the repository
+            # for each module (70 s on Kubernetes).
             files = con.execute(
                 "SELECT language, COUNT(*) AS n, SUM(span_end) AS loc FROM nodes"
-                " WHERE kind = 'file' AND parent_id = ? GROUP BY language", (m["id"],)).fetchall()
+                " WHERE +kind = 'file' AND parent_id = ? GROUP BY language", (m["id"],)).fetchall()
             modules.append({
                 "id": m["id"], "name": m["name"], "path": m["path"] or ".",
                 "languages": {f["language"]: f["n"] for f in files},

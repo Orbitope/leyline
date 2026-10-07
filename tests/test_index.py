@@ -966,3 +966,69 @@ def test_workspace_links_two_repositories(tmp_path):
     assert "wsapp:ext:python:libpkg" in ids(c, "SELECT id FROM nodes WHERE kind = 'external'")
     assert "workspace" not in query.overview(c)
     c.close()
+
+
+def test_shortcuts_for_large_repositories_give_the_same_answers():
+    """The lookups that replaced scans on large repositories answer as the scans did."""
+    import random
+    from leyline import indexer
+    from leyline.adapters import generic
+
+    rnd = random.Random(5)
+    # Module directories: the per-directory lookups against the original all-pairs scans.
+    names = ["__init__.py", "setup.py", "package.json", "a.py", "b.ts", "X.csproj", "pyproject.toml"]
+    for _ in range(200):
+        files = sorted({"/".join(rnd.choice("abc") for _ in range(rnd.randint(0, 3))).strip("/") + "/" + rnd.choice(names)
+                        for _ in range(rnd.randint(1, 12))})
+        files = [f.lstrip("/") for f in files]
+        dirs, packages = set(), set()
+        for f in files:
+            d, _, base = f.rpartition("/")
+            if base.endswith(".csproj") or base in indexer.MODULE_MARKERS:
+                dirs.add(d)
+                if base == "__init__.py":
+                    packages.add(d)
+        own = {d for d in dirs if d not in packages or any(
+            f.rpartition("/")[0] == d and (f.endswith(".csproj") or f.rsplit("/", 1)[-1] in indexer.MODULE_MARKERS[:3]) for f in files)}
+        want = {d for d in dirs if d in own or not any(d != o and d.startswith(o + "/") and o != "" for o in dirs)}
+        assert indexer._module_dirs(files) == want, files
+    # Declarations in a set of files, walked from either side.
+    by_file = {f"f{i}": [(rnd.randint(0, 10 ** 6), f"c{i}.{j}") for j in range(rnd.randint(1, 3))] for i in range(30)}
+    for _ in range(100):
+        files = {f"f{rnd.randint(0, 60)}" for _ in range(rnd.randint(0, 50))}
+        also = f"f{rnd.randint(0, 40)}"
+        want = [c for _, c in sorted(ic for f in files | {also} for ic in by_file.get(f, ()))]
+        assert indexer.Indexer._in_files(by_file, files, also) == want
+    # The receiver of a call: the narrowed search against the search over all 80 bytes.
+    alphabet = b"ab_9$@ \t\n)](.-?>:&=+"
+    for _ in range(20000):
+        text = bytes(rnd.choice(alphabet) for _ in range(rnd.randint(0, 12)))
+        m = generic._RECV.search(text)
+        got = generic._receiver(text, len(text))
+        if m is None:
+            assert got is None, text
+        elif m.group(3) != b":":
+            assert got == ("?" if m.group(2) or not m.group(1) else
+                           {"this": "this", "self": "this", "Self": "this", "@": "this", "me": "this", "super": "base",
+                            "base": "base", "parent": "base"}.get(m.group(1).decode(), m.group(1).decode())), text
+
+
+def test_pattern_rationale_names_fields_in_a_fixed_order():
+    """A decorator holding two fields names them in sorted order, not in the order a set happens to give."""
+    from collections import defaultdict
+    from leyline import patterns
+
+    class G:
+        inn = {"uses_type": defaultdict(set, {"I": {"T.z", "T.a", "T.m"}})}
+        edge_attrs = {("uses_type", f, "I"): {"role": "field_type"} for f in ("T.z", "T.a", "T.m")}
+        attrs = {f: {} for f in ("T.z", "T.a", "T.m")}
+
+        def kind(self, i):
+            return "field"
+
+        def owner(self, i):
+            return "T"
+
+        def name(self, i):
+            return i
+    assert patterns._held(G(), "I") == {"T": ["T.a", "T.m", "T.z"]}
