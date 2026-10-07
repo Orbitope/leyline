@@ -173,8 +173,8 @@ before the `--`. `claude mcp list` should then show `leyline` as connected.
 The agent's path is the same three tools, `map`, `plan` and `check`, each returning `next`, with the
 review tools between plan and implementation; the server's instructions give the agent that order.
 The skills in `skills/` say how to write the spec (`leyline-spec`), review it
-(`leyline-adversarial-review`), assess any change (`leyline-change-impact`) and explain the code
-(`leyline-tour`). Answers are kept short enough for an agent's context: long lists are cut, and the
+(`leyline-adversarial-review`), assess any change (`leyline-change-impact`), explain the code
+(`leyline-tour`) and answer how something works (`leyline-explain-flow`). Answers are kept short enough for an agent's context: long lists are cut, and the
 answer says what was cut (`cut`) and how to see the rest (`more`).
 
 Everything below is the detail: the other commands, how the map is built, and how far to trust it.
@@ -744,6 +744,53 @@ marked `>`, each channel end in words ("answers GET /api/x", "writes table t"), 
 said so. The last lines say how much was left out and name the nearest of it. The ranking visits only code near the focus,
 and the graph is read once per map run: on Parlance (160,000 lines) the first call takes 0.3 s and later ones 0.05 s.
 
+### Asking how something works
+
+Leyline holds no language model; an agent asks it in words and reasons over what comes back. Two commands (and the
+tools of the same names) make "how does a vehicle get spawned" or "what happens when a writer saves a dialogue" a
+question with an answer on the map, and the `leyline-explain-flow` skill drives them:
+
+```
+$ leyline find-flows "what happens when a writer saves a dialogue in the editor"
+ 1. DialogueScriptEditor.save  [UI event handler]  editor/client/src/surfaces/DialogueEditor/DialogueScriptEditor.tsx:338
+      matched: saves in its name; dialogue in the name of what it is in; editor in the name of what it is in
+ 2. DialogueCanvas.onInspectorSave  [UI event handler]  editor/client/src/surfaces/DialogueEditor/DialogueCanvas.tsx:764
+ ...
+$ leyline explain-path DialogueCanvas.save
+Walk from DialogueCanvas.save: 40 of 154 steps shown.
+  1. DialogueCanvas.save  (editor/client/src/surfaces/DialogueEditor/DialogueCanvas.tsx:230)
+  2.    call -> useAppStore.saveEntity  (editor/client/src/store.ts:754)
+           at editor/client/src/surfaces/DialogueEditor/DialogueCanvas.tsx:233: return saveEntity(updated, label, ...
+ ...
+ 17.             http PUT /api/entities/:type/:id -> the PUT /api/entities/:type/:id handler  (editor/host/src/server.ts:361)
+                    crosses to another process or service
+ ...
+ 31.                call -> scheduleValidation  (editor/host/src/validation.ts:161)
+```
+
+`find-flows` ranks every function and test by the words it shares with the description: in its name, its route, the
+test's name, the name of the type or component it sits in, its file's name and folders, its language, and the comment
+just above it (or a Python docstring). Code names are split (`saveDialogue` is save and dialogue), endings are cut
+(saves, saved, saving), a short table makes words that mean the same in code one (save, write, persist, store, put;
+create, add, spawn; run, execute, play, start; about twenty groups, `SYNONYMS` in `explain.py`), a word rare on the
+map counts for more, and a word for who does it (a user, a writer) counts little. Route handlers, UI event handlers,
+program entries, message handlers and commands are ranked up, then tests. Each candidate says why it matched and which
+flows start there or reach it; `ambiguous` is set when the first ones score close in different files, so the agent
+asks the person which they mean. The words index is built once per map run (about a second on Parlance) and kept: a
+later question takes a few milliseconds.
+
+`explain-path <start>` walks from a function, a route (`"PUT /api/x"`), a test or a flow id. Alone, it follows the
+stored flow that starts there, or walks the same way now (depth first, in the order the code makes its calls, 8 calls
+deep at most), and shows the shallow steps first and every hop across a channel, up to `--steps` (40); leaves called
+from 8 or more places are counted as helpers, not shown. `--to` gives the shortest path (without file, table and key
+hops when there is one), `--through` the path through a node and on from it. Each step says how it was reached (a
+call, `http PUT /x`, `starts <program>`, a message, an interface's implementation), the calling line and the callee's
+declaration line, and `later, elsewhere` for a table, file or key it writes that other code reads later. The walk ends
+with what the map could not see: guessed links, interfaces, the depth limit, and a program a type in the walk started
+and talks to over its pipes (the messages are not calls the map can follow, so it names the program to walk next).
+Its diagram has one arrow per step, each a link on the map. `leyline diagram <ids>` draws the usual sequence diagram
+for any functions or types.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
@@ -784,6 +831,9 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `flows(kind?, through?, limit?, offset?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
 | `flow(flow_id, max_steps?, offset?)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |
+| `find_flows(description, limit?)` | Where a behavior described in words could start: entry points, route, UI and message handlers, tests named for it, functions; each with why it matched, its kind, file:line and the flows that start there |
+| `explain_path(start, to?, through?, max_steps?)` | An ordered walk across calls and channels from `start` (its main flow, the shortest path `to` a node, or the path `through` one), each step with how it was reached, the calling line and the declaration; data written for later marked; a Mermaid diagram of the walk |
+| `diagram(ids)` | A Mermaid sequence diagram of how execution reaches some functions or types and what they call |
 | `impact(node_id, max_depth?, limit?)` | What can reach a node: callers by module and the flows through it |
 | `annotate(node_id, key, value, evidence, confidence, layer)` | Write an inferred or intent statement about a node |
 | `propose_change(intent, targets, title?)` | Assess a change without an OpenSpec folder and save its blast-radius view |

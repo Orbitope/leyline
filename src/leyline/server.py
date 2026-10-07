@@ -48,7 +48,9 @@ mcp = FastMCP(
         " not your own account.\n"
         "Every answer from `map`, `plan` and `check` ends with `next`: do that. `plan` and `check` re-map changed code"
         " themselves. Node ids come from `search`, `overview` and `expand`; never guess one. Edges marked heuristic come"
-        " from syntax and can be wrong. Long lists are cut: `cut` says what was cut and `more` how to see the rest."
+        " from syntax and can be wrong. Long lists are cut: `cut` says what was cut and `more` how to see the rest.\n"
+        "To answer how something works, outside the loop: `find_flows` with the question in words, then `explain_path`"
+        " from the candidate that fits, reading the code (`source`) at the steps that matter."
     ) + agent_skills.start_here(),
 )
 
@@ -568,6 +570,53 @@ def context(focus: Annotated[list[str], Field(min_length=1, description="What yo
     if "error" in r:
         return r
     return {"text": r["text"], "tokens": r["tokens"], "focus": r["focus"], "shown": r["shown"], "left_out": r["left_out"]}
+
+
+# -- asking how something works -----------------------------------------------------------------------
+@_tool(keep=("words",))
+def find_flows(description: Annotated[str, Field(min_length=1, description="What happens, in plain words, such as"
+                                                                          " \"what happens when a writer saves a dialogue\""
+                                                                          " or \"how a vehicle is spawned\".")],
+               limit: Annotated[int, Field(ge=1, le=30, description="Most candidates to return.")] = 10) -> dict:
+    """Where a described behavior could start, best first: entry points, route handlers, UI event handlers, message
+    handlers, commands, tests whose names state the behavior, and other functions, ranked by the words they share
+    with the description (code names split, endings cut, a few synonyms such as save, write, persist). Each comes
+    with why it matched, its kind, file:line, the flows that start there or reach it. When `ambiguous` is true, show
+    the person the top few and ask which they mean. Then walk one with `explain_path`."""
+    from . import explain
+    return explain.find_flows(_db(), description, limit)
+
+
+@_tool(limit=30_000, more="Lists were cut to keep this answer short; `cut` says which. Lower max_steps, or walk from a"
+                          " later step, to see the rest.")
+def explain_path(start: Annotated[str, Field(min_length=1, description="Where to start: a node id, a name"
+                                                                      " (`Owner.method`), a route (`PUT /api/x`) or a"
+                                                                      " flow id, such as a candidate from find_flows.")],
+                 to: Annotated[Optional[str], Field(description="Where to end: the shortest path from start to it.")] = None,
+                 through: Annotated[Optional[str], Field(description="A node the path must pass: the path to it, then on"
+                                                                     " from it.")] = None,
+                 max_steps: Annotated[int, Field(ge=2, le=200, description="Most steps to show.")] = 40) -> dict:
+    """An ordered walk across calls and channels (http, messages, launched programs) from `start`: with nothing
+    else, the main flow from it (its shallow steps first, helpers called from many places counted, not shown); with
+    `to`, the shortest path; with `through`, the path through that node and on. Each step has its id, name,
+    file:line, how it was reached (call, http GET /x, starts a program ...), the calling line and the callee's
+    declaration. Data written for a reader that runs later (a file, a table) is under `later_elsewhere`; `not_seen`
+    says what the map could not follow. `mermaid` draws the walk. Read the code of a step (`source`) before saying
+    what it does."""
+    from . import explain
+    r = explain.explain_path(_db(), start, to, through, max_steps)
+    if "error" not in r:
+        r.pop("text", None)   # the same walk as `steps`, as lines for the command line
+    return r
+
+
+@_tool
+def diagram(ids: Annotated[list[str], Field(min_length=1, description="Functions or types (a type stands for its"
+                                                                     " methods): node ids or names.")]) -> dict:
+    """A Mermaid sequence diagram of how execution reaches the named code and what it calls. Every arrow is a call
+    or a channel link on the map; a dotted arrow is a link the map guessed by name."""
+    from . import explain
+    return explain.diagram(_db(), ids)
 
 
 # -- writing to the map -------------------------------------------------------------------------------

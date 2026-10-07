@@ -205,6 +205,12 @@ def test_every_other_tool_with_real_arguments(repo):
         assert any(s["id"] == start for s in steps["steps"])
         t = await a.call("trace", from_id=steps["steps"][0]["id"], to_id=start)
         assert t["found"]
+        ff = await a.call("find_flows", description="how an engine starts", limit=5)
+        assert start in [c["id"] for c in ff["candidates"]] and ff["candidates"][0]["why"]
+        walk = await a.call("explain_path", start=steps["steps"][0]["id"], to="Engine.start")
+        assert walk["steps"][-1]["id"] == start and walk["mermaid"].startswith("sequenceDiagram") and "text" not in walk
+        assert (await a.call("explain_path", start=fl["flows"][0]["id"], max_steps=5))["steps"]
+        assert (await a.call("diagram", ids=["Engine.start"]))["mermaid"].startswith("sequenceDiagram")
         assert (await a.call("annotate", node_id="repo:module:py/src/pkg", key="summary", value="The engine.",
                              evidence=[start], confidence=0.7))
         prop = await a.call("propose_change", intent="start returns upper case", title="Loud start",

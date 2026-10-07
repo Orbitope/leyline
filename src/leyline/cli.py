@@ -332,6 +332,9 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   impact        what can reach a function, a type or a field: its callers near and far, and the flows through it
   source        source text of a node
   context       a short ranked outline of the code around a focus, cut to a token budget, for an agent
+  find-flows    where a behavior described in words could start: entry points, handlers, tests, ranked
+  explain-path  an ordered walk across calls and channels from one of them, with the lines that make each step
+  diagram       a Mermaid sequence diagram of how execution reaches some functions and what they call
   state         fields assigned from outside the type that declares them
   coupling      files that usually change together, from git history
   patterns      design patterns found by their shape
@@ -581,6 +584,22 @@ def _main(argv=None) -> int:
     p.add_argument("--tokens", type=int, default=2000, help="how long the outline may be, in tokens (characters / 4;"
                                                             " default 2000, from 200 to 8000)")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("find-flows", description="where a behavior described in words could start, best first: entry"
+                                                 " points, route, UI and message handlers, tests named for it, functions")
+    p.add_argument("description", help="what happens, such as \"what happens when a writer saves a dialogue\"")
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("explain-path", description="an ordered walk across calls and channels from a function: its main"
+                                                   " flow, the shortest path to --to, or the path through --through")
+    p.add_argument("start", help="a node id, a name (Owner.method), a route (\"PUT /api/x\") or a flow id")
+    p.add_argument("--to", help="end here: the shortest path")
+    p.add_argument("--through", help="pass this node, then go on from it")
+    p.add_argument("--steps", type=int, default=40, help="most steps to show (default 40)")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("diagram", description="a Mermaid sequence diagram of how execution reaches some functions or"
+                                              " types and what they call")
+    p.add_argument("ids", nargs="+", help="node ids or names")
+    p.add_argument("--json", action="store_true")
     sub.add_parser("serve", description="serve the store over MCP (stdio)")
     p = sub.add_parser("export", description="write the map as one self-contained HTML page")
     p.add_argument("-o", "--out", default="leyline-map.html")
@@ -809,6 +828,25 @@ def _main(argv=None) -> int:
     elif args.cmd == "source":
         r = query.source(con, args.node_id)
         print(r.get("text") or r.get("error"))
+    elif args.cmd in ("find-flows", "explain-path", "diagram"):
+        from . import explain
+        if args.cmd == "find-flows":
+            r = explain.find_flows(con, args.description, args.limit)
+            text = explain.find_text(r)
+        elif args.cmd == "explain-path":
+            r = explain.explain_path(con, args.start, args.to, args.through, args.steps)
+            text = (r.get("text", "") + ("\n\n```mermaid\n" + r["mermaid"] + "\n```" if r.get("mermaid") else "")
+                    if "error" not in r else r["error"])
+            if "candidates" in r and r["candidates"]:
+                text += "\nDid you mean: " + ", ".join(c["id"] for c in r["candidates"][:5])
+        else:
+            r = explain.diagram(con, args.ids)
+            text = r.get("error") or "```mermaid\n" + r["mermaid"] + "\n```\n\n" + r["legend"]
+        if args.json:
+            _print(r)
+        else:
+            print(text, file=sys.stderr if "error" in r else sys.stdout)
+        return 1 if "error" in r else 0
     elif args.cmd == "context":
         from . import context
         r = context.build(con, args.focus, args.tokens)
