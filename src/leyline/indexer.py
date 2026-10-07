@@ -1890,8 +1890,8 @@ class Indexer:
         routes, requests, io = [], [], []
         for res in self.results.values():
             for e in res.endpoints:
-                if e.src_id not in self.nodes:
-                    continue
+                if e.src_id not in self.nodes or e.channel not in ("http", "file"):
+                    continue   # the other channels are linked in leyline.channels
                 (routes if (e.channel, e.role) == ("http", "serve") else requests if e.channel == "http" else io).append((e, res))
         http["routes"], http["requests"] = len(routes), len(requests)
 

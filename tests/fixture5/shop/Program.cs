@@ -18,5 +18,8 @@ public static class Program
         services.AddSingleton<INotifier>(sp => new SmsNotifier());
         services.AddSingleton<Reports>();
         services.AddHostedService<OutboxWorker>();
+        services.AddSingleton<IClock>(sp => sp.GetRequiredService<SystemClock>());
+        services.AddScoped<IPrinter, Printer>();
+        services.AddScoped<IPrinter, Printer>();
     }
 }

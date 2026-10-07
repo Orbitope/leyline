@@ -527,7 +527,10 @@ def brief_text(b: dict) -> str:
             L.append(f"- **{r['level']} risk:** {r['what']}")
         for c in (imp.get("channels") or [])[:6]:
             at = f" ({c['address']})" if c.get("address") else ""
-            if c.get("data"):
+            if c["channel"] == "di":
+                L.append(f"- Crosses a di boundary{at}: calls to {c['from_name']} reach {c['to_name']} because a container "
+                         "registers it. The calling code never names the implementation.")
+            elif c.get("data"):
                 L.append(f"- Crosses a {c['channel']} boundary{at}: {c['from_name']} reads what {c['to_name']} writes. "
                          "The reader has no compile-time link to this change.")
             else:

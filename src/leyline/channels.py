@@ -167,7 +167,7 @@ class _Out:
         self.seen: set = set()
 
     def add(self, channel, role, src, address, line, method=None, literals=None, handler=None) -> None:
-        if not src or not address:
+        if not src or not (address or role == "table"):   # a mapped class need not name its table
             return
         key = (channel, role, src, address, method, handler, tuple(literals or ()))
         if key in self.seen:
@@ -211,7 +211,7 @@ class _Python:
     PUB_LOOSE = {"send", "send_json", "send_message", "put_message"}
     SUB = {"subscribe", "psubscribe", "basic_consume", "consume", "queue_bind", "blpop", "brpop", "xread",
            "xreadgroup", "KafkaConsumer", "AIOKafkaConsumer"}
-    SESSION = re.compile(r"(session|db|tx|uow|conn|s)$", re.I)
+    SESSION = re.compile(r"(session|db|tx|uow|conn|^s)$", re.I)   # a bare `s`, not requests
 
     def __init__(self, tree, where: _Where, out: _Out, consts: dict):
         self.tree, self.where, self.out = tree, where, out
@@ -274,8 +274,16 @@ class _Python:
             if svc:
                 self.rpc_vars[lname] = svc
             cid = self.where.fn(line)
-            if cid and last[:1].isupper() and left.type == "identifier":
-                self.var_types[(cid, lname)] = last
+            if cid and left.type == "identifier":
+                head = fn.rsplit(".", 2)[-2] if "." in fn else ""
+                rpos, _ = self._args(right.child_by_field_name("arguments"))
+                first = _py_name(rpos[0]) if rpos else None
+                if last[:1].isupper():
+                    self.var_types[(cid, lname)] = last                     # x = User(...)
+                elif head[:1].isupper() and not head.isupper():
+                    self.var_types[(cid, lname)] = head                     # x = User.model_validate(...)
+                elif first and first.rsplit(".", 1)[-1][:1].isupper() and self.SESSION.search(fn.rsplit(".", 1)[0]):
+                    self.var_types[(cid, lname)] = first.rsplit(".", 1)[-1]  # x = session.get(User, id)
         elif left.type == "identifier" and lname in ("__tablename__", "db_table", "__collection__"):
             table = self._lit(right)
             tid = self.where.type(line)
@@ -472,7 +480,7 @@ class _Python:
             else:
                 break
         names = [c[0] for c in chain]
-        write = any(_db_role(x) == "write" for x in names)
+        write = any(_db_role(x) == "write" or re.match(r"(create|update|delete|bulk|insert|remove)_", x) for x in names)
         # Django and other active-record models: User.objects.filter(...), User.select(), Book.create(...)
         if base is not None and base.type == "identifier" and _t(base)[:1].isupper() and names:
             first = names[-1]
@@ -501,9 +509,10 @@ class _Python:
             cfull = _t(cfn)
             clast = cfull.rsplit(".", 1)[-1]
             model = _py_name(cpos[0]) if cpos else None
-            if model and model.rsplit(".", 1)[-1][:1].isupper():
-                mname = model.rsplit(".", 1)[-1]
-                if clast in ("query", "get", "scalars") and cfn.type == "attribute":
+            mname = model.rsplit(".", 1)[-1] if model else ""
+            if mname[:1].isupper() and not mname.isupper():   # a class, not a constant: requests.get(USER_URL)
+                if clast in ("query", "get", "scalars") and cfn.type == "attribute" \
+                        and (clast != "get" or self.SESSION.search(_t(cfn.child_by_field_name("object")))):
                     out.add("db", "write" if write else "read", cid, "model:" + mname, line, "orm")
                 elif cfull in ("select", "sa.select", "sqlalchemy.select", "sqlmodel.select"):
                     out.add("db", "read", cid, "model:" + mname, line, "orm")
@@ -602,7 +611,10 @@ class _CSharp:
               "AddKeyedSingleton", "AddKeyedScoped", "AddKeyedTransient", "TryAddEnumerable", "RegisterType",
               "Register", "RegisterSingleton", "AddHttpClient"}
     SEND = {"Send", "Publish", "SendAsync", "PublishAsync", "SendLocal", "InvokeAsync", "Dispatch", "DispatchAsync",
-            "SchedulePublish", "ScheduleSend", "Raise", "RaiseAsync", "Enqueue", "EnqueueAsync"}
+            "SchedulePublish", "ScheduleSend", "Raise", "RaiseAsync", "Enqueue", "EnqueueAsync",
+            "AddDomainEvent", "RaiseDomainEvent", "RegisterDomainEvent", "QueueDomainEvent"}   # domain events, sent on save
+    # A type named like a message, created anywhere: handed to a wrapper or an outbox, it may still reach its handler.
+    MESSAGE_NAME = re.compile(r"[A-Z]\w*(Event|Command|Query|Message|Notification|Request)$")
     PUB = {"Produce", "ProduceAsync", "BasicPublish", "BasicPublishAsync", "Publish", "PublishAsync", "CreateSender",
            "SendToQueue", "PublishMessage", "SendMessageAsync"}
     SUB = {"Subscribe", "SubscribeAsync", "BasicConsume", "BasicConsumeAsync", "CreateProcessor", "CreateReceiver",
@@ -612,8 +624,12 @@ class _CSharp:
     def __init__(self, tree, where: _Where, out: _Out, consts: dict):
         self.tree, self.where, self.out = tree, where, out
         self.consts: dict[str, str] = {}
-        self.field_types: dict[tuple, str] = {}   # (type id, member) -> type as written
+        self.field_types: dict[tuple, str] = {}   # (type id, member) -> type as written, type arguments and all
         self.var_types: dict[tuple, str] = {}     # (function id, local) -> type as written
+        self.methods: dict[tuple, list] = defaultdict(list)   # (type id, name) -> methods
+        for n in where.nodes.values():
+            if n.kind == "callable":
+                self.methods[(n.attrs.get("type_id"), n.name)].append(n)
 
     def _lit(self, node) -> Optional[str]:
         s = _cs_str(node)
@@ -655,6 +671,11 @@ class _CSharp:
                 self._dbset_read(n)
             elif t in ("class_declaration", "record_declaration"):
                 self._class(n)
+            elif t == "object_creation_expression":
+                name = _cs_type(n.child_by_field_name("type"))
+                cid = self.where.fn(n.start_point[0] + 1)
+                if cid and self.MESSAGE_NAME.fullmatch(name) and not name.startswith("Http"):
+                    self.out.add("queue", "publish", cid, name, n.start_point[0] + 1, "message-new")
 
     def _member(self, n) -> None:
         line = n.start_point[0] + 1
@@ -662,7 +683,7 @@ class _CSharp:
         if n.type == "property_declaration":
             tnode, name = n.child_by_field_name("type"), _t(n.child_by_field_name("name"))
             if tid and tnode is not None:
-                self.field_types[(tid, name)] = _cs_qual_type(tnode)
+                self.field_types[(tid, name)] = _t(tnode).strip()
                 gname, targs = _cs_generic(tnode)
                 if gname == "DbSet" and targs:
                     self.out.add("db", "table", tid, name, line, "dbset", [targs[0]])
@@ -676,7 +697,7 @@ class _CSharp:
                 continue
             name = _t(d.child_by_field_name("name") or next((c for c in d.children if c.type == "identifier"), None))
             if tid and tnode is not None:
-                self.field_types[(tid, name)] = _cs_qual_type(tnode)
+                self.field_types[(tid, name)] = _t(tnode).strip()
             value = next((c for c in d.named_children if c.type in _CS_STRINGS), None)
             if value is not None and _cs_str(value):
                 self.consts[name] = _cs_str(value)
@@ -689,7 +710,7 @@ class _CSharp:
         if n.type == "parameter":
             tnode = n.child_by_field_name("type")
             if tnode is not None:
-                self.var_types[(cid, _t(n.child_by_field_name("name")))] = _cs_qual_type(tnode)
+                self.var_types[(cid, _t(n.child_by_field_name("name")))] = _t(tnode).strip()
             return
         decl = next((c for c in n.named_children if c.type == "variable_declaration"), None)
         if decl is None:
@@ -700,17 +721,36 @@ class _CSharp:
                 continue
             name = _t(next((c for c in d.children if c.type == "identifier"), None))
             if tnode is not None and _t(tnode) != "var":
-                self.var_types[(cid, name)] = _cs_qual_type(tnode)
+                self.var_types[(cid, name)] = _t(tnode).strip()
             else:
                 made = next((c for c in d.named_children if c.type == "object_creation_expression"), None)
                 if made is not None:
                     self.var_types[(cid, name)] = _cs_qual_type(made.child_by_field_name("type"))
 
     def _type_of(self, expr, cid) -> Optional[str]:
+        raw = self._raw_type_of(expr, cid)
+        return re.sub(r"<.*", "", raw).strip().rstrip("?") if raw else None
+
+    def _raw_type_of(self, expr, cid) -> Optional[str]:
         if expr is None:
             return None
         if expr.type == "object_creation_expression":
-            return _cs_qual_type(expr.child_by_field_name("type"))
+            return _t(expr.child_by_field_name("type"))
+        if expr.type == "invocation_expression":
+            # GetClient().Call(): typed by what a method of this class declares it returns.
+            f = expr.child_by_field_name("function")
+            if f is not None and f.type == "member_access_expression" and _t(f.child_by_field_name("expression")) == "this":
+                f = f.child_by_field_name("name")
+            own = self.where.nodes.get(cid)
+            if f is None or f.type != "identifier" or own is None:
+                return None
+            found = self.methods.get((own.attrs.get("type_id"), _t(f)))
+            if not found:
+                return None
+            m = re.search(r"([\w.<>,? ]+?)\s+" + re.escape(found[0].name) + r"\s*[<(]", found[0].attrs.get("signature", ""))
+            ret = m.group(1).split()[-1] if m else ""
+            inner = re.fullmatch(r"(?:Value)?Task<(.+)>", ret)
+            return (inner.group(1) if inner else ret) or None
         name = _t(expr)
         if expr.type == "member_access_expression" and _t(expr.child_by_field_name("expression")) == "this":
             name = _t(expr.child_by_field_name("name"))
@@ -765,6 +805,9 @@ class _CSharp:
             elif len(targs) == 1 or len(typeofs) == 1:
                 svc = targs[0] if targs else typeofs[0]
                 made = [_cs_type(m.child_by_field_name("type")) for a in pos for m in _descendants(a, "object_creation_expression")]
+                # services.AddScoped<IFoo>(sp => sp.GetRequiredService<Foo>()): the factory hands back another registration.
+                made += [ts[0] for a in pos for g in _descendants(a, "generic_name") for nm, ts in [_cs_generic(g)]
+                         if nm in ("GetRequiredService", "GetService") and ts]
                 made = [m for m in made if m != svc]
                 out.add("di", "provide", cid, svc, line, "factory" if made else "self", made[:1])
             return
@@ -781,11 +824,12 @@ class _CSharp:
         # Messages sent by type, to the handler for that type: MediatR, MassTransit, NServiceBus, Wolverine.
         if name in self.SEND:
             first = pos[0] if pos else None
-            if first is not None and first.type not in _CS_STRINGS and not (first.type == "identifier" and _t(first) in self.consts):
+            if first is not None and first.type not in _CS_STRINGS and not (first.type == "identifier" and _t(first) in self.consts) \
+                    and not re.search("http", _t(expr), re.I):   # HttpClient.SendAsync(request) sends a request, not a message
                 msg = targs[0] if targs else None
                 if msg is None and first is not None:
                     msg = self._type_of(first, cid)
-                if msg:
+                if msg and not msg.endswith("HttpRequestMessage"):
                     out.add("queue", "publish", cid, msg.rsplit(".", 1)[-1], line, "message")
                     return
         if name in ("Subscribe", "SubscribeAsync") and len(targs) >= 2:   # eventBus.Subscribe<TEvent, THandler>()
@@ -803,7 +847,7 @@ class _CSharp:
 
         # RPC: a call on a generated gRPC client, Greeter.GreeterClient.
         rtype = self._type_of(expr, cid)
-        if rtype and rtype.endswith("Client") and len(rtype) > 6:
+        if rtype and rtype.endswith("Client") and len(rtype) > 6 and "Http" not in rtype:
             parts = rtype.split(".")
             svc = parts[-1][:-6]
             if svc and (len(parts) > 1 and parts[-2] == svc or "Grpc" in rtype or svc[0].isupper()):
@@ -819,7 +863,14 @@ class _CSharp:
                 tid = self.where.type(line) or cid
                 out.add("db", "table", tid, self._lit(pos[0]), line, "fluent", [itargs[0]])
             return
-        role = _db_role(name)
+        role = _db_role(name.removesuffix("Async"))
+        repo = re.fullmatch(r"(?:[\w.]+\.)?I?\w*Repository(?:Base)?<\s*(?:[\w.]+\.)?(\w+)\s*>", self._raw_type_of(expr, cid) or "")
+        if repo and not role and _op(name.removesuffix("Async")) in ("list", "firstordefault", "singleordefault", "single"):
+            role = "read"
+        if role and repo:
+            # IRepository<Basket>: a repository typed by its entity reads and writes that entity's table.
+            out.add("db", role, cid, "model:" + repo.group(1), line, "repository")
+            return
         if role == "write" and expr is not None:
             if expr.type == "member_access_expression" and self.CTX.search(_t(expr.child_by_field_name("expression"))):
                 out.add("db", "write", cid, "dbset:" + _t(expr.child_by_field_name("name")), line, "ef")
@@ -939,6 +990,7 @@ class _TypeScript:
         self.field_types: dict[tuple, str] = {}
         self.rpc_vars: dict[str, str] = {}
         self.coll_vars: dict[str, str] = {}
+        self.grpc = b"grpc" in tree.root_node.text.lower()   # new FooClient(...) is a stub only where gRPC is in sight
 
     def _lit(self, node) -> Optional[str]:
         node = _ts_unwrap(node)
@@ -1020,7 +1072,7 @@ class _TypeScript:
             ctor = _t(right.child_by_field_name("constructor"))
             args = right.child_by_field_name("arguments")
             last = ctor.rsplit(".", 1)[-1]
-            if last.endswith("Client") and len(last) > 6 and last[0].isupper() and "Http" not in last:
+            if last.endswith("Client") and len(last) > 6 and last[0].isupper() and "Http" not in last and self.grpc:
                 self.rpc_vars[key] = last[:-6]                 # grpc-js static code: new GreeterClient(addr, creds)
             elif "." in ctor and args is not None and "credentials" in _t(args):
                 self.rpc_vars[key] = last                      # proto-loader: new hello_proto.Greeter(addr, creds)
@@ -1125,7 +1177,8 @@ class _TypeScript:
             if topic:
                 out.add("queue", "publish", cid, topic, line, "event" if name == "emitAsync" else "topic")
             return
-        if name in ("subscribe", "consume", "bindQueue", "psubscribe", "blpop", "brpop") and first is not None:
+        if name in ("subscribe", "consume", "bindQueue", "psubscribe", "blpop", "brpop", "asyncIterator",
+                    "asyncIterableIterator") and first is not None:   # the last two: graphql-subscriptions' PubSub
             pairs = _ts_pairs(_ts_unwrap(first))
             topics = []
             if "topic" in pairs and self._lit(pairs["topic"]):
@@ -1293,6 +1346,30 @@ def _stem(key: str) -> str:
     return key
 
 
+TEST_DIRS = frozenset("test tests __tests__ spec specs e2e testing".split())
+_TEST_SEG = re.compile(r"(^|[._-]|[a-z])Tests?$")                    # Basket.UnitTests, Application.FunctionalTests
+_TEST_FILE = re.compile(r"^(test_.*\.py|.*_test\.py|conftest\.py|.*\.(test|spec)\.[cm]?[jt]sx?|.*Tests?\.cs)$")
+
+
+def _test_path(path: str) -> bool:
+    segs = path.replace("\\", "/").split("/")
+    return any(s.lower() in TEST_DIRS or _TEST_SEG.search(s) for s in segs[:-1]) or bool(_TEST_FILE.match(segs[-1]))
+
+
+def _migration_path(path: str) -> bool:
+    segs = [s.lower() for s in path.replace("\\", "/").split("/")[:-1]]
+    return any(s in ("migrations", "migration") for s in segs) or ("alembic" in segs and "versions" in segs)
+
+
+def _shared_dirs(a: str, b: str) -> int:
+    n = 0
+    for x, y in zip(a.split("/")[:-1], b.split("/")[:-1]):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
 class _Resolver:
     def __init__(self, ix):
         self.ix = ix
@@ -1362,6 +1439,15 @@ class _Resolver:
             tid = cands[0] if len(cands) == 1 else None
         return tid
 
+    def in_tests(self, nid: str) -> bool:
+        n = self.ix.nodes.get(nid)
+        cur = n
+        while cur is not None and cur.kind in ("callable", "test"):
+            if cur.kind == "test" or cur.attrs.get("is_test") or cur.attrs.get("is_fixture"):
+                return True
+            cur = self.ix.nodes.get(cur.parent_id)
+        return n is not None and bool(n.path) and _test_path(n.path)
+
     def members(self, tid: str) -> dict[str, list]:
         """Methods of a type and the types it builds on, nearest first."""
         out: dict[str, list] = {}
@@ -1379,6 +1465,7 @@ class _Resolver:
             if e.role == "inject":
                 for typ in e.literals:
                     injects[e.address].add(typ)
+        linked_pairs: set = set()
         for e, fid, lang in self.by["di"]:
             if e.role == "provide":
                 st["registrations"] += 1
@@ -1394,7 +1481,7 @@ class _Resolver:
                     st["registrations_outside"] += 1
                     continue
                 precision = "guess" if e.method == "factory" else "heuristic"
-                linked = 0
+                linked = again = 0
                 for svc in svcs:
                     if svc == impl:
                         continue
@@ -1403,15 +1490,20 @@ class _Resolver:
                         for f in fns:
                             if f.kind != "callable" or name in (".ctor", "constructor", "__init__"):
                                 continue
-                            argc = f.attrs.get("argc_max")
+                            argc, params = f.attrs.get("argc_max"), f.id.rsplit("(", 1)[-1]
                             cands = [c for c in impl_members.get(name, []) if c.kind == "callable" and c.id != f.id]
-                            same = [c for c in cands if c.attrs.get("argc_max") == argc] or cands
+                            same = [c for c in cands if c.id.rsplit("(", 1)[-1] == params] or \
+                                [c for c in cands if c.attrs.get("argc_max") == argc] or cands
                             for c in same[:1]:
+                                if (f.id, c.id) in linked_pairs:
+                                    again += 1      # registered twice (two hosts, or a test host): one link
+                                    continue
+                                linked_pairs.add((f.id, c.id))
                                 if self.edge(f.id, c.id, precision, {
                                         "channel": "di", "address": f"{self.ix.nodes[svc].name} -> {self.ix.nodes[impl].name}",
                                         "registered_in": e.src_id, "registered_at": e.line}):
                                     linked += 1
-                st["registrations_linked"] += bool(linked)
+                st["registrations_linked"] += bool(linked or again)
                 st["links"] += linked
             elif e.role == "start":
                 tid = self.type_named(lang, e.address, e.src_id)
@@ -1463,7 +1555,9 @@ class _Resolver:
             if target not in self.ix.nodes or self.ix.nodes[target].kind not in ("callable", "test"):
                 continue
             subs[e.method].append((e.address, target, e))
-        st["publish_sites"] = sum(1 for e, _, _ in pubs if e.method != "signal")
+        # Messages only created come last, so a message also sent by name keeps its heuristic link.
+        pubs.sort(key=lambda p: p[0].method == "message-new")
+        st["publish_sites"] = sum(1 for e, _, _ in pubs if e.method not in ("signal", "message-new"))
         st["subscriptions"] = sum(len(v) for v in subs.values())
         exact: dict[tuple, list] = defaultdict(list)
         patterns = []
@@ -1482,6 +1576,11 @@ class _Resolver:
                 if target:
                     pairs.append((e, target, e.address, "heuristic", None))
                     continue
+            if e.method == "message-new":
+                # Created, not visibly sent: a guess that it reaches the handler for its type.
+                for a, t, s in exact.get(("message", e.address), []):
+                    pairs.append((e, t, a, "guess", s))
+                continue
             hits = [(a, t, s) for a, t, s in exact.get((e.method, e.address), [])]
             hits += [(a, t, s) for fam, rx, a, t, s in patterns if fam == e.method and rx.match(e.address)]
             if e.method == "event" and e.address in COMMON_EVENTS:
@@ -1502,7 +1601,11 @@ class _Resolver:
             if key in seen:
                 continue
             seen.add(key)
-            attrs = {"channel": "queue", "address": address, "kind": e.method, "line": e.line}
+            attrs = {"channel": "queue", "address": address, "kind": "message" if e.method == "message-new" else e.method,
+                     "line": e.line}
+            if e.method == "message-new":
+                attrs["created_only"] = True
+                st["linked_by_creation"] += 1
             if sub is not None and sub.src_id != target:
                 attrs["subscriber"] = sub.src_id
             if self.edge(e.src_id, target, precision, attrs):
@@ -1547,6 +1650,13 @@ class _Resolver:
         uses = []
         for e, fid, lang in self.by["db"]:
             if e.role not in ("read", "write"):
+                continue
+            node = ix.nodes.get(e.src_id)
+            if node is not None and _migration_path(node.path or ""):
+                st["in_migrations"] += 1      # a schema change, not data one side leaves for the other
+                continue
+            if self.in_tests(e.src_id):
+                st["in_tests"] += 1           # a test sets up and reads back its own rows
                 continue
             addr = e.address
             table = None
@@ -1630,10 +1740,18 @@ class _Resolver:
                 continue
             st["call_sites"] += 1
             m = method.lower()
-            hit = [f for name, f in impls if name == m or name == m + "async"]
+            hit = list(dict.fromkeys(f for name, f in impls if name == m or name == m + "async"))
             if not hit:
                 st["calls_with_no_method_here"] += 1
                 continue
+            if len(hit) > 1:
+                # Several servers of one service (examples, or one per language): the nearest by directory.
+                here = ix.nodes[e.src_id].path or ""
+                near = [_shared_dirs(here, ix.nodes[f].path or "") for f in hit]
+                best = max(near)
+                if near.count(best) < len(hit):
+                    st["servers_further_away"] += len(hit) - near.count(best)
+                    hit = [f for f, d in zip(hit, near) if d == best]
             for target in hit:
                 if (e.src_id, target) in seen:
                     continue
