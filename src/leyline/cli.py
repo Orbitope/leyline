@@ -259,6 +259,7 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   impact        what can reach a function, a type or a field: its callers near and far, and the flows through it
   source        source text of a node
   state         fields assigned from outside the type that declares them
+  coupling      files that usually change together, from git history
   patterns      design patterns found by their shape
   tour          a guided walk through the repository
   coverage      import measured test coverage, or show it
@@ -527,6 +528,14 @@ def _main(argv=None) -> int:
                                                   " (Istanbul, Cobertura): ties what ran to that file")
     p = sub.add_parser("state", description="fields assigned from outside the type that declares them")
     p.add_argument("scope", nargs="?", help="a module id or an id prefix")
+    p = sub.add_parser("coupling", description="files that usually change in the same commits as a file (or, with no file,"
+                                               " the most coupled pairs), read from git history: links the map cannot see")
+    p.add_argument("path", nargs="?", help="a file, relative to here or to its repository, or the end of its path")
+    p.add_argument("--min-together", type=int, default=3, help="commits the two changed in together (default 3, at least 2)")
+    p.add_argument("--min-confidence", type=float, default=0.5,
+                   help="share of the file's commits that changed the other too (default 0.5)")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("tour", description="print a tour of the repository")
     p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
     p = sub.add_parser("view", description="serve the map on localhost")
@@ -636,6 +645,14 @@ def _main(argv=None) -> int:
             print(f"{f['name']:<40} {f['writers']:>3} writers in {', '.join(f['written_from'][:5])}"
                   f"{' ...' if len(f['written_from']) > 5 else ''}; {f['readers']} readers")
         print("\n" + r["note"])
+    elif args.cmd == "coupling":
+        from . import coupling
+        r = coupling.query(con, args.path, max(args.min_together, 2), args.min_confidence, args.limit)
+        if args.json:
+            _print(r)
+        else:
+            print(coupling.text(r), file=sys.stderr if "error" in r else sys.stdout)
+        return 1 if "error" in r else 0
     elif args.cmd == "tour":
         from . import tours
         listed = tours.listing(con)["tours"]

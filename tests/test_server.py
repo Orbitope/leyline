@@ -407,6 +407,8 @@ def test_a_pull_request_is_reviewed_over_mcp(tmp_path):
         assert filed["change_id"] == "pr-feature"
         assert (await a.call("spec_findings", change="pr-feature"))["open"] == 1
         assert await a.fail("review_pr", base="main", github="1")   # no gh, no sign-in, or no such pull request
+        c = await a.call("coupling", path="store.py", min_together=2)    # git history: the base and the branch
+        assert c["path"] == "app/store.py" and c["changes"] == 2 and c["partners"] == []
     serve(root, script)
 
 

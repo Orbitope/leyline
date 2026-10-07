@@ -74,6 +74,9 @@ why not.
    and no task names it". Each is code that shares a channel, a caller, a field or a look-alike new
    member with the change. For each, either add a task or be able
    to say why it is right to leave alone. Do not pass this list to the person undigested.
+   "Usually changes with the files the tasks touch" comes from git history, not the map: a doc, schema,
+   fixture or test-case folder that changed in most past commits to a file the tasks touch. Treat it the
+   same way: a task, or a reason it is not needed this time.
 7. **Show the person `leyline.md`** (also returned as `page`). It is one page. Do not summarise it
    into something longer. Say which lines you are least sure of.
 8. **Get it reviewed** (the `leyline-adversarial-review` skill, once for logic and once for
