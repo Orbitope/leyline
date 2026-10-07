@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import re
 import sqlite3
 from importlib import resources
 from pathlib import Path
@@ -430,5 +431,8 @@ def test_places(con) -> tuple[set, set]:
     for path, mod in files_of.items():
         t, n = per.get(mod, (0, 0))
         per[mod] = (t + (path in tests), n + 1)
-    modules = {m for m, (t, n) in per.items() if m and n and t * 2 >= n}
+    # A test project is named for it (tests/, Foo.Tests, spec), or is nearly all test files: a package with its
+    # own test folder can hold as many test files as source files and still be the product.
+    named = re.compile(r"(^|[/.:_-])(tests?|specs?|__tests__|testing|e2e)$", re.I)
+    modules = {m for m, (t, n) in per.items() if m and n and t and (named.search(m) or t * 10 >= n * 8)}
     return tests, modules

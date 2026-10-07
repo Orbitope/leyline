@@ -47,7 +47,10 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
    is whether the code does what the description says, all of it and nothing else: name each edit the
    description does not explain, and each thing it promises that no edit does. `proposal` in a finding is the
    change to the code (or the description) you propose.
-4. A finding whose evidence is not on the change's blast radius comes back with a warning. Either add the node
+4. The facts for a pull request use the same questions under names without "task": `other_ends_of_those_channels_not_edited`,
+   `callers_of_changed_functions_left_alone`, `state_shared_with_unchanged_code`; and add
+   `signature_changed_callers_not_edited`, `removed_but_still_called` and `tests.likely_to_fail_unedited`.
+5. A finding whose evidence is not on the change's blast radius comes back with a warning. Either add the node
    that links it to the change, or ask yourself whether you wandered.
 
 ## Logic reviewer: answer each of these

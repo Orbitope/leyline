@@ -388,14 +388,23 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     if "error" in report:
         report = {}
     must = [m for m in report.get("must_edit") or [] if not _inside(m["id"], changed)]
+    sig_targets = [i for i in resigned if i in names.by_id]
+    for m in must:   # how many calls each must fix: a caller can call the changed code more than once
+        if sig_targets:
+            m["call_sites"] = con.execute(
+                f"SELECT COUNT(*) FROM calls WHERE src_id = ? AND dst_id IN ({','.join('?' * len(sig_targets))})",
+                (m["id"], *sig_targets)).fetchone()[0]
+        m["test"] = bool(names.in_tests(m["id"]))
 
     still_called = []
     for rid_, callers in removed_callers.items():
         live = [c for c in callers if c in names.by_id and not _inside(c, changed) and not _inside(c, {rid_})]
         if live:
             still_called.append({"id": rid_, "removed": next(n["name"] for n in removed if n["id"] == rid_),
-                                 "callers": [spec._label(names, c) for c in live], "caller_ids": live})
+                                 "callers": [spec._label(names, c) for c in live], "caller_ids": live,
+                                 "test_callers": [spec._label(names, c) for c in live if names.in_tests(c)]})
 
+    flagged = {m["id"] for m in must} | {c for x in still_called for c in x["caller_ids"]}
     existing = [i for i in dict.fromkeys([n["id"] for n in edited + types]) if i in names.by_id]
     new_existing = [n["id"] for n in outer_added if n["id"] in names.by_id]
     links = [{"key": "edits", "action": "behavior", "text": "", "nodes": existing, "new": [], "into": [], "mention_ids": [],
@@ -447,13 +456,17 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             "channels_crossed": crossings,
             "other_ends_not_edited": agree,
             "reads_or_calls_across_a_channel": across,
-            "callers_left_alone": alone["callers"][:30],
+            "callers_left_alone": [x for x in ({**c, "callers": [n for n, i in zip(c["callers"], c["caller_ids"]) if i not in flagged],
+                                                 "caller_ids": [i for i in c["caller_ids"] if i not in flagged]}
+                                                for c in alone["callers"]) if x["caller_ids"]][:30],
             "state_shared_with_unchanged_code": [x for x in alone["state"] if not x.get("quiet")][:30],
             "fields_written_from_elsewhere_too": state,
             "new_members_named_like_existing_ones": alone["beside"][:20],
             "entry_points_affected": (report.get("entry_points_affected") or [])[:20],
         },
         "tests": {
+            "likely_to_fail_unedited": sorted({m["name"] for m in must if m.get("test")}
+                                              | {t for x in still_called for t in x["test_callers"]}),
             "touched_by_the_change": tests_touched, "test_files_changed": test_files,
             "changed_code_no_test_reaches": [u for u in report.get("untested") or [] if not u["name"].endswith(("<module>", "<top-level>"))],
             "tests_to_run": (report.get("tests_to_run") or [])[:30],
@@ -766,7 +779,8 @@ def text(r: dict) -> str:
     # what it reaches and did not change
     risky = []
     for m in reach["signature_changed_callers_not_edited"][:10]:
-        risky.append(f"- **Not edited, calls changed code:** `{m['name']}` ({m.get('note') or 'its callee changed signature'}).")
+        sites = f", {_n(m['call_sites'], 'call')}" if m.get("call_sites", 0) > 1 else ""
+        risky.append(f"- **Not edited, calls changed code:** `{m['name']}` ({m.get('note') or 'its callee changed signature'}{sites}).")
     for x in reach["removed_but_still_called"][:10]:
         risky.append(f"- **Removed but still called:** `{x['removed']}`, from {_names(x['callers'])}.")
     for ch in [c for c in reach["channels_crossed"] if c["hub_touched"] or not c["data"]][:6]:
@@ -797,6 +811,9 @@ def text(r: dict) -> str:
         L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6) + "."]
     # tests
     L += ["", "## Tests", ""]
+    if t.get("likely_to_fail_unedited"):
+        L.append("- **Likely to fail:** " + _names(t["likely_to_fail_unedited"], 6)
+                 + ": they call code whose signature changed, or that was removed, and were not edited.")
     if t["touched_by_the_change"] or t["test_files_changed"]:
         L.append("- The change edits or adds tests: " + _names(t["touched_by_the_change"] or t["test_files_changed"], 6) + ".")
     else:

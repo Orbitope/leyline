@@ -69,7 +69,7 @@ def test_a_branch_is_reviewed_with_no_spec(branch, monkeypatch):
     assert code == 0, page
     assert "Signature: `load` (path) -> (path, encoding)" in page
     assert "**Not edited, calls changed code:** `use.py.count`" in page      # the caller the branch forgot
-    assert "use.py.first" not in page.split("## What it reaches")[1].split("Shares")[0]   # the one it updated
+    assert "use.py.first" not in page.split("## What it reaches")[1].split("## Tests")[0]   # the one it updated
     assert "**Removed but still called:** `helper`, from `double`" in page
     assert "Crosses the http GET /api/items" in page and "`client.ts.items`" in page   # the route's answer changed
     assert "Read files with an encoding" in page          # no --about: the commits say what it does
@@ -108,7 +108,7 @@ def test_uncommitted_edits_count_and_a_missing_base_is_said(branch, monkeypatch)
     use = branch / "app/use.py"
     use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p, \"utf-8\"))"))
     page = run("pr", "main")[1]
-    assert "with uncommitted edits" in page and "`use.py.count`" not in page.split("## What it reaches")[1].split("Shares")[0]
+    assert "with uncommitted edits" in page and "`use.py.count`" not in page.split("## What it reaches")[1].split("## Tests")[0]
     code, _ = run("pr", "no-such-branch")
     assert code == 1
 

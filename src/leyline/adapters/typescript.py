@@ -1177,6 +1177,31 @@ class _Walker:
             self.res.endpoints.append(Endpoint("file", role, cid, "", line, None, lits))
         if name in ("join", "resolve") and fn.type == "member_expression" and _text(fn.child_by_field_name("object")) in ("path", "posix", "nodePath"):
             self.res.path_strings.setdefault(cid, []).extend(s for a in arg_nodes for s in _strings(a))
+            return
+        if role:
+            return
+        # A request through a wrapper (apiFetch("/api/x"), api.get(...) on a client the name does not give away)
+        # or a test's server.inject({ method, url }): a path that a route of this program serves, linked only when
+        # one route fits it (see Indexer._resolve_endpoints).
+        url, method = None, None
+        if addr and addr.startswith("/") and addr.count("/") >= 2 and not any(ch.isspace() for ch in addr):
+            url = addr
+        else:
+            for a in arg_nodes[:2]:
+                a = _unwrap(a)
+                if a is not None and a.type == "object":
+                    text = _text(a)
+                    m = re.search(r"\burl\s*:\s*['\"`](/[^'\"`\s]*)['\"`]", text)
+                    if m:
+                        url = m.group(1)
+                        mm = re.search(r"\bmethod\s*:\s*['\"`](\w+)['\"`]", text)
+                        method = mm.group(1).upper() if mm else None
+                        break
+        if url:
+            if method is None and len(arg_nodes) > 1:
+                mm = re.search(r"\bmethod\s*:\s*['\"`](\w+)['\"`]", _text(arg_nodes[1]))
+                method = mm.group(1).upper() if mm else None
+            self.res.endpoints.append(Endpoint("http", "maybe", cid, url.split("?", 1)[0], line, method))
 
 
 def parse(repo: str, rel_path: str, file_id: str, src: bytes, module: str = "") -> FileResult:

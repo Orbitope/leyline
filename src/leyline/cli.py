@@ -437,7 +437,15 @@ def _main(argv=None) -> int:
     p = sub.add_parser("patterns", description="design patterns found by their shape")
     p.add_argument("pattern", nargs="?", help="only this pattern, such as strategy")
     p.add_argument("--tests", action="store_true", help="include patterns inside test code")
-    p = sub.add_parser("spec", description="a change stated as an OpenSpec folder: brief it, review it, verify it")
+    p = sub.add_parser("spec", description="a change stated as an OpenSpec folder, or a pull request reviewed with"
+                                           " `leyline pr` (pr-<id>): brief it, review it, verify it",
+                       formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""examples:
+  leyline spec facts <change> --reviewer logic       the facts a logic reviewer works from (JSON)
+  leyline spec finding <change> --reviewer logic --severity high \\
+      --claim "one sentence a person can check" --evidence <node id> ... --proposal "what to change"
+  leyline spec findings <change>                     the findings, one line each
+  leyline spec resolve <finding id> accepted|rejected|deferred "why"
+  leyline spec forget <change>                       delete the change's baseline (a pull request: its base's map)""")
     p.add_argument("action", choices=["brief", "verify", "facts", "finding", "file", "findings", "resolve", "forget"],
                    help="finding files one review finding (file is the same); forget deletes a change's baseline")
     p.add_argument("--new-baseline", action="store_true",

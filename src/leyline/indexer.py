@@ -2732,7 +2732,7 @@ class Indexer:
                 if e.src_id not in self.nodes or e.channel not in ("http", "file"):
                     continue   # the other channels are linked in leyline.channels
                 (routes if (e.channel, e.role) == ("http", "serve") else requests if e.channel == "http" else io).append((e, res))
-        http["routes"], http["requests"] = len(routes), len(requests)
+        http["routes"], http["requests"] = len(routes), sum(1 for e, _ in requests if e.role != "maybe")
 
         def fits(route, request):
             a, b = segments(route.address), segments(request.address)
@@ -2746,7 +2746,9 @@ class Indexer:
             cands = [r for r in cands if _repo_of(r.src_id) == _repo_of(req.src_id)] or cands
             near = [r for r in cands if root_of(r.src_id) == root_of(req.src_id)]   # a route declared inside the same test
             chosen = near or (cands if len({r.src_id for r in cands}) == 1 else [])
-            if cands and not chosen:
+            if req.role == "maybe":   # a path handed to a wrapper: a request only when exactly one route serves it
+                chosen = chosen if len(segments(req.address)) >= 2 and len({r.src_id for r in chosen}) == 1 else []
+            elif cands and not chosen:
                 http["ambiguous"] += 1
             for r in chosen:
                 key = (req.src_id, r.src_id)

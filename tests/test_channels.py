@@ -166,3 +166,33 @@ def test_brief_names_the_channels_a_change_crosses(tmp_path):
     assert "Crosses a db boundary (Orders): Billing.Pending, Reports.Count and app.py.list_orders read what SqlOrderStore.Save writes." in text
     # Each reader of what changed must agree with it, and no task names one (Signal item 5).
     assert "- app.py.list_orders (py/app.py): also reads what SqlOrderStore.Save writes" in text
+
+
+def test_requests_through_a_wrapper_or_inject_find_their_route(tmp_path):
+    """A client that calls its own fetch wrapper, and a test that calls server.inject, request a route as surely as
+    fetch does. They are linked only when exactly one route of the program serves the path."""
+    root = tmp_path / "web"
+    (root / "test").mkdir(parents=True)
+    (root / "server.ts").write_text(
+        'import Fastify from "fastify";\nexport function build() {\n  const server = Fastify();\n'
+        '  server.get("/api/things/:id", async () => ({ thing: 1 }));\n'
+        '  server.post("/api/things", async () => ({ ok: true }));\n  return server;\n}\n')
+    (root / "api.ts").write_text(
+        'async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> { return (await fetch(url, init)).json(); }\n'
+        'export const api = {\n  thing: (id: string) => apiFetch<{ thing: number }>(`/api/things/${id}`),\n'
+        '  add: () => apiFetch("/api/things", { method: "POST" }),\n'
+        '  nothing: () => apiFetch("/api/none/here"),\n'
+        '  config: () => readConfig("/etc/app/config"),\n};\nfunction readConfig(p: string) { return p; }\n')
+    (root / "test" / "server.test.ts").write_text(
+        'import { build } from "../server";\nimport { it, expect } from "vitest";\n'
+        'it("answers a thing", async () => {\n  const s = build();\n'
+        '  const r = await s.inject({ method: "GET", url: "/api/things/7" });\n  expect(r.statusCode).toBe(200);\n});\n')
+    db = tmp_path / "s.db"
+    index(root, db, "web")
+    c = store.connect(db)
+    got = links(c, "http")
+    assert got[("api.api.thing", "server.build")][1] == "GET /api/things/:id"
+    assert got[("api.api.add", "server.build")][1] == "POST /api/things"
+    assert any(src.endswith("test:answers-a-thing") for src, dst in got if dst == "server.build")
+    assert set(got) == {("api.api.thing", "server.build"), ("api.api.add", "server.build"),
+                        ("test.server.test.<module>/test:answers-a-thing", "server.build")}   # not nothing, not config
