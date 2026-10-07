@@ -11,6 +11,8 @@ import json
 from collections import defaultdict
 from typing import Optional
 
+from . import store
+
 KINDS = ("forbid", "no_cycle", "must_be_tested")
 EDGE_KINDS = ("calls", "imports", "uses_type", "instantiates", "extends", "implements", "depends_on", "communicates",
               "reads", "writes")
@@ -140,9 +142,7 @@ def check(con, rules_from=None) -> dict:
                     visit(v, [v])
         elif rule["kind"] == "must_be_tested":
             scope = _select(con, rule["selector_from"])
-            tested = {r[0] for r in con.execute(
-                "SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
-                " WHERE json_extract(f.attrs, '$.kind') = 'test'")}
+            tested = {r[0] for r in con.execute(store.TESTED)}
             try:  # functions measured running under a test count as tested
                 tested |= {r[0] for r in con.execute("SELECT DISTINCT node_id FROM covered")}
             except Exception:

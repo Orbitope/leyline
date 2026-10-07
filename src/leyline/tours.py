@@ -15,6 +15,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
+from . import store
+
 SOURCE = "leyline-tour/0.1"
 REF_KINDS = ("repo", "node", "flow", "pattern", "view")
 SIDE_DIRS = ("sample", "samples", "example", "examples", "bench", "benchmarks", "docs", "doc", "demo", "demos", "snippets")
@@ -225,8 +227,7 @@ def generate(con, repo_id: str) -> dict:
     # 6. Tests, and what the map does not show.
     n_tests = sum(1 for f in flows if flow_kind[f["id"]] == "test")
     if n_tests:
-        tested = {r[0] for r in q("SELECT DISTINCT s.callable_id FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
-                                  " WHERE json_extract(f.attrs, '$.kind') = 'test'")}
+        tested = {r[0] for r in q(store.TESTED)}
         fns = [r[0] for r in q("SELECT id FROM nodes WHERE kind = 'callable' AND repo_id = ?", repo_id) if module.get(r[0]) in core]
         on = sum(1 for i in fns if i in tested)
         home = sorted(test_mods, key=lambda m: -(size.get(m, (0, 0))[1] or 0))

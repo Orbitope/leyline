@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
 from importlib import resources
@@ -36,6 +37,11 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return con
 
 
+# Every callable on some test's path. The flows are filtered before the join: reading the kind out of each
+# flow's attrs once per step instead was most of the cost on a large repo.
+TESTED = ("SELECT DISTINCT callable_id FROM flow_steps"
+          " WHERE flow_id IN (SELECT id FROM flows WHERE json_extract(attrs, '$.kind') = 'test')")
+
 VIA = ("start", "calls", "runs", "dispatch", "event", "process", "http", "file", "channel")
 _VIA_CASE = "CASE s.via " + " ".join(f"WHEN {i} THEN '{v}'" for i, v in enumerate(VIA)) + " END"
 
@@ -67,11 +73,15 @@ def _keys(con, ids) -> dict:
 
 
 def _insert_steps(con, steps) -> None:
-    key = _keys(con, [s[0] for s in steps] + [s[3] for s in steps])
+    key = _keys(con, itertools.chain((s[0] for s in steps), (s[3] for s in steps)))
     via = {v: i for i, v in enumerate(VIA)}
+    # Millions of rows on a large repo: the callable index is built once at the end rather than kept up to date
+    # row by row, and the rows are made as they are inserted, not held in a second list.
+    con.execute("DROP INDEX IF EXISTS steps_callable")
     con.executemany("INSERT OR REPLACE INTO steps (flow, seq, depth, callable, via, site_line, parent_seq) VALUES (?,?,?,?,?,?,?)",
-                    [(key[f], seq, depth, key[c], via.get(v, via["channel"]), line, parent)
-                     for f, seq, depth, c, v, line, parent in steps])
+                    ((key[f], seq, depth, key[c], via.get(v, via["channel"]), line, parent)
+                     for f, seq, depth, c, v, line, parent in steps))
+    con.execute("CREATE INDEX IF NOT EXISTS steps_callable ON steps(callable, flow)")
 
 
 def clear_facts(con: sqlite3.Connection, repo_id: str) -> None:
