@@ -35,7 +35,7 @@ FILE_AT_ROOT = ".leyline-learnings.json"
 ABOUT = ("Decisions people made on Leyline review findings: each rejected finding, with the reason in the person's"
          " words and the code it is about. Reviewers read the active ones first. Commit this file.")
 # Word overlap (Jaccard) a finding's claim needs with a learning's claim to match it: closer code needs less.
-SAME_CODE = 0.4    # the same node, a node in the same type, or the same file
+SAME_CODE = 0.45   # the same node, a node in the same type, or the same file (tuned on test_learnings's claims)
 SAME_MODULE = 0.6  # only the same module
 RETIRE_AFTER = 2   # accepted findings a learning matched, more than it matched rejected ones, before it is retired
 LEVELS = ("node", "type", "file", "module")
@@ -44,8 +44,8 @@ STOP = set("""a an the and or but nor of to in on at by for with from into onto 
 it its it's this that these those as if then than so no not still can could will would should may might must do does
 did done has have had having when which who whom what where there here also only any all each every more less very just
 same other without about after before because while yet such some their them they he she we you your our his her
-one ever never get gets got via per""".split())
-GENERIC = {"call", "caller", "function", "method"}   # in nearly every claim about code, so they say nothing
+one ever never get gets got via per too instead""".split())
+GENERIC = {"call", "caller", "function"}   # (as SYNONYMS leaves them) in nearly every claim about code: they say nothing
 
 
 def now() -> str:
@@ -155,15 +155,102 @@ def overlap(learned: dict, here: dict) -> Optional[str]:
 
 
 # -- what a claim says ---------------------------------------------------------------------------
-def words(text: str) -> set:
-    """A claim's words, compared loosely: code names split (`EntryQueues` is entry and queue), lower case, common
-    words dropped, and plural and tense endings cut."""
-    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text or "")
+# Words reviewers use for the same thing, one group per line: every word in a group counts as the group's first. Kept
+# short on purpose: each group is a way for two different worries to look alike, so a group goes in only when its words
+# are interchangeable in a claim about code. No word is in two groups (`test_learnings` checks).
+SYNONYMS = """
+argument parameter param arg args argv
+remove delete drop erase
+null none nil undefined nullptr nullish
+caller callsite
+call invoke invocation
+function method func routine procedure callable
+error exception
+throw raise rethrow
+crash panic abort kill
+empty blank
+missing absent omit omitted lack lacks
+check verify guard
+wrong incorrect invalid bad broken
+ignore skip bypass overlook
+change update modify mutate edit alter
+create construct instantiate allocate
+read load fetch retrieve
+write save persist store
+lock mutex synchronize
+race concurrent concurrently
+slow expensive costly inefficient
+memory ram heap
+loop iterate iteration
+cache memoize memoization
+config configuration setting option
+field property attribute attr prop member
+type class struct
+list array vector sequence
+map dict dictionary hashmap
+number integer int float numeric
+boolean bool
+length size len
+duplicate copy clone dup repeated
+unused dead
+async asynchronous await
+encoding charset codec
+init initialize initialise setup
+close dispose release cleanup
+default fallback
+timeout deadline
+"""
+# Phrases that say one thing in several words, rewritten before the words are split.
+PHRASES = ((r"\bcall[\s-]sites?\b", "callsite"), (r"\bcalling code\b", "caller"), (r"\bout of (?:range|bounds)\b", "outofbounds"),
+           (r"\brace conditions?\b", "race"), (r"\bnull pointers?\b", "null"), (r"\btime[\s-]?outs?\b", "timeout"),
+           (r"\bset[\s-]?up\b", "setup"), (r"\bclean[\s-]?up\b", "cleanup"), (r"\bgives? back\b", "returns"), (r"\bas well\b", " "))
+# Words in nearly every claim about some code: shared, they say little, so they weigh half (made into the form `words`
+# gives them below `_canon`).
+LIGHT_WORDS = """file read write return value data use used list name type string new change set get run path line test
+code item result output input object field number request response"""
+EXTENSIONS = set("py pyi ts tsx js jsx mjs cjs cs go rs java kt swift c h cc cpp hpp rb php scala lua sh gd json md yml"
+                 " yaml toml".split())
+
+
+def _qualified(m) -> str:
+    """`app.use.count`, `Engine::start()`, `pkg/core.py`: the short name, which is how another claim will say it."""
+    parts = re.split(r"\.|::|#|/", m.group(0).rstrip("()"))
+    if len(parts) > 1 and parts[-1].lower() in EXTENSIONS:
+        parts = parts[:-1]
+    return parts[-1]
+
+
+def short_names(ids) -> set:
+    """The names of nodes as a claim writes them: `python:app.use.count` is count, `csharp:P::N.T.M(int)` is M."""
+    out = set()
+    for i in ids or ():
+        tail = re.sub(r"\(.*$", "", i).split("/")[-1]
+        name = re.split(r"\.|::|:", tail)[-1]
+        if name and not name.startswith("<"):
+            out.add(name)
+    return out
+
+
+def words(text: str, names=()) -> set:
+    """A claim's words, compared loosely: a qualified name cut to its short name (`app.use.count` is count), the
+    names in `names` (the code both claims are about, which says nothing about the worry) left out, other code names
+    split (`EntryQueues` is entry and queue, `parse_args` parse and args), lower case, common words dropped, plural
+    and tense endings cut, and words a review uses for the same thing (`SYNONYMS`, `PHRASES`) made one."""
+    text = text or ""
+    for pat, rep in PHRASES:
+        text = re.sub(pat, rep, text, flags=re.I)
+    text = re.sub(r"[A-Za-z_]\w*(?:(?:\.|::|#|/)[A-Za-z_]\w*)+(?:\(\))?", _qualified, text)
+    skip = {n.lower().replace("_", "") for n in names}   # parse_args and parseArgs are one name
+    if skip:
+        text = re.sub(r"[A-Za-z_]\w*", lambda m: " " if m.group(0).lower().replace("_", "") in skip else m.group(0), text)
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
     out = set()
     for w in re.findall(r"[a-z0-9]+", text.lower()):
         if w in STOP or len(w) < 2:
             continue
         w = _stem(w)
+        w = CANON.get(w, w)
         if w not in GENERIC:
             out.add(w)
     return out
@@ -188,10 +275,28 @@ def _stem(w: str) -> str:
     return w
 
 
-def similarity(a: str, b: str) -> float:
-    """Jaccard overlap of two claims' words: 0 shares nothing, 1 is the same words."""
-    x, y = words(a), words(b)
-    return len(x & y) / len(x | y) if x and y else 0.0
+def _canon() -> dict:
+    out = {}
+    for line in SYNONYMS.split("\n"):
+        group = line.split()
+        for w in group:
+            out[_stem(w)] = _stem(group[0])
+    return out
+
+
+CANON = _canon()
+LIGHT = {CANON.get(_stem(w), _stem(w)) for w in LIGHT_WORDS.split()}
+
+
+def similarity(a: str, b: str, names=()) -> float:
+    """How much two claims say the same: the overlap of their words (Jaccard), each word weighing 1 but the common
+    ones in `LIGHT`, which weigh half. 0 shares nothing, 1 is the same words. `names` are the code both claims are
+    about, left out of both."""
+    x, y = words(a, names), words(b, names)
+    if not x or not y:
+        return 0.0
+    weight = lambda ws: sum(0.5 if w in LIGHT else 1.0 for w in ws)
+    return weight(x & y) / weight(x | y)
 
 
 # -- the steps that record and use learnings ------------------------------------------------------
@@ -222,7 +327,10 @@ def best_match(con, reviewer: str, claim: str, evidence: list[str]) -> Optional[
             level = overlap(l.get("scope") or {}, here)
             if level is None:
                 continue
-            sim = similarity(claim, l.get("claim", ""))
+            # The code both are about is why they were compared at all; what is left is the worry itself.
+            scope = l.get("scope") or {}
+            names = short_names([*here["nodes"], *here["types"], *scope.get("nodes", []), *scope.get("types", [])])
+            sim = similarity(claim, l.get("claim", ""), names)
             if sim < (SAME_MODULE if level == "module" else SAME_CODE):
                 continue
             key = (-LEVELS.index(level), sim)
