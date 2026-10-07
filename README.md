@@ -448,10 +448,14 @@ out the repository's id, so a clone in a folder of another name reads them.
   `spec_review_facts`) start with `learnings_that_apply`: active learnings about code the change touches or
   reaches, closest first.
 - **A repeat is marked, not dropped.** A new finding of the same kind of review, on the same node, type or
-  file, whose claim shares at least 40% of its words with a learning's claim (60% when only the module is
+  file, whose claim shares at least 45% of its words with a learning's claim (60% when only the module is
   shared), comes back with `learned`, naming the learning and its reason. The page shows it as "Matches a
   past decision: ..." and the person still decides it. Words are compared loosely: lower case, code names
-  split, common words dropped, endings cut.
+  split (`parseArgs` and `parse_args` are one name, `app.use.count` is `count`), the names of the code both
+  claims are about left out (they say where, not what), common words dropped, endings cut, words a review
+  uses for the same thing made one (about forty groups, such as argument and parameter, remove and delete,
+  null, None and undefined, caller and call site; `SYNONYMS` in `learnings.py`), and words found in nearly
+  every claim (file, read, value) counted half.
 - **A wrong learning retires itself.** Each later decision on a finding it matched is counted. Once people
   have accepted at least two of them, and more than they rejected, the learning is retired and the file
   says why. It is also retired if the finding it came from is later marked anything but rejected.
@@ -653,6 +657,41 @@ the tasks touch and that no task names, and `pr` those that usually changed with
 it did not; `leyline spec facts` has the whole list. Coupling is by file, not by function: a past commit's line
 numbers do not say which function they were in without parsing every file as it was then.
 
+### An outline for an agent
+
+`leyline context <focus...> [--tokens N]` (the `context` tool) gives an agent about to edit some code a short outline of
+the code around it, cut to a token budget (2,000 by default, 200 to 8,000; a token is counted as four characters):
+
+```
+$ leyline context registerLoreRoutes --tokens 1000
+Code around registerLoreRoutes: declarations, the most related files first; > marks the focus.
+
+editor/host/src/lore-routes.ts
+  const relOf = (params: unknown): string
+      -- called by registerLoreRoutes
+> function registerLoreRoutes(server: FastifyInstance, opts: { index: () => ReferenceIndex }): void
+      -- answers GET /api/lore-files, GET /api/usages/:type/:id; called from 1 place, calls 12
+
+editor/host/src/server.ts
+  async function buildServer()
+      -- answers GET /api/types, ... and 29 more; calls registerLoreRoutes
+...
+editor/client/src/lib/loreApi.ts
+  const loreApi = { ... }
+    listFiles: ()
+        -- requests GET /api/lore-files
+Shown: 30 symbols in 17 files.
+Left out: 1 more symbol linked directly to the focus and 422 two links away, in 120 files; the nearest: ...
+```
+
+The focus is node ids, names (`Owner.method`), file paths, a change (`spec-<id>`, `pr-<id>`: the code its plan or review
+marked) or words to search for. Every function, type, field and test is ranked by personalized PageRank from the focus
+over calls, channel links, type use and containment, each way, with a small boost for code a test reaches and code an
+entry point runs first. The outline shows declaration lines, not bodies, file by file, most related file first: the focus
+marked `>`, each channel end in words ("answers GET /api/x", "writes table t"), and what calls the focus or what it calls
+said so. The last lines say how much was left out and name the nearest of it. The ranking visits only code near the focus,
+and the graph is read once per map run: on Parlance (160,000 lines) the first call takes 0.3 s and later ones 0.05 s.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
@@ -689,6 +728,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `expand(node_id, limit?)` | One node in detail: contents, dependencies, dependents, callers and callees |
 | `neighbors(node_id, direction?, kinds?, limit?)` | Raw edges around a node, by kind |
 | `source(node_id, max_lines?)` | The node's source text |
+| `context(focus, budget_tokens?)` | A short outline of the code around a focus (ids, names, paths, a change, or words), most related first, cut to a token budget |
 | `flows(kind?, through?, limit?, offset?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
 | `flow(flow_id, max_steps?, offset?)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |

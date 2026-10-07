@@ -151,12 +151,12 @@ def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE) -> str:
 
 
 def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, items: int = 0, keep: tuple = (),
-          more: str = MORE):
+          more: str = MORE, limit: int = LIMIT):
     """Register `fn` as a tool. Its answer is a dict; one with "error" is returned as a tool error. `items` caps
     every list in the answer (0 leaves them to the size limit alone); lists under keys in `keep` stay whole.
-    `more` tells the agent how to see what was cut."""
+    `more` tells the agent how to see what was cut; `limit` is the answer's size in characters."""
     if fn is None:
-        return lambda f: _tool(f, name=name, needs_store=needs_store, items=items, keep=keep, more=more)
+        return lambda f: _tool(f, name=name, needs_store=needs_store, items=items, keep=keep, more=more, limit=limit)
 
     @functools.wraps(fn)
     def run(*args, **kwargs):
@@ -176,7 +176,7 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
             raise ToolError(_for_agent(str(out["error"])) + (" " + _fit(rest, _cap(rest, 10)) if rest else ""))
         cut = out.pop("cut") if isinstance(out.get("cut"), dict) else {}   # what the tool itself cut
         cut.update(_cap(out, items, keep) if items else {})
-        return _fit(out, cut, more=more)
+        return _fit(out, cut, limit=limit, more=more)
 
     # No return annotation: the answer is text (compact JSON), not a structured result to validate.
     run.__signature__ = inspect.signature(fn, eval_str=True).replace(return_annotation=inspect.Signature.empty)
@@ -549,6 +549,24 @@ def impact(node_id: NodeId,
     r["by_module"] = {"total": len(mods), "items": mods[:limit]}
     r["flows_through"]["items"] = r["flows_through"]["items"][:limit]
     return r
+
+
+@_tool(items=10, limit=36_000)
+def context(focus: Annotated[list[str], Field(min_length=1, description="What you are working on: node ids, names"
+                                                                       " (`Owner.method`), file paths, a change id"
+                                                                       " (spec-<id>, pr-<id>) or words to search for.")],
+            budget_tokens: Annotated[int, Field(ge=200, le=8000, description="How long the outline may be, in tokens"
+                                                                           " (characters / 4).")] = 2000) -> dict:
+    """A short outline of the code around what you are working on, to read before editing it: the related
+    functions, types and tests file by file, as declaration lines (no bodies), most related first, cut to the
+    budget. The focus is marked `>`; channel ends are said in words ("answers GET /api/x"); the last lines say what
+    was left out. Ranked by personalized PageRank over calls, channels, type use and containment. Read a body
+    with `source`."""
+    from . import context as ctx
+    r = ctx.build(_db(), focus, budget_tokens)
+    if "error" in r:
+        return r
+    return {"text": r["text"], "tokens": r["tokens"], "focus": r["focus"], "shown": r["shown"], "left_out": r["left_out"]}
 
 
 # -- writing to the map -------------------------------------------------------------------------------

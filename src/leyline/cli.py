@@ -326,6 +326,7 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   neighbors     edges around a node
   impact        what can reach a function, a type or a field: its callers near and far, and the flows through it
   source        source text of a node
+  context       a short ranked outline of the code around a focus, cut to a token budget, for an agent
   state         fields assigned from outside the type that declares them
   coupling      files that usually change together, from git history
   patterns      design patterns found by their shape
@@ -557,6 +558,13 @@ def _main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("source", description="source text of a node")
     p.add_argument("node_id")
+    p = sub.add_parser("context", description="a short outline of the code around a focus, most related first, cut to a"
+                                              " token budget: declaration lines file by file, the focus marked >")
+    p.add_argument("focus", nargs="+", help="node ids, names (Owner.method), file paths, a change id (spec-<id>,"
+                                            " pr-<id>) or words to search for")
+    p.add_argument("--tokens", type=int, default=2000, help="how long the outline may be, in tokens (characters / 4;"
+                                                            " default 2000, from 200 to 8000)")
+    p.add_argument("--json", action="store_true")
     sub.add_parser("serve", description="serve the store over MCP (stdio)")
     p = sub.add_parser("export", description="write the map as one self-contained HTML page")
     p.add_argument("-o", "--out", default="leyline-map.html")
@@ -782,6 +790,14 @@ def _main(argv=None) -> int:
     elif args.cmd == "source":
         r = query.source(con, args.node_id)
         print(r.get("text") or r.get("error"))
+    elif args.cmd == "context":
+        from . import context
+        r = context.build(con, args.focus, args.tokens)
+        if args.json or "error" in r:
+            _print(r)
+        else:
+            print(r["text"], end="")
+        return 1 if "error" in r else 0
     return 0
 
 

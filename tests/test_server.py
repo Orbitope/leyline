@@ -194,6 +194,8 @@ def test_every_other_tool_with_real_arguments(repo):
         n = await a.call("neighbors", node_id=start, direction="in", kinds=["calls"])
         assert n["in"]["calls"]["total"] >= 1
         assert "return self.name" in (await a.call("source", node_id=start))["text"]
+        ctx = await a.call("context", focus=["Engine.start"], budget_tokens=500)
+        assert "def start(self)" in ctx["text"] and ctx["tokens"] <= 500 and "Left out:" in ctx["text"]
         fl = await a.call("flows", through=start)
         assert fl["total"] >= 1
         page = await a.call("flows", limit=2)
