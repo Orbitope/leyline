@@ -767,6 +767,15 @@ moves, and carries a `channel` and an `address`.
   requests from `.get("/x")`-style calls and `HttpClient` methods with a literal path. A request is
   linked to a route declared inside the same test first, then to the only route in the repository
   that matches; if several match, it is counted as ambiguous and left unlinked.
+  In TypeScript (Fastify, Express, Hono, Koa routers), a route's inline handler
+  (`server.get("/api/x", async (req) => ...)`, `server.route({ method, url, handler })`, or
+  `server.get(path, { schema }, handler)`) is a function of its own, named for its route (`GET /api/x`)
+  and nested in the function that registers it: the request lands on it, what it calls is its own, and
+  the registrar registers it (kept as a call, so startup still reaches it). A handler given by name
+  (`server.get("/x", listThings)`) is that function. When several handlers' routes fit a request, the
+  route that names more of the path outright wins (`/api/review/health` over `/api/review/:id`), and a
+  request with no method written is taken as a GET. In a pull request, an edit inside a handler touches
+  its route and no other.
 - **file**: from a function that writes a file to one that reads it, when the path fragments written
   in the two agree: the same file name, or the same directory and the same extension
   (`policies/*.bin`). These are always a `guess`, since paths are usually built at run time. Flows

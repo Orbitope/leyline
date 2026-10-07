@@ -21,7 +21,7 @@ from typing import Optional
 from . import store
 from .adapters import BY_EXTENSION, BY_LANGUAGE
 from .adapters.python import module_path
-from .model import CallSite, Edge, FieldUse, FileResult, Node
+from .model import CallSite, Edge, Endpoint, FieldUse, FileResult, Node
 
 SOURCE = "leyline-indexer/0.1"
 MODULE_MARKERS = ("pyproject.toml", "setup.py", "package.json", "__init__.py")
@@ -2712,6 +2712,55 @@ class Indexer:
     GENERIC_DIRS = {"data", "temp", "file", "files", "json", "path", "output", "outputs", "input", "home", "user", "users",
                     "test", "tests", "docs", "static", "assets", "resources", "config", "build", "dist", "local"}
 
+    def _route_handlers(self, routes: list) -> tuple[list, dict]:
+        """The functions that answer routes. An inline handler is its own function (an adapter made it, nested in
+        the function that registers the route): the registrar registers it, which the map keeps as a call so that
+        whatever runs the registrar still reaches the handler. A handler given by name (server.get("/x", list))
+        is the function that name refers to, when the registrar's reference to it was resolved.
+        Returns the routes with their serving end moved to the handler, and each handler's registrar."""
+        handlers: dict[str, str] = {}
+        for n in list(self.nodes.values()):
+            if n.kind == "callable" and n.attrs.get("native_kind") == "route_handler" and n.parent_id in self.nodes:
+                handlers[n.id] = n.parent_id
+                self.calls.append((n.parent_id, n.id, "registers", "heuristic", n.attrs.get("registered_at") or n.span_start))
+        named = [i for i, (e, _) in enumerate(routes) if e.handler]
+        if named:
+            refs: dict[str, set] = defaultdict(set)
+            wanted = {routes[i][0].src_id for i in named}
+            for src, dst, dispatch, _p, _l in self.calls:
+                if dispatch == "reference" and src in wanted:
+                    refs[src].add(dst)
+            routes = list(routes)
+            for i in named:
+                e, res = routes[i]
+                name = e.handler.rsplit(".", 1)[-1]
+                hits = {d for d in refs.get(e.src_id, ()) if d in self.nodes and self.nodes[d].name == name}
+                if len(hits) == 1:
+                    target = hits.pop()
+                    handlers.setdefault(target, e.src_id)
+                    routes[i] = (Endpoint(e.channel, e.role, target, e.address, e.line, e.method, e.literals, e.handler), res)
+        return routes, handlers
+
+    @staticmethod
+    def _one_handler(cands: list, handlers: dict, method: Optional[str], literal) -> list:
+        """A request that several handlers' routes fit. A route that names more of the path outright wins
+        (/api/review/health over /api/review/:id), as routers pick it; then, for a request whose method is not
+        written, a GET, which is what a request sent with no method is; failing both, the function that registers
+        them all answers it, as it did before handlers had functions of their own. Empty when none settles it."""
+        most = max(literal(r) for r in cands)
+        cands = [r for r in cands if literal(r) == most]
+        if len({r.src_id for r in cands}) == 1:
+            return cands
+        gets = [r for r in cands if r.method in (None, "GET")] if method is None else []
+        if gets and len({r.src_id for r in gets}) == 1:
+            return gets
+        owners = {handlers.get(r.src_id) for r in cands}
+        if len(owners) == 1 and None not in owners:
+            r, same = cands[0], {c.method for c in cands}
+            return [Endpoint(r.channel, r.role, owners.pop(), r.address, r.line, same.pop() if len(same) == 1 else None,
+                             r.literals)]
+        return []
+
     def _resolve_endpoints(self) -> None:
         """Link the two ends of channels that are not calls: an HTTP request to its route, and code that
         writes a file to code that reads it."""
@@ -2733,6 +2782,7 @@ class Indexer:
                     continue   # the other channels are linked in leyline.channels
                 (routes if (e.channel, e.role) == ("http", "serve") else requests if e.channel == "http" else io).append((e, res))
         http["routes"], http["requests"] = len(routes), sum(1 for e, _ in requests if e.role != "maybe")
+        routes, handlers = self._route_handlers(routes)
 
         def fits(route, request):
             a, b = segments(route.address), segments(request.address)
@@ -2746,6 +2796,9 @@ class Indexer:
             cands = [r for r in cands if _repo_of(r.src_id) == _repo_of(req.src_id)] or cands
             near = [r for r in cands if root_of(r.src_id) == root_of(req.src_id)]   # a route declared inside the same test
             chosen = near or (cands if len({r.src_id for r in cands}) == 1 else [])
+            if handlers and len({r.src_id for r in chosen or cands}) > 1:   # several handlers, perhaps of one registrar
+                chosen = self._one_handler(chosen or cands, handlers, req.method,
+                                           lambda r: sum(1 for x in segments(r.address) if not x.startswith(("<", "{", ":")))) or chosen
             if req.role == "maybe":   # a path handed to a wrapper: a request only when exactly one route serves it
                 chosen = chosen if len(segments(req.address)) >= 2 and len({r.src_id for r in chosen}) == 1 else []
             elif cands and not chosen:
@@ -2756,7 +2809,8 @@ class Indexer:
                     seen.add(key)
                     http["links"] += 1
                     self.edges.append(Edge("communicates", req.src_id, r.src_id, "heuristic",
-                                           {"channel": "http", "address": f"{req.method or r.method or 'ANY'} {r.address}", "line": req.line}))
+                                           {"channel": "http", "address": f"{req.method or r.method or 'ANY'} {r.address}", "line": req.line,
+                                            **({"handler": True} if r.src_id in handlers else {})}))
 
         # Files: a writer and a reader are linked when the path fragments written in each agree.
         def tokens(strings):

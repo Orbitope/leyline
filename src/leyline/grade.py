@@ -159,8 +159,8 @@ def grade(root: str, scip_path: str, prefix: str = "", repo_id: Optional[str] = 
         node = ix.nodes.get(src)
         if node is None or node.path not in files or src == dst:
             continue
-        if dispatch == "fixture":
-            continue    # pytest handing a test its fixture is not a call
+        if dispatch in ("fixture", "registers"):
+            continue    # pytest handing a test its fixture, or a router given a route's handler, is not a call written there
         if dispatch == "reference":
             refs.add((src, dst))
             continue

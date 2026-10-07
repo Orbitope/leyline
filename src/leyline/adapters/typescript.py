@@ -3,7 +3,9 @@
 A file is a module. Functions, classes, interfaces, type aliases and enums become nodes; so does a
 `const` that holds a function, and a top-level `const` object whose properties are functions (it is
 treated as a type, so `api.load()` finds `load`). Anonymous callbacks are not nodes: what they call is
-attributed to the function they are written in.
+attributed to the function they are written in. Two exceptions: an inline test (`it("x", () => ...)`), and the
+inline handler of a server route (`server.get("/api/x", async (req) => ...)`), which becomes a function named for its
+route (`GET /api/x`), nested in the function that registers it.
 """
 
 from __future__ import annotations
@@ -852,6 +854,9 @@ class _Walker:
         for m in obj.children:
             if m.type == "method_definition":
                 mname = self._member_name(m)
+                if (m.start_byte, m.end_byte) in self.redirect:   # a route's handler: { handler(req) { ... } }
+                    self._callback(m, cid, class_id, scope, qual)
+                    continue
                 if mname:
                     self._function(mname, m, m, cid, qual, class_id, scope)
                     continue
@@ -859,7 +864,8 @@ class _Walker:
                 key = m.child_by_field_name("key")
                 fn = self._fn_of(m.child_by_field_name("value"))
                 kname = _text(key) if key is not None and key.type == "property_identifier" else ""
-                if fn is not None and kname and fn.end_point[0] - fn.start_point[0] >= 2:
+                if fn is not None and kname and fn.end_point[0] - fn.start_point[0] >= 2 \
+                        and (fn.start_byte, fn.end_byte) not in self.redirect:
                     self._function(kname, fn, m, cid, qual, class_id, scope)
                     continue
             self._walk(m, cid, class_id, scope, qual)
@@ -1163,11 +1169,31 @@ class _Walker:
             recv = _text(fn.child_by_field_name("object"))
             handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier") for a in arg_nodes[1:])
             method = None if name == "all" else name.upper()
-            if SERVERS.search(recv) and handler:
-                self.res.endpoints.append(Endpoint("http", "serve", cid, addr, line, method))
+            last = _unwrap(arg_nodes[-1]) if len(arg_nodes) > 1 else None
+            if SERVERS.search(recv) and (handler or (last is not None and last.type == "object" and self._handler_member(last))):
+                src, written = self._route_handler(last, method, addr, cid, line)
+                self.res.endpoints.append(Endpoint("http", "serve", src, addr, line, method, handler=written))
             elif CLIENTS.search(recv):
                 self.res.endpoints.append(Endpoint("http", "call", cid, addr, line, method))
             return
+        if fn.type == "member_expression" and name == "route" and first is not None and first.type == "object" \
+                and SERVERS.search(_text(fn.child_by_field_name("object"))) and self._handler_member(first) is not None:
+            # server.route({ method: "GET", url: "/api/x", handler: async (req) => { ... } })
+            url, methods = None, []
+            for m in first.named_children:
+                key = m.child_by_field_name("key") if m.type == "pair" else None
+                kname = (_string(key) if key is not None and key.type == "string" else _text(key)) if key is not None else ""
+                value = _unwrap(m.child_by_field_name("value")) if m.type == "pair" else None
+                if kname in ("url", "path"):
+                    url = _string(value)
+                elif kname == "method" and value is not None:
+                    methods = [s.upper() for s in ([_string(value)] if value.type in ("string", "template_string") else _strings(value))
+                               if s]
+            if url and url.startswith("/"):
+                method = methods[0] if len(methods) == 1 else None
+                src, written = self._route_handler(first, method, url, cid, line, label=", ".join(methods) or None)
+                self.res.endpoints.append(Endpoint("http", "serve", src, url, line, method, handler=written))
+                return
         role = "read" if name in FS_READ else "write" if name in FS_WRITE else None
         if role:
             lits = [s for a in arg_nodes for s in _strings(a)]
@@ -1202,6 +1228,61 @@ class _Walker:
                 mm = re.search(r"\bmethod\s*:\s*['\"`](\w+)['\"`]", _text(arg_nodes[1]))
                 method = mm.group(1).upper() if mm else None
             self.res.endpoints.append(Endpoint("http", "maybe", cid, url.split("?", 1)[0], line, method))
+
+    # -- route handlers ----------------------------------------------------------
+    def _handler_member(self, obj):
+        """The `handler` of a route's options object: { handler: async (req) => ... }, { handler(req) { ... } },
+        { handler: listThings } or { handler }. None when it has none."""
+        for m in obj.named_children:
+            if m.type == "method_definition" and self._member_name(m) == "handler":
+                return m
+            if m.type == "shorthand_property_identifier" and _text(m) == "handler":
+                return m
+            if m.type == "pair":
+                key = m.child_by_field_name("key")
+                if key is None or (_string(key) if key.type == "string" else _text(key)) != "handler":
+                    continue
+                value = m.child_by_field_name("value")
+                fn = self._fn_of(value)
+                value = fn if fn is not None else _unwrap(value)
+                if value is not None and value.type in FUNCS + ("identifier", "member_expression"):
+                    return value
+        return None
+
+    def _route_handler(self, last, method, addr, cid, line, label=None):
+        """What answers a route: (the id of the function that serves it, the handler's name as written when it is
+        given by name). An inline handler becomes its own function, named for its route and nested in the function
+        that registers it, so what it calls is its own and not the registrar's."""
+        target = last
+        if target is not None and target.type == "object":
+            target = self._handler_member(target)
+        if target is None or cid is None:
+            return cid, None
+        if target.type in FUNCS or target.type == "method_definition":
+            route = f"{label or method or 'ALL'} {addr}"
+            base = f"{cid}/route:{route}"
+            hid, n = base, 2
+            while hid in self.ids:
+                hid = f"{base}-{n}"
+                n += 1
+            pnames, required, total, variadic = self._params(target, hid, {}, declare=False)
+            body = target.child_by_field_name("body")
+            head_end = body.start_byte if body is not None else target.end_byte
+            head = _squash(self.src[target.start_byte:head_end].decode("utf8", "replace"))[:200].rstrip("{ ").rstrip("=>").rstrip()
+            self._add(Node(
+                id=hid, kind="callable", name=route, parent_id=cid, language=LANGUAGE, path=self.path,
+                span_start=target.start_point[0] + 1, span_end=target.end_point[0] + 1,
+                attrs={"signature": f"{route}: {head}", "visibility": "private", "is_static": True,
+                       "is_async": any(c.type == "async" for c in target.children), "is_virtual": False,
+                       "native_kind": "route_handler", "route": route, "registered_at": line,
+                       "argc_min": required, "argc_max": 99 if variadic else total, "type_id": None,
+                       "params": pnames, "returns": None,
+                       "body_line": body.start_point[0] + 1 if body is not None else None}))
+            self.redirect[(target.start_byte, target.end_byte)] = (hid, hid.split(":typescript:", 1)[1])
+            return hid, None
+        if target.type in ("identifier", "shorthand_property_identifier", "member_expression"):
+            return cid, _text(target)
+        return cid, None
 
 
 def parse(repo: str, rel_path: str, file_id: str, src: bytes, module: str = "") -> FileResult:

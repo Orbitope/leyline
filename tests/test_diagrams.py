@@ -130,7 +130,7 @@ def test_a_route_is_reached_over_http_and_a_guess_is_dotted(tmp_path):
     index(root, db, "web")
     con = store.connect(db)
     try:
-        build = node(con, "build")
+        build = node(con, "GET /api/things/:id")   # the route's own handler, which the request lands on
         d = diagrams.sequence(con, [build])
         assert "P1-)P2: http GET /api/things/:id" in d["mermaid"] and diagrams.unbacked(con, d) == []
         # a link the map guessed by name is dotted, and the legend says so

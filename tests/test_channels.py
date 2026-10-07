@@ -191,8 +191,9 @@ def test_requests_through_a_wrapper_or_inject_find_their_route(tmp_path):
     index(root, db, "web")
     c = store.connect(db)
     got = links(c, "http")
-    assert got[("api.api.thing", "server.build")][1] == "GET /api/things/:id"
-    assert got[("api.api.add", "server.build")][1] == "POST /api/things"
-    assert any(src.endswith("test:answers-a-thing") for src, dst in got if dst == "server.build")
-    assert set(got) == {("api.api.thing", "server.build"), ("api.api.add", "server.build"),
-                        ("test.server.test.<module>/test:answers-a-thing", "server.build")}   # not nothing, not config
+    get, post = "server.build/route:GET /api/things/:id", "server.build/route:POST /api/things"   # each route's handler
+    assert got[("api.api.thing", get)][1] == "GET /api/things/:id"
+    assert got[("api.api.add", post)][1] == "POST /api/things"
+    assert any(src.endswith("test:answers-a-thing") for src, dst in got if dst == get)
+    assert set(got) == {("api.api.thing", get), ("api.api.add", post),
+                        ("test.server.test.<module>/test:answers-a-thing", get)}   # not nothing, not config

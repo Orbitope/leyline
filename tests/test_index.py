@@ -783,7 +783,8 @@ def test_typescript(tmp_path):
     assert ("reads", "pkg.core.src.graph.describeLink", "pkg.core.src.graph.Stamped.at") in edges  # a field of the base
     assert ("writes", "pkg.core.src.graph.Graph.add", "pkg.core.src.graph.Graph.items") in edges   # this.items.push(x)
     assert ("writes", "pkg.core.src.graph.Graph.rename", "pkg.core.src.graph.Item.label") in edges
-    assert ("communicates", "pkg.app.src.main.main", "pkg.app.src.server.routes") in edges        # fetch -> app.post
+    # fetch -> app.post, answered by the route's own handler, which the function registering it registers
+    assert ("communicates", "pkg.app.src.main.main", "pkg.app.src.server.routes/route:POST /api/graphs/:id") in edges
     assert ("imports", "pkg/app/src/main.tsx", "npm:react") in edges
     tests = {r[0]: r[1] for r in c.execute("SELECT name, id FROM nodes WHERE kind = 'test'")}
     assert set(tests) == {"adds a node", "counts %d"}

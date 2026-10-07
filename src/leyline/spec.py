@@ -777,7 +777,8 @@ def _left_alone(con, names: _Names, links: list[dict], cid: str = "") -> dict:
         return n >= 5 and reads[(fn, t)] * 2 >= n
     callers, state, seen = [], [], set()
     for i in fns:
-        who = sorted({r[0] for r in con.execute("SELECT DISTINCT src_id FROM calls WHERE dst_id = ?", (i,))
+        # A function that registers a route's handler gets nothing back from it: its requesters are the other ends.
+        who = sorted({r[0] for r in con.execute("SELECT DISTINCT src_id FROM calls WHERE dst_id = ? AND dispatch != 'registers'", (i,))
                       if r[0] not in inside and product(r[0])})
         if who:
             callers.append({"id": i, "changed": _label(names, i), "callers": [_label(names, w) for w in who], "caller_ids": who,

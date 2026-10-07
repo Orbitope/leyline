@@ -279,6 +279,8 @@ def sequence(con, focus_ids: list[str], max_participants: int = 8, max_messages:
         else:
             head = "-->>" if e["guess"] else "->>"
             label = f"{nodes.fn(dst)}()" + (" (implementation)" if e["kind"] == "dispatch" else "")
+            if e["kind"] == "call" and "/route:" in dst:   # a route's inline handler, which its registrar hands over
+                label = f"registers {nodes.fn(dst)}"
             if e["kind"] == "runs":
                 label = f"runs {nodes.fn(dst)}"
         lines.append(f"    {a}{head}{b}: {_text(label)}")

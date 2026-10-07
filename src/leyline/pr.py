@@ -253,7 +253,8 @@ def _params(text: str, start: int, name: str) -> Optional[str]:
 def _touching(con, names, crossings: list, changed: set, own: Optional[dict], added: set):
     """A pull request, unlike a spec, shows the edited lines, so a channel counts as crossed only when the edit
     touches it: an edited line (or a new function's text) inside one of its ends names its address (the table, the
-    route, the event, the program). Of the other ends that must agree, a reader of data whose own read changed is
+    route, the event, the program). A route whose handler is a function of its own is touched by any edit inside
+    that function, and by no other. Of the other ends that must agree, a reader of data whose own read changed is
     told apart: the writer of that data need not change, but the reader must read what it writes.
     Returns the crossings kept, the other ends that must agree, and the cross-channel reads to check."""
     root_of = diff.roots(con)
@@ -283,11 +284,18 @@ def _touching(con, names, crossings: list, changed: set, own: Optional[dict], ad
             i = names.by_id[i]["parent_id"] if i in names.by_id else None
         return False
 
+    def answers(end, address):
+        """`end` is the handler of this route: its own function (an inline handler, or one given by name), so every
+        line of it is what the route answers."""
+        return any(a.get("channel") == "http" and a.get("handler") is True and a.get("address") == address
+                   for a in (json.loads(r[0] or "{}") for r in con.execute(
+                       "SELECT attrs FROM edges WHERE kind = 'communicates' AND dst_id = ?", (end,))))
+
     def touches(end, address):
         inside = [i for i in changed if within(i, end)]
         if not inside:
             return False
-        if not address or own is None:
+        if not address or own is None or answers(end, address):
             return True
         words = _address_words(address)
         return any(w and w in text(i) for i in inside for w in words)
