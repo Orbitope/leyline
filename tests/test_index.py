@@ -1101,3 +1101,90 @@ def test_map_plan_check_from_the_command_line(tmp_path, monkeypatch, capsys):
     page = (ch / "leyline.md").read_text()
     assert "**State: done as agreed.**" in page and "ready to implement" not in page.split("## 1.")[0]
     assert "| Start | passes |" in page and "| Shout | passes |" in page and page.count("## 4. Was it done as agreed") == 1
+
+
+FIXTURE5 = Path(__file__).parent / "fixture6"
+
+
+@pytest.fixture(scope="module")
+def con5(tmp_path_factory):
+    db = tmp_path_factory.mktemp("db5") / "t.db"
+    index(FIXTURE5, db, "f5")
+    c = store.connect(db)
+    yield c
+    c.close()
+
+
+def links(con, src):
+    return {(r[0].split(":python:")[1], r[1]) for r in con.execute(
+        "SELECT dst_id, precision FROM calls WHERE src_id = ?", ("f5:python:" + src,))}
+
+
+def test_python_decorators_and_context_managers(con5):
+    # A decorator expression is a call made where the function is defined; what it returns is then called.
+    assert {d for d, _ in links(con5, "web.app.<module>")} == {"web.app.App.__init__", "web.app.App.route", "web.app.App.route.decorator"}
+    routes = {d for d, _ in links(con5, "tests.test_web.test_routes")}
+    assert {"web.app.App.route", "web.app.App.route.decorator"} <= routes       # @app.route inside a test: the test calls it
+    assert {"web.app.Context.__enter__", "web.app.Context.__exit__"} <= routes    # with app.context():
+    assert "web.app.App.get" in {d for d, _ in links(con5, "tests.test_web.test_annotated")}
+    assert con5.execute("SELECT COUNT(*) FROM nodes WHERE id = 'f5:python:web.app.App.get'").fetchone()[0] == 1   # @overload skipped
+
+
+def test_python_receivers_typed_through_attributes_loops_and_module_variables(con5):
+    assert links(con5, "web.app.App.render") == {("web.app.Tag.dump", "heuristic"),           # for tag in self.tags: list[Tag]
+                                                  ("web.config.Config.load", "heuristic")}    # self.config = self.make_config()
+    assert links(con5, "web.app.current_app_name") == {("web.app.App.wsgi", "heuristic")}      # app = ctx.app
+    assert links(con5, "tests.test_web.test_module_variable") == {("web.app.App.render", "heuristic")}   # current: App
+
+
+def test_python_classes_defined_in_a_function(con5):
+    local = "tests.test_web.test_local_subclass.App"
+    assert {d for d, _ in links(con5, "tests.test_web.test_local_subclass")} == {
+        "web.app.App.__init__", "web.app.App.route", local + ".wsgi"}
+    assert {d for d, _ in links(con5, local + ".wsgi")} == {"web.app.App.wsgi"}   # super(): the base, not itself
+    # Elsewhere the name App still means web.App: a local class is not seen by name from outside its function.
+    assert {d for d, _ in links(con5, "tests.test_web.test_annotated")} == {"web.app.App.get"}
+
+
+def test_python_calls_on_values_passed_in(con5):
+    # run_app(App(...)) calls app(...): App.__call__, as a guess, since other callers could pass something else.
+    assert links(con5, "web.app.run_app") == {("web.app.App.__call__", "guess")}
+    # Middleware(app) keeps the app in a field. `app = Middleware(app)` passes the old app, not a Middleware.
+    assert links(con5, "web.app.Middleware.__call__") == {("web.app.App.__call__", "guess")}
+    # isinstance() on the parameter: the code branches on what it is, so callers' types are not used.
+    assert links(con5, "web.app.describe") == set()
+
+
+def test_grade_judges_a_constructor_under_its_type(tmp_path, monkeypatch):
+    """Roslyn records `new Sim(new Level { })` as two constructor calls on one line: Sim's, and Level's implicit
+    one, which has no declaration. The link to Sim's constructor is judged against Sim's, not the implicit one."""
+    from leyline import exact
+    from leyline.grade import grade
+
+    path = "cs/Mod/Made.cs"
+    text = (FIXTURE2 / path).read_text().splitlines()
+    line = lambda s: next(i + 1 for i, t in enumerate(text) if s in t)
+    records = [{"k": "file", "f": path},
+               {"k": "call", "f": path, "l": line("new Sim("), "n": ".ctor", "s": "ok", "tf": path,
+                "tl": line("public Sim("), "tn": ".ctor"},
+               {"k": "call", "f": path, "l": line("new Sim("), "n": ".ctor", "s": "outside"}]
+    monkeypatch.setattr(exact, "roslyn", lambda ix: (records, {}))
+    g = grade(str(FIXTURE2), "roslyn", db=str(tmp_path / "g.db"))
+    assert g["compiler_links"] == 1 and g["recall"] == 1.0 and g["precision"] == 1.0
+
+
+def test_csharp_pattern_variables_are_typed(con2):
+    assert calls(con2, "%Mod.Made.Check(object)") == {"f2:csharp:cs/Mod::Mod.Sim.Step()"}    # o is Sim s; s.Step()
+
+
+def test_csharp_overloads_told_apart_by_arithmetic_and_float_literals(con2):
+    # `total * share` parses as a pointer declaration; it is a float product, and 3f is a float.
+    assert calls(con2, "%Mod.Made.Mix(float,float)") == {"f2:csharp:cs/Mod::Mod.Made.Rate(int,float)"}
+
+
+def test_python_isinstance_branches_local_imports_and_computed_bases(con5):
+    assert links(con5, "web.app.check") == {("web.app.Context.dump", "heuristic")}   # inside `if isinstance(obj, Context):`
+    # first() imports the module `config`; in second() `config` is a local, and load is found by its name.
+    assert links(con5, "web.app.second") == {("web.config.Config.load", "guess")}
+    # Dyn's base is made at run time, so a method Dyn does not declare may still be one of ours.
+    assert links(con5, "web.app.use_dyn") == {("web.app.App.make_config", "guess")}

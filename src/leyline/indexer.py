@@ -480,6 +480,8 @@ class Indexer:
             if n.attrs.get("is_default_export") and n.kind in ("callable", "type"):
                 self.default_export[n.parent_id] = n.id
         self.file_of: dict[str, str] = {}
+        self.field_calls: dict[tuple, str] = {}                          # (type id, field) -> the method whose result it holds
+        self.py_vars: dict[str, dict] = {fid: res.var_types for fid, res in self.results.items() if res.var_types}
         for n in self.nodes.values():
             if n.kind == "type":
                 self.types_by_name[(n.language, n.name)].append(n.id)
@@ -488,6 +490,8 @@ class Indexer:
                 self.by_name[(n.language, n.name)].append(n)
             elif n.kind == "field":
                 self.field_names[n.parent_id].add(n.name)
+                if n.attrs.get("type_call"):
+                    self.field_calls[(n.parent_id, n.name)] = n.attrs["type_call"]
                 tn = n.attrs.get("type_name")
                 if tn:
                     self.field_type[n.parent_id][n.name] = tn
@@ -539,6 +543,17 @@ class Indexer:
                                                        "main": data.get("source") or data.get("module") or data.get("main") or data.get("types")}
         seen = set()
         stdlib = getattr(sys, "stdlib_module_names", frozenset())
+        self.py_local: dict[tuple, tuple] = {}   # (function, name) -> what an import inside that function binds
+
+        def bind(fid: str, src: str, name: str, value: tuple) -> None:
+            if src == fid:
+                self.py_names[fid][name] = value
+                return
+            # An import inside a function binds the name there only: elsewhere in the file the same name may be a
+            # local variable (`query = Query()` beside another function's `from .sql import query`).
+            self.py_local[(src, name)] = value
+            if value[0]:
+                self.import_targets[fid].add(value[0])
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
             for imp in res.imports:
@@ -580,9 +595,9 @@ class Indexer:
                                     self.star_exports[fid].append(target)
                                     continue
                                 sub = self._py_module(fid, f"{imp.target}.{name}") if lang == "python" else None
-                                self.py_names[fid][alias or name] = (sub, None) if sub else (target, name)
+                                bind(fid, imp.src_id, alias or name, (sub, None) if sub else (target, name))
                         elif imp.alias or lang == "python":
-                            self.py_names[fid][imp.alias or imp.target] = (target, None)
+                            bind(fid, imp.src_id, imp.alias or imp.target, (target, None))
                         self.import_targets[fid].add(target)
                         if (fid, target) not in seen and target != fid:
                             seen.add((fid, target))
@@ -796,6 +811,63 @@ class Indexer:
                     return hit
         return None
 
+    def _py_name(self, fid: str, src: str, name: str) -> tuple:
+        """What a name imported in a file means inside one of its functions: an import in the function or an
+        enclosing one first, then the file's. (None, None) when it cannot be told."""
+        cur = src
+        while cur in self.nodes and self.nodes[cur].kind == "callable":
+            if (cur, name) in self.py_local:
+                return self.py_local[(cur, name)]
+            cur = self.nodes[cur].parent_id
+        return self.py_names[fid].get(name, (None, None))
+
+    def _py_bound(self, fid: str, src: Optional[str], name: str) -> bool:
+        """Does an import bind this name where src runs: in src, a function around it, or the file?"""
+        cur = src
+        while cur in self.nodes and self.nodes[cur].kind == "callable":
+            if (cur, name) in self.py_local:
+                return True
+            cur = self.nodes[cur].parent_id
+        return name in self.py_names[fid]
+
+    def _py_var(self, fid: str, name: str, depth: int = 0) -> Optional[str]:
+        """The type of a module-level variable (`g: Globals = ...`), found through imports and re-exports."""
+        tn = self.py_vars.get(fid, {}).get(name)
+        if tn:
+            return self._type("python", tn, None, file=fid)
+        if depth < 6 and name in self.py_names.get(fid, {}):
+            nxt, sub = self.py_names[fid][name]
+            if sub is not None:
+                return self._py_var(nxt, sub, depth + 1)
+        if depth < 6:
+            for nxt in self.star_exports.get(fid, ()):
+                hit = self._py_var(nxt, name, depth + 1)
+                if hit:
+                    return hit
+        return None
+
+    def _attr_type(self, lang: str, inner: CallSite) -> Optional[tuple]:
+        """The type of an attribute read (`app.config`, `flask.g`) used as a receiver: the declared type of the
+        field, of a property's result, or of a module's variable. None when it cannot be told."""
+        fid = self.file_of.get(inner.src_id)
+        if lang == "python" and fid and inner.receiver_type is None and inner.chain is None and self._py_bound(fid, inner.src_id, inner.receiver or ""):
+            target, symbol = self._py_name(fid, inner.src_id, inner.receiver)
+            if target and symbol is None:
+                tid = self._py_var(target, inner.name)
+                return (tid, True) if tid else None
+        tid, _ = self._receiver_type(lang, inner)
+        for t in self._chain(tid):
+            tn = self.field_type.get(t, {}).get(inner.name)
+            if tn:
+                got = self._type(lang, tn, f"{t}.{inner.name}", file=self.file_of.get(t))
+                return (got, True) if got else None
+            getters = [m for m in self.members.get(t, {}).get(inner.name, ()) if m.attrs.get("returns")
+                       and any("property" in d for d in m.attrs.get("decorators") or [])]
+            if getters:
+                got = self._type(lang, getters[0].attrs["returns"], getters[0].id)
+                return (got, True) if got else None
+        return None
+
     def _py_fixtures(self) -> None:
         """pytest passes a test each fixture named by its parameters. Link them, and give the
         parameter the fixture's return type so calls on it can be resolved."""
@@ -857,7 +929,9 @@ class Indexer:
         mod = self.nodes[fid].parent_id
         if self.file_lang[fid] in FILE_MODULE:
             if fid not in self._vis_cache:
-                out, queue = {fid}, [t for t, _ in self.py_names[fid].values()] + list(self.star_exports.get(fid, ()))
+                out, queue = {fid}, [t for t, _ in self.py_names[fid].values() if t] + list(self.star_exports.get(fid, ()))
+                if self.file_lang[fid] == "python":
+                    queue += list(self.import_targets.get(fid, ()))   # imports inside functions count too
                 while queue:   # a file re-exported with `export *` is seen through the file that re-exports it
                     cur = queue.pop()
                     if cur not in out:
@@ -916,16 +990,31 @@ class Indexer:
         return target_file is not None and self.nodes[target_file].parent_id in vis
 
     # -- types ---------------------------------------------------------------
-    def _type(self, lang: str, name: str, from_id: Optional[str]) -> Optional[str]:
-        fid = self.file_of.get(from_id or "")
+    def _type(self, lang: str, name: str, from_id: Optional[str], file: Optional[str] = None) -> Optional[str]:
+        fid = file or self.file_of.get(from_id or "")
         arity = None
+        if lang == "python" and "." in name:
+            # flask.Flask: the class a module imported under that name exposes.
+            head, _, rest = name.rpartition(".")
+            mod = self._py_name(fid, from_id, head) if fid and "." not in head else None
+            cand = self._py_export(mod[0], rest) if mod and mod[0] and mod[1] is None else None
+            if cand and self.nodes[cand].kind == "type":
+                return cand
+            name = rest
         if lang == "csharp":
             name, tick, count = name.partition("`")
             arity = int(count) if tick and count.isdigit() else 0
             if fid:
                 name = self.cs_alias[fid].get(name, name)
-        if lang in FILE_MODULE and fid and name in self.py_names[fid]:
-            target, symbol = self.py_names[fid][name]
+        if lang == "python" and from_id:
+            cur = from_id   # a class defined in the function itself or one around it
+            while cur in self.nodes and self.nodes[cur].kind in ("callable", "test", "type"):
+                hit = self.nodes.get(f"{cur}.{name}")
+                if hit is not None and hit.kind == "type" and hit.id != from_id:   # `class App(web.App)` is not its own base
+                    return hit.id
+                cur = self.nodes[cur].parent_id
+        if lang in FILE_MODULE and fid and (self._py_bound(fid, from_id, name) if lang == "python" else name in self.py_names[fid]):
+            target, symbol = self._py_name(fid, from_id, name) if lang == "python" else self.py_names[fid][name]
             cand = self._py_export(target, symbol or name)
             if cand and self.nodes[cand].kind == "type":
                 return cand
@@ -936,6 +1025,9 @@ class Indexer:
             if own in self.nodes and self.nodes[own].kind == "type":
                 return own
         cands = self.types_by_name.get((lang, name), [])
+        if lang == "python":
+            # A class defined inside a function is seen only there (found above), not by name from elsewhere.
+            cands = [c for c in cands if self.nodes[self.nodes[c].parent_id].kind not in ("callable", "test")]
         if lang == "csharp" and fid:
             cands = [c for c in cands if self._can_see(fid, c)]
         if arity is not None and cands:
@@ -1080,13 +1172,19 @@ class Indexer:
             return None, False
         if lang == "python":
             # A parameter filled by a pytest fixture, seen from the test or a function nested in it.
-            cur = call.src_id
+            cur, shadowed = call.src_id, False
             while cur in self.nodes and self.nodes[cur].kind == "callable":
                 if (cur, r) in self.py_param_type:
                     return self.py_param_type[(cur, r)], True
                 if r in (self.nodes[cur].attrs.get("params") or []):
+                    shadowed = True
                     break
                 cur = self.nodes[cur].parent_id
+            fid = self.file_of.get(call.src_id)
+            if not shadowed and call.chain is None and fid and (r in self.py_vars.get(fid, {}) or self._py_bound(fid, call.src_id, r)):
+                tid = self._py_var(fid, r)   # a module-level variable, of this file or imported
+                if tid:
+                    return tid, True
         # A bare identifier: a field of the enclosing type chain, or a type name (static call).
         for t in self._chain(call.enclosing_type):
             tn = self.field_type.get(t, {}).get(r)
@@ -1111,6 +1209,10 @@ class Indexer:
         self._chain_memo[key] = None
         if depth > 6:
             return None
+        if inner.attr:
+            out = self._attr_type(lang, inner)
+            self._chain_memo[key] = out
+            return out
         saved = (getattr(self, "_guessed", False), getattr(self, "_call", None), getattr(self, "_last_src", None))
         self._guessed = False
         stats_before = {k: dict(v) for k, v in self.stats.items()}
@@ -1127,6 +1229,8 @@ class Indexer:
             t = targets[0]
             if t.name in CTORS:
                 out = (t.parent_id, True)
+            elif lang == "python" and t.attrs.get("returns_fn") and f"{t.id}.{t.attrs['returns_fn']}" in self.nodes:
+                out = (f"{t.id}.{t.attrs['returns_fn']}", True)   # a function value: calling it runs that function
             elif lang in FILE_MODULE:
                 if t.attrs.get("returns"):
                     tid = self._type(lang, t.attrs["returns"], t.id)
@@ -1163,6 +1267,16 @@ class Indexer:
 
     def _resolve_calls(self) -> None:
         self._chain_memo: dict = {}
+        self._call = None
+        for (tid, fname), method in self.field_calls.items():
+            # self.config = self.make_config(): the field holds what that method is declared to return.
+            if fname in self.field_type.get(tid, {}):
+                continue
+            for m in self._methods(tid, method, -1):
+                if m.attrs.get("returns"):
+                    self.field_type[tid][fname] = m.attrs["returns"]
+                    self.field_types_global[(m.language, fname)].add(m.attrs["returns"])
+                    break
         # Names seen on receivers of a known outside type (List.Add, dict.get). A call to such a
         # name on a receiver of unknown type is never guessed.
         self.outside_names: set = set()
@@ -1173,13 +1287,15 @@ class Indexer:
             lang = self.file_lang[fid]
             for call in res.calls:
                 if call.receiver not in (None, "this", "base") and call.name != ".ctor":
-                    if lang in FILE_MODULE and call.receiver in self.py_names[fid]:
+                    if lang in FILE_MODULE and (self._py_bound(fid, call.src_id, call.receiver) if lang == "python" else call.receiver in self.py_names[fid]):
                         continue
                     if call.ref:
                         continue
                     tid, known = self._receiver_type(lang, call)
                     if known and tid is None:
                         self.outside_names.add((lang, call.name))
+        incoming: dict[str, list] = defaultdict(list)   # Python: function -> the calls that reach it
+        pending: list = []                               # Python: calls nothing resolved, for _py_argument_flow
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
             adapter = BY_LANGUAGE[lang].NAME
@@ -1213,6 +1329,128 @@ class Indexer:
                         self.calls.append((call.src_id, t.id, dispatch,
                                            "guess" if self._guessed else "heuristic", call.line))
                         self.call_col[(call.src_id, t.id, call.line)] = call.col
+                if lang == "python":
+                    if targets and not self._guessed:
+                        for t in targets:
+                            incoming[t.id].append(call)
+                    elif not targets:
+                        pending.append(call)
+        self._py_argument_flow(incoming, pending)
+
+    def _py_argument_flow(self, incoming: dict, pending: list) -> None:
+        """Calls made on a value handed in from outside: `app(environ, start)` on a parameter, `self.repo.save()` on
+        a field set from one. The value's class is whatever the callers pass, followed back through parameters,
+        fields set from parameters and `*args` passed on. Linked to that class's method (`__call__` when the value
+        itself is called), as a guess, since a caller the map does not see may pass something else."""
+        if not pending:
+            return
+        memo: dict = {}
+        active: set = set()
+        cut = [0, 0]   # answers left incomplete by a cycle or a limit; questions asked for the current call
+
+        def param_owner(src: str, name: str) -> Optional[tuple]:
+            cur = src
+            while cur in self.nodes and self.nodes[cur].kind == "callable":
+                params = self.nodes[cur].attrs.get("params") or []
+                if name in params:
+                    return cur, params.index(name)
+                cur = self.nodes[cur].parent_id
+            return None
+
+        def narrowed(src: str, owner: str, name: str) -> bool:
+            """Is the parameter tested with isinstance() between the call and the function that takes it?"""
+            cur = src
+            while cur in self.nodes and self.nodes[cur].kind == "callable":
+                if name in (self.nodes[cur].attrs.get("narrowed") or ()):
+                    return True
+                if cur == owner:
+                    return False
+                cur = self.nodes[cur].parent_id
+            return False
+
+        def field_types(type_id: Optional[str], name: str, depth: int) -> set:
+            for t in self._chain(type_id):
+                f = self.nodes.get(f"{t}.{name}")
+                if f is None or f.kind != "field":
+                    continue
+                tn = self.field_type.get(t, {}).get(name)
+                tid = self._type("python", tn, f.id) if tn else None
+                if tid:
+                    return {tid}
+                out = set()
+                for fn, pname in f.attrs.get("from_params") or []:   # self.app = app, in the constructor
+                    owner = param_owner(fn, pname)
+                    out |= arg_types(owner[0], owner[1], depth + 1) if owner else set()
+                return out
+            return set()
+
+        def arg_types(fn_id: str, pos: int, depth: int = 0) -> set:
+            """Classes of ours passed as the pos-th positional argument of fn_id."""
+            key = (fn_id, pos)
+            if key in memo:
+                return memo[key]
+            fn = self.nodes.get(fn_id)
+            cut[1] += 1
+            if fn is None or key in active or depth > 8 or cut[1] > 5000:
+                cut[0] += 1   # not cached: the same question asked from higher up may get further
+                return set()
+            params, star = fn.attrs.get("params") or [], fn.attrs.get("star_at")
+            if pos < len(params) and (star is None or pos < star):
+                declared = (fn.attrs.get("ptypes") or {}).get(params[pos])
+                tid = self._type("python", declared, fn_id) if declared else None
+                if tid:
+                    memo[key] = {tid}
+                    return memo[key]
+            active.add(key)
+            before, out = cut[0], set()
+            for c in incoming.get(fn_id, ()):
+                hints = c.args or ()
+                spread = next((k for k, h in enumerate(hints[:pos + 1]) if h == "@*"), None)
+                if spread is not None:
+                    caller = self.nodes.get(c.src_id)
+                    if caller is not None and caller.attrs.get("star_at") is not None:
+                        out |= arg_types(c.src_id, caller.attrs["star_at"] + pos - spread, depth + 1)
+                    continue
+                h = hints[pos] if pos < len(hints) else None
+                if h is None:
+                    continue
+                if h == "@self":
+                    out |= {c.enclosing_type} if c.enclosing_type else set()
+                elif h.startswith("@p:"):
+                    owner = param_owner(c.src_id, h[3:])
+                    out |= arg_types(owner[0], owner[1], depth + 1) if owner else set()
+                elif h.startswith("@f:"):
+                    out |= field_types(c.enclosing_type, h[3:], depth)
+                else:
+                    tid = self._type("python", h, c.src_id)
+                    out |= {tid} if tid else set()
+            active.discard(key)
+            if cut[0] == before:
+                memo[key] = out
+            return out
+
+        st = self.stats[BY_LANGUAGE["python"].NAME]
+        for call in pending:
+            r, method = call.receiver, call.name
+            types: set = set()
+            cut[1] = 0
+            if r is None or r not in ("this", "base", "?"):
+                owner = param_owner(call.src_id, r or call.name)
+                if owner is not None and narrowed(call.src_id, owner[0], r or call.name):
+                    owner = None
+                if owner is not None and (r is None or call.receiver_type is None or not self._type("python", call.receiver_type, call.src_id)):
+                    types = arg_types(*owner)
+                    method = "__call__" if r is None else method
+            elif r == "this" and call.enclosing_type and call.name in self.field_names.get(call.enclosing_type, ()):
+                types, method = field_types(call.enclosing_type, call.name, 0), "__call__"   # self.handler(x)
+            if r is not None and r.startswith(".") and call.enclosing_type:
+                types = field_types(call.enclosing_type, r[1:], 0)
+            for tid in sorted(types):
+                self._call = call
+                for t in self._methods(tid, method, call.argc):
+                    st["calls_by_argument_flow"] += 1
+                    self.calls.append((call.src_id, t.id, "static", "guess", call.line))
+                    self.call_col[(call.src_id, t.id, call.line)] = call.col
 
     _DECL = [  # (pattern, group of the name, group of the type): how typed languages write a variable's type
         (re.compile(r"\b([A-Z]\w*)(?:<[^<>;=()]*>)?(?:\[\])?\??\s*[*&]?\s+(\w+)\s*(?=[=;,)]|$)"), 2, 1),      # Foo x  (C#, Java, C++)
@@ -1628,10 +1866,17 @@ class Indexer:
         if call.receiver is None:
             # Local functions of the caller, innermost first.
             cur = call.src_id
-            while cur in self.nodes and self.nodes[cur].kind in ("callable", "test"):
+            while cur in self.nodes and self.nodes[cur].kind in ("callable", "test", "type"):
+                if self.nodes[cur].kind == "type":
+                    if lang != "python":
+                        break
+                    cur = self.nodes[cur].parent_id   # a method does not see its class's names, but does see the function around the class
+                    continue
                 local = self.members.get(cur, {}).get(name)
                 if local:
                     return self._pick(local, argc)
+                if lang == "python" and self.nodes.get(f"{cur}.{name}") is not None and self.nodes[f"{cur}.{name}"].kind == "type":
+                    return self._py_symbol(f"{cur}.{name}", argc) or []   # a class defined in the function
                 cur = self.nodes[cur].parent_id
             if lang in FILE_MODULE:
                 return self._py_bare(fid, call, defined_here)
@@ -1645,14 +1890,29 @@ class Indexer:
             return [] if defined_here else None
         if lang == "typescript" and call.receiver in self.outside_imports[fid]:
             return None   # React.useState(), path.join(): a namespace from outside
-        if lang in FILE_MODULE and call.receiver not in ("this",) and call.receiver in self.py_names[fid]:
-            target, symbol = self.py_names[fid][call.receiver]
+        inner = call.chain
+        if lang == "python" and inner is not None and inner.attr and inner.chain is None and inner.receiver_type is None \
+                and self._py_bound(fid, inner.src_id, inner.receiver or ""):
+            target, symbol = self._py_name(fid, inner.src_id, inner.receiver)
+            sub = self.py_modules[_repo_of(target)].get(f"{self._modpath(target)}.{inner.name}") if target and symbol is None else None
+            if sub:
+                return self._py_symbol(self._py_export(sub, name) or "", argc)   # flask.json.dumps(): a submodule's function
+        imported = (call.receiver_type is None and self._py_bound(fid, call.src_id, call.receiver or "")) if lang == "python" \
+            else call.receiver in self.py_names[fid]   # a typed local of the same name hides the import
+        if lang in FILE_MODULE and call.receiver not in ("this",) and imported:
+            target, symbol = self._py_name(fid, call.src_id, call.receiver) if lang == "python" else self.py_names[fid][call.receiver]
+            if target is None:
+                return [] if defined_here else None
             if symbol is None:
                 return self._py_symbol(self._py_export(target, name) or "", argc)
             tid = self._py_export(target, symbol)
+            if tid is None and lang == "python":
+                tid = self._py_var(target, symbol)   # `from .globals import g`: a variable of a known type
             found = self._methods(tid, name, argc)
             return found or ([] if defined_here else None)
         tid, known = self._receiver_type(lang, call)
+        if tid and lang == "python" and tid in self.nodes and self.nodes[tid].kind == "callable":
+            return [self.nodes[tid]] if name == "__call__" else None   # a function value: only calling it means anything
         if tid:
             found = self._methods(tid, name, argc)
             if found:
@@ -1661,15 +1921,18 @@ class Indexer:
                 found = self._extensions(lang, fid, tid, name, argc)
                 if found:
                     return found
-            if not (lang == "typescript" and any(name in self.field_names.get(t, ()) for t in self._chain(tid))):
+            if not (lang == "typescript" and any(name in self.field_names.get(t, ()) for t in self._chain(tid))) and not (
+                    lang == "python" and any(self.nodes[t].attrs.get("open_base") for t in self._chain(tid) if t in self.nodes)):
                 return None  # the type is ours but the method is inherited from outside
-            # A property that holds a function (`save: (x) => void` in an interface): whichever function was
-            # put there is not known from the type, so fall through to the unique-name guess.
+            # A property that holds a function (`save: (x) => void` in an interface), or a Python class whose base
+            # is made at run time: what is there is not known from the type, so fall through to the unique-name guess.
             tid, known = None, False
         if known:
             return None  # receiver has a type that is not in the workspace
         if not defined_here:
             return None
+        if lang == "python" and name.startswith("__") and name.endswith("__"):
+            return []   # __enter__, __call__: run implicitly on all kinds of objects, never guessed by name
         if (lang, name) in self.outside_names:
             self.stats[BY_LANGUAGE[lang].NAME]["calls_guess_declined"] += 1
             # In TypeScript most receivers are untyped, and a name seen on built-in types (push, get, keys) is
@@ -2115,9 +2378,9 @@ class Indexer:
         hit = self._py_symbol(own, call.argc)
         if hit is not None:
             return hit
-        if call.name in self.py_names[fid]:
-            target, symbol = self.py_names[fid][call.name]
-            return self._py_symbol(self._py_export(target, symbol or call.name) or "", call.argc)
+        if self._py_bound(fid, call.src_id, call.name):
+            target, symbol = self._py_name(fid, call.src_id, call.name)
+            return self._py_symbol(self._py_export(target, symbol or call.name) or "", call.argc) if target else None
         if lang == "typescript" and own not in self.nodes and call.name not in self.outside_imports[fid]:
             # Not declared here and not imported by name: a local taken out of something (`const { save } = await
             # load()`). If exactly one exported function reachable from this file has the name, say so as a guess.
