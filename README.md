@@ -384,6 +384,32 @@ Flows are static: what a test can reach. `leyline coverage FILE` imports what di
 - coverage.py's data file. With `pytest --cov=<package> --cov-context=test`, each function is tied
   to the tests that ran it.
 - Cobertura XML (coverlet, `coverage xml`). A function ran or did not; no per-test detail.
+- Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`). It covers a
+  whole run, so run one test file at a time and import each with `--test <that file>`: each function is then tied
+  to the test file that ran it, not to the one test inside it.
+
+#### Scenarios proven by what ran
+
+A scenario's test passing says the behavior holds; it does not say the test ran the code the change edited. Pass the
+coverage of the same run to `check`, and each scenario also says whether its test ran the changed code:
+
+```
+pytest -rA --cov=src --cov-context=test > after.txt
+leyline check <change> --tests after.txt --coverage .coverage
+```
+
+Each scenario result gets `ran_changed_code` (true, false, or null when it cannot be told) and a one-line
+`ran_changed_code_note`. A test that passed without running the changed code is listed under **Weaker proof**: it
+would pass whatever the change did. With no per-test coverage, `check` reads as it always has.
+
+#### The tests a change needs
+
+`leyline affected-tests <change>` (the `affected_tests` tool) lists the tests to run for a planned change or a
+`pr-<id>` review, each with why, and prints a command that runs them (`pytest path::test ...`, `npx vitest run
+<files>`, `npx jest <files>`, `go test -run`). With per-test coverage it takes the tests measured running the changed
+or must-edit code, the change's own new tests, and, from the map, tests that reach changed code no measured test ran
+or that the measured run left out; without it, the tests whose path on the map passes through the change. Feed that
+smaller run to `check`. `leyline pr` lists the tests measured running the changed code the same way.
 
 With coverage imported, a test's flow dims the steps that did not run and lists what ran without
 being on its path (reached through a link the map does not have, such as a framework calling back
@@ -472,7 +498,8 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | --- | --- |
 | `map(paths?)` | Step 1: index the code (or map again what the store holds); counts, the map page, `next` |
 | `plan(change, test_output?, test_results?)` | Step 2: the one page for a change, `status.blocking`, `next`; records the tests from before |
-| `check(change, test_output?, test_results?)` | Step 3: re-index, record the tests from after, the verdict and `next` |
+| `check(change, test_output?, test_results?, coverage_path?)` | Step 3: re-index, record the tests from after, the verdict and `next`; with the run's coverage, whether each scenario's test ran the changed code |
+| `affected_tests(change)` | The tests to run for a change or a `pr-<id>` review, and the command that runs them |
 | `overview(scope?, limit?)` | Repos, modules with sizes, module-to-module dependencies by edge kind, systems, external packages, extractors that ran |
 | `cross_repo` | In a workspace of several repositories: links between them, functions most called across, flows that cross and come back |
 | `search(text, kind?, limit?)` | Node ids matching a name, qualified name or path |

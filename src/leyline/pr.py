@@ -470,6 +470,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             "touched_by_the_change": tests_touched, "test_files_changed": test_files,
             "changed_code_no_test_reaches": [u for u in report.get("untested") or [] if not u["name"].endswith(("<module>", "<top-level>"))],
             "tests_to_run": (report.get("tests_to_run") or [])[:30],
+            **_measured(con, [n["id"] for n in edited + types + added]),
         },
         "structure": {"new_dependencies": d["structure"]["new_dependencies"],
                       "removed_dependencies": d["structure"]["removed_dependencies"],
@@ -489,6 +490,13 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             + [{"id": a["id"], "role": "direct", "note": a["why"]} for a in across if a["id"] in names.by_id]
             + [{"id": w, "role": "direct", "note": f"also calls {c['changed']}"} for c in alone["callers"][:30] for w in c["caller_ids"]]),
     }
+
+
+def _measured(con, ids: list[str]) -> dict:
+    """With per-test coverage imported: the tests measured running the changed code, and a command that runs them."""
+    from . import affected
+    ran = affected.measured_tests(con, ids)
+    return {"measured_running_the_change": ran[:40], "run_them": affected.commands(con, ran)} if ran else {}
 
 
 # -- the whole step ---------------------------------------------------------------------------------------
@@ -822,6 +830,10 @@ def text(r: dict) -> str:
         L.append(f"- No test on the map reaches {_names([u['name'] for u in t['changed_code_no_test_reaches']], 6)}.")
     if t["tests_to_run"]:
         L.append("- Tests that run the changed code: " + _names([x["name"] for x in t["tests_to_run"]], 6) + ".")
+    if t.get("measured_running_the_change"):
+        L.append("- Measured running the changed code (per-test coverage): "
+                 + _names([x.get("pytest") or x["name"] for x in t["measured_running_the_change"]], 6) + ".")
+        L += [f"  Run them: `{c['command']}`" for c in t.get("run_them") or [] if c["command"]][:3]
     st = r["structure"]
     if st["new_dependencies"] or st["rules_now_failing"]:
         L += ["", "## Structure", ""]

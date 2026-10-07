@@ -359,8 +359,10 @@ def next_after_plan(b: dict, name: str, for_agent: bool = False) -> list[str]:
 
 
 # -- check ----------------------------------------------------------------------------------------
-def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None) -> dict:
-    """After the change: re-index if the code moved, record the test results, and verify against the plan."""
+def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None,
+          coverage_file: Optional[str | Path] = None) -> dict:
+    """After the change: re-index if the code moved, record the test results, and verify against the plan.
+    `coverage_file`, measured on the same run, is imported after the re-index so its lines land on the new code."""
     reindexed = refresh(db)
     con = store.connect(db)
     try:
@@ -369,6 +371,11 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
             return parsed
         cid = "spec-" + parsed["id"]
         before, after = spec.run_label(cid, "before"), spec.run_label(cid, "after")
+        if coverage_file is not None:
+            from . import coverage as measured
+            imported = measured.import_file(con, coverage_file, run=after)
+            if "error" in imported:
+                return {"error": f"cannot import the coverage file: {imported['error']}"}
         recorded = _record(con, after, results) if results is not None else None
         has = lambda run: con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1", (run,)).fetchone() is not None
         prune_baselines(con)
@@ -410,6 +417,9 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
         mine = [t["key"] for t in v["tasks"] if t["state"] == "checked by you"]
         yours = (f" Check task{'s' if len(mine) > 1 else ''} {', '.join(mine)} by hand: {'they name' if len(mine) > 1 else 'it names'}"
                  " no code.") if mine else ""
+        weak = [s["name"] for s in v["scenarios"] if s.get("ran_changed_code") is False]
+        yours += (" The test for " + spec._some([f'"{x}"' for x in weak], 3) + " passed without running the changed code,"
+                  " so it proves less than it seems.") if weak else ""
         return [("Next: nothing left to check; the change was done as agreed. Show the person the verdict and the diff."
                  if for_agent else "Next: nothing left to check; the change was done as agreed. Review the diff and commit it.")
                 + yours + (" The baseline is kept, so `check` can run again after later edits." if for_agent else
@@ -452,6 +462,10 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
         if unrun:
             out.append("run the tests for " + spec._some([f'"{x}"' for x in unrun], 3)
                        + " too; the output passed in has no result with that name.")
+        weak = [s["name"] for s in v["scenarios"] if s.get("ran_changed_code") is False]
+        if weak:
+            out.append("the test for " + spec._some([f'"{x}"' for x in weak], 3) + " passed without running the changed"
+                       " code: make it exercise the change, or say why it need not.")
     if v["open_high_findings"]:
         ids = ", ".join(f["id"] for f in v["open_high_findings"])
         out.append(f"ask the person to decide the open high review finding {ids}, and record it with `spec_resolve`."

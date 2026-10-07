@@ -1310,6 +1310,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     # only next to that code, or to import or register it.
     spans, code_names = diff._spans(con, sorted(in_spec | declared | {h["id"] for h in helpers}))
     drift = [n for n in drift if not (n.get("own") and diff.explained(n, spans.get(n.get("path"), []), code_names))]
+    from . import affected   # with per-test coverage: did each passing scenario's test run the code its tasks changed?
+    affected.mark_scenarios(con, scenarios, ((in_spec | declared | {h["id"] for h in helpers}) & touched) or touched,
+                            after_run, test_names, cid)
     verdict = []
     if any(t["state"] in ("not done", "partly") for t in tasks):
         verdict.append("some tasks are not done")
@@ -1397,6 +1400,7 @@ def verify_text(v: dict) -> str:
     L += ["", "| Scenario | Result | Evidence |", "| --- | --- | --- |"]
     for s in v["scenarios"]:
         ev = ("measured running the changed code" if s["measured_running_the_change"] else
+              "passed without running the changed code" if s.get("ran_changed_code") is False else
               "proven by the test run (the test is generated, so it is not on the map)"
               if s["generated"] and s["state"] == "passes" else
               f"proven by the test run (a check in {s['script']}, which runs as a script; the test is not on the map)"
@@ -1408,6 +1412,10 @@ def verify_text(v: dict) -> str:
             ev += f" ({s['results']} results carry its name; all pass)"
         msg = " ".join((s["message"] or "").split()).replace("|", "/")
         L.append(f"| {s['name']} | {s['state']} | {(msg[:200] + '...' if len(msg) > 200 else msg) or ev} |")
+    weak = [s for s in v["scenarios"] if s.get("ran_changed_code") is False]
+    if weak:   # per-test coverage says the test would pass whatever the change did
+        L += ["", "**Weaker proof** (from measured coverage; the test would pass whatever the change did):"]
+        L += [f"- {s['name']}: {s['ran_changed_code_note']}" for s in weak[:15]]
     if v["drift"]:
         L += ["", "**Changed, but not in the spec:**"] + [_drift_line(n) for n in v["drift"][:25]]
     if v.get("helpers_added"):

@@ -219,6 +219,8 @@ def test_every_other_tool_with_real_arguments(repo):
         assert "fields" in await a.call("shared_state")
         assert (await a.call("coverage"))["imported"] is False
         assert (await a.call("spec_brief", change="loud-engine"))["change_id"] == "spec-loud-engine"
+        picked = await a.call("affected_tests", change="loud-engine")
+        assert picked["basis"] == "the map" and picked["commands"][0]["command"].startswith("pytest ")
         assert "tasks" in await a.call("spec_verify", change=str(ch))
         tours = await a.call("tours")
         assert (await a.call("tour", tour_id=tours["tours"][0]["id"]))["stops"]

@@ -350,7 +350,11 @@ def plan(change: ChangeArg, test_output: TestOutput = None, test_results: TestRe
 
 @_tool(items=25, keep=("tasks", "scenarios", "why_not", "next"),
        more="Lists were cut to keep this answer short; `cut` says which. leyline.md (`written`) has the whole verdict.")
-def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestResults = None) -> dict:
+def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestResults = None,
+          coverage_path: Annotated[Optional[str], Field(description="Coverage measured on the same test run (pytest"
+                                                                    " --cov=<package> --cov-context=test writes .coverage):"
+                                                                    " each scenario then says whether its test ran the"
+                                                                    " changed code (`ran_changed_code`).")] = None) -> dict:
     """Loop step 3, after the tasks are implemented. Re-maps the code, records the test run, and says whether the
     change was done as agreed: each task from what changed in the code, each scenario from its test's result,
     edits outside the spec, new links between modules, rules newly broken. Appends the verdict to `leyline.md`.
@@ -364,7 +368,7 @@ def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestR
         return {"error": err}
     with _lock:
         try:
-            v = loop.check(_path(), folder, results)
+            v = loop.check(_path(), folder, results, coverage_path)
         finally:
             _generation[0] += 1
     if "error" in v:
@@ -723,6 +727,24 @@ def coverage(node_id: Annotated[Optional[str], Field(description="A function: th
             return err
         return {**out, "node": node_id, "tests": measured.tests_for(_db(), node_id)}
     return {**measured.summary(_db()), **out}
+
+
+@_tool(items=60, keep=("commands",))
+def affected_tests(change: Annotated[str, Field(description="The change: its folder or id (a planned spec), or a review"
+                                                            " id such as pr-123.")]) -> dict:
+    """The tests to run for a change, each with why, and `commands` that run them (pytest node ids,
+    `npx vitest run <files>`, `npx jest <files>`, `go test -run`). With per-test coverage imported, the tests
+    measured running the changed or must-edit code; otherwise, and for changed code no measured test ran, the tests
+    whose path on the map passes through it. Run these, then pass their output to `check`."""
+    from . import affected
+    folder = loop.find_change(change, _path())
+    with _lock:
+        try:
+            loop.refresh(_path())
+        finally:
+            _generation[0] += 1
+    con = _db()
+    return affected.select(con, affected.change_id_for(con, change, folder))
 
 
 # -- the spec steps: the parts of plan and check, and review --------------------------------------
