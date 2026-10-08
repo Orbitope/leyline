@@ -545,6 +545,19 @@ def _tap_point(rest: str) -> tuple[str, str, bool]:
     return desc.strip().replace("\\#", "#").replace("\\\\", "\\"), directive, opens
 
 
+def _outside_brackets(text: str, sep: str) -> int:
+    """Where `sep` first appears outside a pytest parameter's brackets (`test[a - b] - message`), or -1."""
+    depth = 0
+    for k, ch in enumerate(text):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+        elif not depth and text.startswith(sep, k):
+            return k
+    return -1
+
+
 def parse_test_output(text: str) -> list[dict]:
     """Read test results from runner output. Understood: TAP 13 and 14 as vitest, node:test and tap print it, where
     nested subtests (indented, or opened with `{`) give names like `file > suite > test` and a suite is not a test of
@@ -580,7 +593,8 @@ def parse_test_output(text: str) -> list[dict]:
             if re.match(r"^\s*\.\.\.\s*$", line):
                 in_yaml = False
             else:
-                m = re.match(r"^\s*message:\s*(.*)$", line)
+                # vitest nests `message:` under `error:`; node:test prints the message as `error:` itself
+                m = re.match(r"^\s*(?:message|error):\s*(?![|>][-+]?\s*$)(\S.*)$", line)
                 if m and last is not None and last["status"] == "fail" and not last["message"]:
                     msg = m.group(1).strip()
                     if len(msg) > 1 and msg[0] == msg[-1] == '"':
@@ -600,7 +614,8 @@ def parse_test_output(text: str) -> list[dict]:
             indent = len(m.group(1).expandtabs())
             while stack and stack[-1]["kind"] == "header" and stack[-1]["indent"] >= indent:
                 stack.pop()
-            stack.append({"indent": indent, "name": m.group(2), "kind": "header", "status": "pass", "children": 0, "failed": False})
+            name = m.group(2).replace("\\#", "#").replace("\\\\", "\\")   # escaped as on a test line
+            stack.append({"indent": indent, "name": name, "kind": "header", "status": "pass", "children": 0, "failed": False})
             continue
         if re.match(r"^\s*\}\s*$", line) and stack and stack[-1]["kind"] == "brace":
             frame = stack.pop()
@@ -631,8 +646,14 @@ def parse_test_output(text: str) -> list[dict]:
         status = ("fail" if word.startswith(("FAIL", "ERROR")) else "skip" if word.startswith(("SKIP", "XFAIL"))
                   else "pass")
         name, message = rest, None
-        if status == "fail":
-            for sep in ((" - ", ": ") if "::" in rest else (": ", " - ")):
+        if "::" in rest:          # pytest: `path::test[a - b] - message`, and XFAIL and XPASS give a reason the same way
+            for sep in (" - ", ": "):
+                k = _outside_brackets(rest, sep)
+                if k >= 0:
+                    name, message = rest[:k], (rest[k + len(sep):] if status == "fail" else None)
+                    break
+        elif status == "fail":
+            for sep in (": ", " - "):
                 if sep in rest:
                     name, message = rest.split(sep, 1)
                     break
