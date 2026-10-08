@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -232,6 +233,30 @@ def test_systems_are_proposed_and_named_through_annotations(tmp_path):
     c.close()
     stats = index(work, db, "fx")
     assert stats["stale_annotations"] >= 1
+
+
+def test_two_systems_whose_anchors_share_a_name_stay_two(tmp_path):
+    """Two groups in one module can be anchored on types of the same name (a Hub in each of two subpackages). Each
+    is a system of its own: the second must not overwrite the first and take its members."""
+    root = tmp_path / "p"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/__init__.py").write_text("")
+    for side in ("x", "y"):
+        p = root / "pkg" / side
+        p.mkdir()
+        (p / "__init__.py").write_text("")
+        (p / "hub.py").write_text("class Hub:\n    def run(self):\n        return 1\n")
+        for i in range(7):
+            (p / f"m{i}.py").write_text(f"from .hub import Hub\n\n\nclass {side.upper()}{i}:\n    def go(self):\n        return Hub().run()\n")
+    db = tmp_path / "s.db"
+    stats = index(root, db, "c")
+    assert stats["systems"]["pkg"]["systems"] == 2
+    c = store.connect(db)
+    members = {r[0]: r[1] for r in c.execute("SELECT src_id, COUNT(*) FROM edges WHERE kind = 'groups' GROUP BY src_id")}
+    anchors = {json.loads(r[0])["anchor"] for r in c.execute("SELECT attrs FROM nodes WHERE kind = 'system'")}
+    c.close()
+    assert sorted(members.values()) == [8, 8]
+    assert anchors == {"c:python:pkg.x.hub.Hub", "c:python:pkg.y.hub.Hub"}
 
 
 def test_change_assessment_and_saved_views(tmp_path):

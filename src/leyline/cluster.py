@@ -97,7 +97,7 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                     g.add_edge(a, b, weight=w)
             communities = nx.community.louvain_communities(g, weight="weight", seed=seed, resolution=resolution)
             modularity = nx.community.modularity(g, communities, weight="weight") if g.number_of_edges() else 0.0
-            made = 0
+            made, made_ids = 0, set()
             if modularity < min_modularity:
                 # The module does not split cleanly; proposing groups would be noise.
                 result[mod.split(":module:")[-1]] = {"units": len(members), "systems": 0,
@@ -112,6 +112,10 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                 boundary = sum(d["weight"] for a, b, d in g.edges(community, data=True)
                                if (a in community) != (b in community))
                 sid = f"{mod}/system:{names[anchor]}"
+                if sid in made_ids:
+                    # another group here is anchored on a type of the same name: named by the anchor's full name
+                    sid = f"{mod}/system:{anchor.split(':', 2)[-1]}"
+                made_ids.add(sid)
                 con.execute(
                     "INSERT OR REPLACE INTO nodes (id, kind, name, parent_id, repo_id, layer, source, attrs)"
                     " VALUES (?, 'system', ?, ?, ?, 'inferred', ?, ?)",
