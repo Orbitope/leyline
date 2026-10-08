@@ -293,9 +293,10 @@ def refresh_stale(con) -> int:
 
 
 def write_coverage(con, repo_id, extractor, version, status, commit, stats: dict) -> None:
+    # Keys sorted: the counts are added up in another order by an incremental run than by a full one.
     con.execute(
         "INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
-        (repo_id, extractor, version, status, commit, json.dumps(stats)),
+        (repo_id, extractor, version, status, commit, json.dumps(stats, sort_keys=True)),
     )
 
 

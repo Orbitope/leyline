@@ -210,3 +210,10 @@ def test_tour_with_tied_modules(tmp_path):
     check(tmp_path, root, "t", [
         ("module added", lambda: ((root / "a").mkdir(), (root / "a/two.py").write_text("def two():\n    return 2\n"))),
     ])
+
+
+def test_counts_written_in_one_order(tmp_path):
+    """An incremental run adds up the counts of the files it did not resolve again in another order than a full run;
+    the coverage rows must still read the same."""
+    root = copy(tmp_path, "fixture")
+    check(tmp_path, root, "fx", [("remove file", lambda: (root / "scripts/run.py").unlink())])
