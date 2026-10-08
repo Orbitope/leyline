@@ -331,6 +331,37 @@ def test_a_path_or_id_selector_is_a_prefix_as_written(tmp_path):
     assert rules._select(c, "external:MY_LIB") == set()
 
 
+def test_a_rule_on_a_named_system_reads_the_same_on_a_snapshot(tmp_path):
+    """A system is named by a person or an agent (an annotation). `leyline pr` checks the rules on the base's snapshot
+    to tell a rule the branch broke from one that already failed: on the snapshot the name must select the same code,
+    or a rule failing before the branch reads as newly failing, and blocks the gate."""
+    from leyline import diff, rules
+
+    root = tmp_path / "repo"
+    for f, text in {"app/a.py": "from app.b import g\n\n\ndef f():\n    return g()\n",
+                    "app/b.py": "def g():\n    return 1\n"}.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    db = tmp_path / "r.db"
+    index(root, db, "r")
+    c = store.connect(db)
+    a = c.execute("SELECT id FROM nodes WHERE kind = 'file' AND path = 'app/a.py'").fetchone()[0]
+    with c:
+        c.execute("INSERT INTO nodes (id, kind, name, repo_id, layer, source) VALUES ('r:sys:front', 'system',"
+                  " 'f group', 'r', 'inferred', 't')")
+        store.insert_edges(c, [(None, "groups", "r:sys:front", a, "heuristic", "inferred", "t", None, None)])
+    store.annotate(c, "r:sys:front", "name", "Front", "intent", "t", None, [])
+    rid = rules.add_rule(c, "forbid", "system:Front", "path:app/b.py", status="confirmed")["id"]
+    now = {r["id"]: r for r in rules.check(c)["rules"]}
+    assert not now[rid]["passes"]
+    before = diff._open(diff.snapshot(c, "base"))
+    try:
+        was = {r["id"]: r for r in rules.check(before, rules_from=c)["rules"]}
+    finally:
+        before.close()
+    assert not was[rid]["passes"] and was[rid]["violations"] == now[rid]["violations"]
+
+
 def test_review_compares_an_implemented_change_with_its_proposal(tmp_path):
     import shutil
 

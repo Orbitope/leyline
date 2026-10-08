@@ -156,6 +156,8 @@ def snapshot(con, name: str) -> Path:
                         " FROM main.flows x JOIN snap.keys f ON f.id = x.id LEFT JOIN snap.keys e ON e.id = x.entry_id")
             con.execute("INSERT OR IGNORE INTO snap.steps SELECT flow, seq, depth, callable, via, site_line, parent_seq"
                         " FROM main.steps")
+            # the names given to systems, which a rule's `system:Name` selects by
+            con.execute("INSERT INTO snap.annotations SELECT node_id, key, value FROM main.annotations WHERE key = 'name'")
             con.execute("INSERT INTO snap.meta SELECT key, value FROM main.meta WHERE key LIKE 'root:%'")
             con.execute("INSERT INTO snap.meta VALUES ('format', 'slim')")
             where = {}
