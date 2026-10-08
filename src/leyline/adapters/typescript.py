@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import os
 import sys
 from typing import Optional
 
@@ -28,8 +29,11 @@ LANGUAGE = "typescript"
 EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
 CTOR = "constructor"
 
-if sys.getrecursionlimit() < 6000:
-    sys.setrecursionlimit(6000)   # deeply nested JSX and call chains
+# Deeply nested JSX and long call chains recurse deeply. Python before 3.12 on Windows does not stop a recursion
+# before the main thread's stack runs out (the process dies), so there the default limit stays, and a file nested
+# past it is reported (see indexer._parse_file).
+if sys.getrecursionlimit() < 6000 and not (os.name == "nt" and sys.version_info < (3, 12)):
+    sys.setrecursionlimit(6000)
 
 _ts = Parser(Language(tree_sitter_typescript.language_typescript()))
 _tsx = Parser(Language(tree_sitter_typescript.language_tsx()))
