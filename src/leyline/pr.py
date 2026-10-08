@@ -576,7 +576,9 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                              f" ({gh['headRefOid'][:7]}): run `gh pr checkout {github}` first"}
     if not base:
         base = _default_base(root)
-    for name in (base, "origin/" + base):   # a branch this clone has only as origin's
+    # A branch this clone has only as origin's; for a GitHub pull request origin's first, as GitHub compares with it
+    # (a local branch of that name may have been left behind).
+    for name in (("origin/" + base, base) if github else (base, "origin/" + base)):
         try:
             _git(root, "rev-parse", "--verify", "-q", name + "^{commit}")
             base = name

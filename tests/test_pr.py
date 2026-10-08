@@ -170,6 +170,35 @@ def test_files_the_map_does_not_read_are_named_as_they_are(branch):
     assert pr._other_files(branch, base, ["app/café.py", "app/store.py", "app/use.py", "web/server.ts"]) == ["docs/my notes.md", "docs/résumé.md"]
 
 
+def test_a_github_pull_request_is_read_against_origins_base_not_a_stale_local_one(tmp_path, monkeypatch):
+    """GitHub compares a pull request with its base branch as GitHub has it. A clone whose own `main` was left behind
+    (fetched, never pulled) must not count what `main` gained since as part of the pull request."""
+    up = tmp_path / "upstream"
+    for f, text in FILES.items():
+        (up / f).parent.mkdir(parents=True, exist_ok=True)
+        (up / f).write_text(text)
+    git(up, "init", "-q", "-b", "main")
+    git(up, "add", "-A")
+    git(up, "commit", "-qm", "base")
+    git(tmp_path, "clone", "-q", str(up), "clone")
+    root = tmp_path / "clone"
+    other = up / "app/other.py"
+    other.write_text(other.read_text().replace("return 1", "return 2"))
+    git(up, "commit", "-qam", "Upstream work, merged before the pull request")
+    git(root, "fetch", "-q")
+    git(root, "checkout", "-q", "-b", "feature", "origin/main")
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p)) + 0"))
+    git(root, "commit", "-qam", "Count one more")
+    head = git(root, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(pr, "github_pr", lambda root, n: {"baseRefName": "main", "title": "Count one more", "body": "",
+                                                          "headRefOid": head, "number": 7, "url": ""})
+    monkeypatch.chdir(root)
+    r = pr.review(root / ".leyline/leyline.db", root, github="7")
+    assert r["base_sha"] == git(root, "rev-parse", "origin/main").strip()
+    assert [x["name"] for x in r["changed"]["edited"]] == ["count"]
+
+
 def test_a_moved_checkout_maps_without_parsing_again(tmp_path):
     """Parse output depends on a file's text, not on where the checkout is: a store mapped again from another place
     (as the base of a pull request is) reuses it."""
