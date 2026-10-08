@@ -16,6 +16,7 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | `neighbors` | `leyline neighbors <id> --direction in --kinds calls` |
 | `impact` | `leyline impact <name or id>` |
 | `context` | `leyline context <name, path or id> --tokens 2000` |
+| `module_outline` | `leyline outline [module]` |
 | `trace`, `flows`, `flow` | none; use the server |
 
 If neither is there, say so and stop. If a tool says nothing is mapped, call `map` first.

@@ -416,6 +416,10 @@ def overview(scope: Annotated[Optional[str], Field(description="A module path pr
          **({"responsibility": s["responsibility"]} if s["responsibility"] else {})} for s in systems[:limit]]}
     ext = [x for x in o["externals"] if any(u in all_mods for u in x["used_by"])]
     ext.sort(key=lambda x: (-len(x["used_by"]), x["name"]))
+    named = [x for x in o.get("named_parts", []) if x["module"] in all_mods]
+    if named:   # parts of modules that were given names (module_outline, name_part)
+        out["named_parts"] = {"total": len(named), "items": [
+            {k: x[k] for k in ("id", "name", "summary") if x.get(k)} for x in named[:limit]]}
     out["externals"] = {"total": len(ext), "items": [
         {"id": x["id"], "used_by_modules": len(x["used_by"])}
         for x in ext[:limit]]}
@@ -570,6 +574,39 @@ def context(focus: Annotated[list[str], Field(min_length=1, description="What yo
     if "error" in r:
         return r
     return {"text": r["text"], "tokens": r["tokens"], "focus": r["focus"], "shown": r["shown"], "left_out": r["left_out"]}
+
+
+@_tool(limit=30_000, more="Lists were cut to keep this answer short; `cut` says which. Lower depth, or drill into one"
+                          " part by its id, to see the rest.")
+def module_outline(module: Annotated[Optional[str], Field(description="A module's path (such as `editor/core`) or id, or"
+                                                                     " a part id from an earlier outline. Leave out to"
+                                                                     " list the modules.")] = None,
+                   depth: Annotated[int, Field(ge=1, le=3, description="1: the parts; 2: and the parts inside each; 3:"
+                                                                       " one more level of names.")] = 2) -> dict:
+    """A large module split into at most 12 parts: its folders, or groups of files (found from calls and type use)
+    where a folder is flat, largest first. For each part: size (files, functions, lines), entry points (routes, UI
+    handlers and components, programs, commands; tests), what it uses and what uses it (other parts and modules,
+    counted links), channels crossing its edge, its busiest functions (most flows through them), key types, what makes
+    it risky beside its siblings, and its name and summary if one was given. Drill in with a part's id; a file or a
+    group of one file lists its key functions. Name parts with `name_part` after reading their code."""
+    from . import outline
+    return outline.outline(_db(), module, depth)
+
+
+@_tool
+def name_part(part_id: Annotated[str, Field(min_length=1, description="A part id from module_outline.")],
+              name: Annotated[str, Field(min_length=1, description="A short name a person would use, such as"
+                                                                   " \"Validation rules\".")],
+              summary: Annotated[str, Field(description="One line on what the part does.")] = "",
+              evidence: Annotated[Optional[list[str]], Field(description="Node ids of the code you read to name it;"
+                                                                         " needed unless layer is intent.")] = None,
+              layer: Annotated[Literal["inferred", "intent"], Field(description="inferred: your reading of the code."
+                                                                                " intent: the person said it.")] = "inferred") -> dict:
+    """Give a part from module_outline a name and a one-line summary. Outlines, `overview`, explain_path's steps and
+    the map page show it. It is kept across maps; when the part later keeps less than half of its files, it is shown
+    as "may be stale"."""
+    from . import outline
+    return outline.name_part(_db(), part_id, name, summary, evidence, layer, "mcp")
 
 
 # -- asking how something works -----------------------------------------------------------------------

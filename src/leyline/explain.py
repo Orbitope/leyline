@@ -771,6 +771,11 @@ def explain_path(con, frm: str, to: Optional[str] = None, through: Optional[str]
         if later:
             step["later_elsewhere"] = later
         out_steps.append(step)
+    from .outline import labels   # the named part (module_outline, name_part) each step sits in
+    named = labels(con, [s["id"] for s in out_steps])
+    for step in out_steps:
+        if step["id"] in named:
+            step["part"] = named[step["id"]]
     if guessed:
         notes.append(f"Step{'s' if len(guessed) > 1 else ''} {_nums(guessed)} follow{'s' if len(guessed) == 1 else ''}"
                      " a link the map guessed by name: read the code before relying on it.")
@@ -899,12 +904,17 @@ def walk_text(r: dict) -> str:
          + f": {r['shown']} of {r['total_steps']} steps shown" + (f" (along the flow {r['flow']})" if r.get("flow") else "")
          + "."]
     base = min((s["depth"] for s in r["steps"]), default=0)
+    part = None
     for s in r["steps"]:
         pad = "   " * min(s["depth"] - base, 8)
+        # A named part of the code (module_outline, name_part), said where the walk enters it.
+        into = f"  [in {s['part']}]" if s.get("part") and s["part"] != part else ""
+        part = s.get("part")
         if s["how"] == "start":
-            L.append(f"{s['n']:>3}. {pad}{s['name']}  ({s['at']})")
+            L.append(f"{s['n']:>3}. {pad}{s['name']}  ({s['at']}){into}")
         else:
-            L.append(f"{s['n']:>3}. {pad}{s['how']} -> {s['name']}  ({s['at']})" + ("  [guessed link]" if s.get("guessed") else ""))
+            L.append(f"{s['n']:>3}. {pad}{s['how']} -> {s['name']}  ({s['at']})" + ("  [guessed link]" if s.get("guessed") else "")
+                     + into)
         if s.get("call"):
             L.append(f"     {pad}   at {s.get('call_line', '')}: {s['call']}")
         if s.get("declaration") and s["how"] != "call":

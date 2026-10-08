@@ -282,7 +282,8 @@ def _summary(o: dict) -> str:
         for m in repo["modules"]:
             langs = ", ".join(f"{k} {v}" for k, v in m["languages"].items())
             lines.append(f"  {m['path']:<22} {m['files']:>3} files {m['loc']:>6} loc "
-                         f"{m['types']:>4} types {m['callables']:>4} callables  [{langs}]")
+                         f"{m['types']:>4} types {m['callables']:>4} callables  [{langs}]"
+                         + (f"  {m['title']}" if m.get("title") else ""))
     multi = len(o["repos"]) > 1
     name = lambda i: i.replace(":module:", "/") if multi else i.split(":module:")[-1]
     if o.get("workspace"):
@@ -332,6 +333,8 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   impact        what can reach a function, a type or a field: its callers near and far, and the flows through it
   source        source text of a node
   context       a short ranked outline of the code around a focus, cut to a token budget, for an agent
+  outline       a large module split into parts (folders, or groups of files): what each holds and how they link
+  name-part     give a part from the outline a name and a one-line summary
   find-flows    where a behavior described in words could start: entry points, handlers, tests, ranked
   explain-path  an ordered walk across calls and channels from one of them, with the lines that make each step
   diagram       a Mermaid sequence diagram of how execution reaches some functions and what they call
@@ -588,6 +591,20 @@ def _main(argv=None) -> int:
     p.add_argument("--tokens", type=int, default=2000, help="how long the outline may be, in tokens (characters / 4;"
                                                             " default 2000, from 200 to 8000)")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("outline", description="one level of a module split into at most 12 parts (folders, or groups of"
+                                              " files where a folder is flat): size, entry points, links in and out,"
+                                              " channels, busiest functions, risks and names")
+    p.add_argument("module", nargs="?", help="a module's path (editor/core), or a part id from an outline; none lists"
+                                             " the modules")
+    p.add_argument("--depth", type=int, default=2, help="1: the parts; 2: and the parts inside each (default); 3: one"
+                                                        " more level")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("name-part", description="name a part from the outline, with a one-line summary")
+    p.add_argument("part_id")
+    p.add_argument("name")
+    p.add_argument("--summary", default="", help="one line on what the part does")
+    p.add_argument("--evidence", nargs="*", default=[], help="node ids of the code read to name it")
+    p.add_argument("--intent", action="store_true", help="the person said it (no evidence needed)")
     p = sub.add_parser("find-flows", description="where a behavior described in words could start, best first: entry"
                                                  " points, route, UI and message handlers, tests named for it, functions")
     p.add_argument("description", help="what happens, such as \"what happens when a writer saves a dialogue\"")
@@ -850,6 +867,22 @@ def _main(argv=None) -> int:
             _print(r)
         else:
             print(text, file=sys.stderr if "error" in r else sys.stdout)
+        return 1 if "error" in r else 0
+    elif args.cmd in ("outline", "name-part"):
+        from . import outline
+        if args.cmd == "outline":
+            r = outline.outline(con, args.module, args.depth)
+            if args.json and "error" not in r:
+                _print(r)
+            else:
+                print(outline.text(r), file=sys.stderr if "error" in r else sys.stdout)
+        else:
+            r = outline.name_part(con, args.part_id, args.name, args.summary, args.evidence,
+                                  "intent" if args.intent else "inferred", "cli")
+            if "error" in r:
+                print(f"leyline: {r['error']}", file=sys.stderr)
+            else:
+                print(f"Named {r['part_id']}: {r['name']}." + (f" {r['summary']}" if r["summary"] else ""))
         return 1 if "error" in r else 0
     elif args.cmd == "context":
         from . import context

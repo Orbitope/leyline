@@ -791,12 +791,72 @@ and talks to over its pipes (the messages are not calls the map can follow, so i
 Its diagram has one arrow per step, each a link on the map. `leyline diagram <ids>` draws the usual sequence diagram
 for any functions or types.
 
+### Finding your way around a large module
+
+On a large repository a module is still huge: Parlance's `editor/client` holds 249 files and the map draws it as one
+box. `leyline outline <module>` (the `module_outline` tool) splits it into at most twelve parts, largest first, and
+says for each what it holds and how it connects. With no module it lists the repository's modules. Here is
+`editor/core/src` after an agent named its parts:
+
+```
+$ leyline outline parlance:dir:editor/core/src
+Core library (folder, editor/core/src/): 67 files, 669 functions, 20,380 lines.
+The project model and every engine on it: storage, validation, explore, play, prose, review, export.
+Split by folders and groups of files. 11 of 12 parts have a name.
+
+1. Storage and rename (projectStorage.ts group)  [system]: 7 files, 104 functions, 3,098 lines
+   id: parlance:dir:editor/core/src#system:projectStorage.ts
+   Canonical JSON in and out, the one atomic write path, loading a project, and entity-id renames.
+   entry points: none; 103 of 104 functions on a test's path
+   uses: editor/runtime (25), Validation rules (8), Validator (8), Review threads and localization (6), ...
+   used by: Core tests (496), editor/host (175), editor/mcp (64), editor (16), editor/client (10), projectDiff.ts (6)
+   channel: file from editor/host, 5 links (e.g. threads/*.json)
+   busiest: stringify (887 flows), parse (753 flows), ownValue (738 flows)
+   key types: StorageContext, RenamePlan, EntityType, RenameInput
+   risky: busy: its functions are on the most flows
+2. Validation rules (validation/): 9 files, 78 functions, 2,850 lines
+   ...
+12. 12 more parts  [more]: 18 files, 85 functions, 2,565 lines
+```
+
+A part is a folder when the folder tree means something; a folder that holds nearly all of a module is shown instead
+of it (`editor/client` is shown from `editor/client/src`), with the few files beside it as parts of their own. Where a
+folder is flat, its files are grouped by Louvain community detection over calls, type use and inheritance between
+them, each file going to the group that holds most of its code; when few of them link to each other (a folder of
+tests), they are grouped by the code they use instead. A module that is one flat folder reuses the systems the map
+proposed. A level of more than twelve parts shows the eleven largest and a `@more` part holding the rest. A file or a
+group of one file is a leaf: its key functions, most flows through them first.
+
+For each part: its size; its entry points (routes, UI handlers and components, programs, commands, message handlers)
+and tests, and how many of its functions are on a test's path; what it uses and what uses it (its siblings, the
+folder next to it, other modules), as counted calls and type links; the channels that cross its edge; its busiest
+functions (most flows through them) and the types other code leans on most; and `risky` beside its siblings: the
+busiest, the most depended on, and those few tests reach. `--depth 2` (the default) also lists the parts inside each
+part; drill in with a part's id. Ids hold across maps: `<repo>:dir:<path>` for a folder, `<path>#files` for the loose
+files beside its folders, `<path>#system:<anchor>` for a group (named after its most linked type or file), a file's or
+a module's node id for those.
+
+An agent names a part after reading its code: `name_part(part_id, name, summary, evidence)`, or `leyline name-part
+<part id> "Validation rules" --summary "..." --evidence <node ids>` (`--intent` when the person said it). Names are
+kept in the store (table `part_names`) with the part's files at the time, so they survive a re-map: a group whose
+anchor changed takes the name of the old group of its folder it shares most files with, and a name whose part kept
+less than half its files, or most of whose evidence is gone, is shown as "may be stale". Outlines, `overview` (module
+titles and `named_parts`), `explain_path` (each step says the named part it enters) and the map page show the names.
+Naming a system the map proposed also sets its `name` and `responsibility`.
+
+The `leyline-explore-module` skill walks an agent through it: outline the module, read each part's key code, name
+it, and give the person a one-screen guide (the parts, how they connect, where to start reading for common tasks,
+which parts are risky), offered as a tour.
+
 ## The map
 
 `view` and `export` open the same page. It has up to four zoom levels:
 
 1. **Modules.** One box per module, with an arrow for each dependency and a count of the links behind it.
-2. **Inside a module.** One box per system where the module was split, otherwise one per type or file.
+2. **Inside a module.** A module of 30 files or more is drawn as its parts, as `leyline outline` splits it (see
+   [Finding your way around a large module](#finding-your-way-around-a-large-module)), with their names and sizes;
+   open a part for the parts inside it, then its types and files. A smaller module shows one box per system where
+   it was split, otherwise one per type or file.
 3. **Inside a system.** One box per type, or per file where functions sit outside any type.
 4. **Inside a type or file.** One box per function, with the outside callers and callees around it.
 
@@ -828,6 +888,8 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `neighbors(node_id, direction?, kinds?, limit?)` | Raw edges around a node, by kind |
 | `source(node_id, max_lines?)` | The node's source text |
 | `context(focus, budget_tokens?)` | A short outline of the code around a focus (ids, names, paths, a change, or words), most related first, cut to a token budget |
+| `module_outline(module?, depth?)` | A large module split into at most 12 parts (folders, or groups of files where a folder is flat): each part's size, entry points, links in and out, channels, busiest functions, risks and name; drill in with a part's id |
+| `name_part(part_id, name, summary?, evidence, layer?)` | Name a part from the outline with a one-line summary; kept across maps, shown as "may be stale" when the part changes a lot |
 | `flows(kind?, through?, limit?, offset?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
 | `flow(flow_id, max_steps?, offset?)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |

@@ -196,6 +196,19 @@ def test_every_other_tool_with_real_arguments(repo):
         assert "return self.name" in (await a.call("source", node_id=start))["text"]
         ctx = await a.call("context", focus=["Engine.start"], budget_tokens=500)
         assert "def start(self)" in ctx["text"] and ctx["tokens"] <= 500 and "Left out:" in ctx["text"]
+        top = await a.call("module_outline")
+        assert top["kind"] == "repo" and any(p["id"] == "repo:module:cs/Mod" for p in top["parts"])
+        mod = await a.call("module_outline", module="cs/Mod", depth=1)
+        part = mod["parts"][0]
+        assert part["size"]["functions"] > 0 and part["drill"] == f'module_outline("{part["id"]}")'
+        error, text = await a.raw("name_part", {"part_id": part["id"], "name": "Shapes", "summary": "The shape types.",
+                                                "evidence": [start]})   # `name` is also call()'s own argument
+        assert not error and json.loads(text)["part_id"] == part["id"]
+        again = await a.call("module_outline", module="cs/Mod", depth=1)
+        assert next(p for p in again["parts"] if p["id"] == part["id"])["summary"] == "The shape types."
+        assert "module_outline() with no module" in await a.fail("module_outline", module="nowhere")
+        error, text = await a.raw("name_part", {"part_id": part["id"], "name": "Shapes"})
+        assert error and "evidence" in text
         fl = await a.call("flows", through=start)
         assert fl["total"] >= 1
         page = await a.call("flows", limit=2)
