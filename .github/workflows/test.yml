@@ -34,17 +34,28 @@ jobs:
       # and Python, so a failure here only narrows the run.
       - run: python -m pip install -e ".[languages]"
         continue-on-error: true
+      # Python runs the tests and keeps their output, so the same steps work on every system's shell.
       - name: Run the tests
-        shell: bash
+        shell: python
         run: |
-          set -o pipefail
-          python -m pytest -q -rfE --tb=line -p no:cacheprovider 2>&1 | tee pytest-output.txt
+          import subprocess, sys
+          with open("pytest-output.txt", "w", encoding="utf-8") as out:
+              proc = subprocess.Popen([sys.executable, "-X", "faulthandler", "-m", "pytest", "-v", "-rfE", "--tb=line",
+                                       "-p", "no:cacheprovider"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, encoding="utf-8", errors="replace")
+              for line in proc.stdout:
+                  sys.stdout.write(line)
+                  out.write(line)
+                  out.flush()
+          sys.exit(proc.wait())
       # The failures as annotations, so they can be read without the full log.
       - name: Name the failures
         if: failure()
         continue-on-error: true
-        shell: bash
+        shell: python
         run: |
-          grep -E "^(FAILED|ERROR) " pytest-output.txt | head -40 | while IFS= read -r line; do echo "::error::$line"; done
-          grep -E "^(E  |[^ ].*:[0-9]+: )" pytest-output.txt | head -40 | while IFS= read -r line; do echo "::warning::$line"; done
-          tail -n 25 pytest-output.txt | while IFS= read -r line; do echo "::notice::$line"; done
+          lines = open("pytest-output.txt", encoding="utf-8", errors="replace").read().splitlines()
+          for line in [l for l in lines if l.startswith(("FAILED ", "ERROR "))][:40]:
+              print("::error::" + line)
+          for line in lines[-25:]:
+              print("::notice::" + line)
