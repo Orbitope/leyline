@@ -187,7 +187,7 @@ def test_the_plan_and_the_check_draw_how_it_runs(app):
         "## MODIFIED Requirements\n### Requirement: Runs\nThe service SHALL run.\n\n"
         "#### Scenario: Run\n- **WHEN** a name is run\n- **THEN** its data comes back\n")
     b = spec.brief(con, ch)
-    page = (ch / "leyline.md").read_text()
+    page = (ch / "leyline.md").read_text(encoding="utf-8")
     assert "### How it runs" in page and "```mermaid\nsequenceDiagram\n" in page
     assert "Note over P2: changed: Service.run" in page and "The code the tasks change is shaded." in page
     assert diagrams.unbacked(con, b["how_it_runs"]) == []
@@ -195,7 +195,7 @@ def test_the_plan_and_the_check_draw_how_it_runs(app):
     svc.write_text(svc.read_text().replace("        self.check(data)\n", ""))
     index(root, db, "app")
     v = spec.verify(con, ch)
-    page = (ch / "leyline.md").read_text()
+    page = (ch / "leyline.md").read_text(encoding="utf-8")
     assert "### How it runs\n" in page                      # the plan's diagram stays
     assert "### How it runs now" in page and "- `Service.run` no longer calls `Service.check`" in page
     assert page.count("```mermaid") == 3                    # the plan's, and before and after the change
@@ -232,7 +232,7 @@ def test_the_pull_request_page_draws_the_change(tmp_path, monkeypatch):
 def test_the_map_page_shows_a_diagram_as_its_source(tmp_path):
     """The map page reads leyline.md with a small reader of its own; a ```mermaid block stays one block, shown as
     its source (the page has no Mermaid renderer and loads nothing from the network)."""
-    html = (Path(spec.__file__).parent / "viewer" / "viewer.html").read_text()
+    html = (Path(spec.__file__).parent / "viewer" / "viewer.html").read_text(encoding="utf-8")
     start = html.index("function mdBlocks(text)")
     end = html.index("\n}\n", start) + 3
     script = tmp_path / "md.js"

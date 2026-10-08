@@ -519,7 +519,8 @@ def test_compiler_overrules_syntax_for_csharp(tmp_path):
     plain = tmp_path / "plain.db"
     index(FIXTURE2, plain, "f2")
     stats = index(FIXTURE2, db, "f2", exact="roslyn")
-    assert stats["exact:roslyn"]["status"] == "ok" and stats["exact:roslyn"]["calls_removed"] >= 1
+    assert stats["exact:roslyn"]["status"] == "ok", stats["exact:roslyn"]
+    assert stats["exact:roslyn"]["calls_removed"] >= 1
     c, p = store.connect(db), store.connect(plain)
     go = "f2:csharp:cs/Mod::Mod.Hard.Go()"
     pick = lambda con: {r[0].split("Hard.")[1]: r[1] for r in con.execute(
