@@ -209,7 +209,7 @@ def moved_on(con, name: str) -> bool:
 
 
 def _open(path: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
     con.row_factory = sqlite3.Row
     return con
 

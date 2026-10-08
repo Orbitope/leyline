@@ -199,6 +199,29 @@ def test_a_github_pull_request_is_read_against_origins_base_not_a_stale_local_on
     assert [x["name"] for x in r["changed"]["edited"]] == ["count"]
 
 
+def test_a_checkout_in_a_folder_named_like_a_url_is_reviewed(tmp_path, monkeypatch):
+    """The base map and each run's map are opened read-only by URI: `#` and `%` in a folder's name are characters."""
+    root = tmp_path / "C# work" / "repo"
+    root.parent.mkdir()
+    for f, text in FILES.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p)) + 0"))
+    git(root, "commit", "-qam", "Count one more")
+    monkeypatch.chdir(root)
+    r = pr.review(root / ".leyline/leyline.db", root, "main")
+    assert [x["name"] for x in r["changed"]["edited"]] == ["count"]
+    use.write_text(use.read_text().replace("+ 0", "+ 1"))
+    git(root, "commit", "-qam", "Count two more")
+    r = pr.review(root / ".leyline/leyline.db", root, "main")
+    assert [x["name"] for x in r["since_last_review"]["code"]["edited"]] == ["count"]
+
+
 def test_a_moved_checkout_maps_without_parsing_again(tmp_path):
     """Parse output depends on a file's text, not on where the checkout is: a store mapped again from another place
     (as the base of a pull request is) reuses it."""
