@@ -480,9 +480,10 @@ Learnings go in a file in the repository, so you commit them, the team shares th
 them: `openspec/leyline-learnings.json` when the repository has an `openspec` folder, else
 `.leyline-learnings.json` at its root. A file stays where it was first made. It is JSON with sorted keys
 and a two-space indent, one entry per learning: `id`, `status` (active or retired), `reviewer`, `claim`,
-`reason`, `scope`, `source` (the change and finding it came from), `created`, `hits`, `dismissals`,
-`accepted`, and `findings` (the later findings it matched, with what people decided). Node ids in it leave
-out the repository's id, so a clone in a folder of another name reads them.
+`reason`, `scope`, `fingerprint` (the code it is about, see below), `source` (the change and finding it
+came from), `created`, `confirmed` (when a person last said it holds for the code as it is), `hits`,
+`dismissals`, `accepted`, and `findings` (the later findings it matched, with what people decided). Node
+ids in it leave out the repository's id, so a clone in a folder of another name reads them.
 
 - **Reviewers read them first.** The facts for a spec or a pull request (`leyline spec facts`, or
   `spec_review_facts`) start with `learnings_that_apply`: active learnings about code the change touches or
@@ -499,8 +500,19 @@ out the repository's id, so a clone in a folder of another name reads them.
 - **A wrong learning retires itself.** Each later decision on a finding it matched is counted. Once people
   have accepted at least two of them, and more than they rejected, the learning is retired and the file
   says why. It is also retired if the finding it came from is later marked anything but rejected.
+- **A learning about code that has changed says so.** A learning keeps a fingerprint: for each evidence
+  node, the hash the map keeps of that node's own lines (trimmed, so moving or re-indenting it does not
+  count; the file's hash for a node with none). Each time a learning is used, in `learnings_that_apply`,
+  in `learned` on a new finding, on the page and in `leyline learnings`, it is compared with the map. If a
+  node was edited or is gone, the learning is `stale` and names them in `edited` and `gone`. It still
+  applies and still marks findings, and is not retired. The page says "Matches a past decision, but the
+  code it was about has changed since: ..." and asks whether it still holds. That is the person's call:
+  `leyline learnings confirm <id>` takes the fingerprint again for the code as it is now, and
+  `leyline learnings retire <id>` ends it. A learning kept before Leyline recorded fingerprints has none.
+  Whether its code changed is unknown, not stale, and it says so; confirming it gives it one.
 
-`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand.
+`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand;
+`leyline learnings confirm <id>` says one still holds for the code as it is now.
 
 ### How it runs: sequence diagrams
 
@@ -907,7 +919,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
 | `quick(what?, names?, done?, test_output?, test_results?, coverage_path?, change_id?)` | A small change with no spec folder: before (`what`, `names`), what it touches and the tests that run it; after (`done`), one verdict, and `grown` when it needs a spec |
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
-| `learnings(retire?, why?)` | Past decisions on review findings, kept from rejections with a reason; `retire` one the person says no longer holds |
+| `learnings(retire?, why?, confirm?)` | Past decisions on review findings, kept from rejections with a reason, each marked `stale` when its code changed since; `retire` one the person says no longer holds, `confirm` one they say still holds for the code as it is now |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `drift(path?, accept?)` | Code the living specs and finished changes name that is gone, moved, changed signature or ambiguous; `fails`, the page, `next` |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |

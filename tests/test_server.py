@@ -157,6 +157,9 @@ def test_the_loop_over_mcp(repo):
         assert r["status"] == "rejected"
         learned = await a.call("learnings")   # the rejection, with its reason, is kept for later reviews
         assert learned["active"] == 1 and learned["learnings"][0]["id"] == r["learning"]
+        assert learned["stale"] == 0 and learned["learnings"][0]["code"] == "unchanged"
+        confirmed = await a.call("learnings", confirm=r["learning"])   # the person says it holds for the code now
+        assert confirmed["id"] == r["learning"] and confirmed["was"] == "unchanged"
         p = await a.call("plan", change="loud-engine")
         # The low finding is still open: next names it and the call that records the decision (Signal item 9).
         assert p["status"]["blocking"] == [] and f2["id"] in p["next"][0] and "spec_resolve" in p["next"][0]

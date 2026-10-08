@@ -347,7 +347,7 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   affected-tests  the tests to run for a change, as a command
   spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
   drift         code the specs name that has moved, changed signature or gone since they were written
-  learnings     past decisions on review findings, which later reviews read first; retire one
+  learnings     past decisions on review findings, which later reviews read first; retire or confirm one
   record-tests  store a test run under a label
   review        compare an implemented change with a proposal made through MCP
   view          serve the map on localhost
@@ -664,8 +664,9 @@ def _main(argv=None) -> int:
     p.add_argument("--after", help="verify: label of the test run recorded after it")
     p = sub.add_parser("learnings", description="past decisions on review findings: each finding a person rejected,"
                                                 " with the reason. Later reviews read them first.")
-    p.add_argument("action", nargs="?", choices=["list", "retire"], default="list", help="retire: it no longer holds")
-    p.add_argument("id", nargs="?", help="retire: the learning's id")
+    p.add_argument("action", nargs="?", choices=["list", "retire", "confirm"], default="list",
+                   help="retire: it no longer holds; confirm: it still holds for the code as it is now")
+    p.add_argument("id", nargs="?", help="retire or confirm: the learning's id")
     p.add_argument("why", nargs="?", help="retire: why it no longer holds")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")
