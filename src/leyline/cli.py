@@ -850,20 +850,28 @@ def _main(argv=None) -> int:
             _print(r)
         else:
             print(diff.review_text(r))
+        return 1 if "error" in r else 0
     elif args.cmd == "overview":
         o = query.overview(con)
         _print(o) if args.json else print(_summary(o))
     elif args.cmd == "expand":
-        _print(query.expand(con, args.node_id, args.limit))
+        r = query.expand(con, args.node_id, args.limit)
+        _print(r)
+        return 1 if "error" in r else 0
     elif args.cmd == "search":
         _print(query.search(con, args.text, args.kind, args.limit))
     elif args.cmd == "impact":
         return _impact(con, args)
     elif args.cmd == "neighbors":
-        _print(query.neighbors(con, args.node_id, args.direction, args.kinds))
+        r = query.neighbors(con, args.node_id, args.direction, args.kinds)
+        _print(r)
+        return 1 if "error" in r else 0
     elif args.cmd == "source":
         r = query.source(con, args.node_id)
-        print(r.get("text") or r.get("error"))
+        if "error" in r:
+            print(f"leyline: {r['error']}", file=sys.stderr)
+            return 1
+        print(r["text"])
     elif args.cmd in ("find-flows", "explain-path", "diagram"):
         from . import explain
         if args.cmd == "find-flows":
