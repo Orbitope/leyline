@@ -305,6 +305,32 @@ def test_rules_are_checked_against_the_graph(tmp_path):
     assert rules.confirm_rule(c, ok["id"])["status"] == "confirmed"
 
 
+def test_a_path_or_id_selector_is_a_prefix_as_written(tmp_path):
+    """`_` and `%` in a selector are characters of the path, not patterns, and case counts: `path:app/my_pkg` is not
+    `app/myXpkg`, and `path:App` is not `app`."""
+    from leyline import rules
+
+    root = tmp_path / "repo"
+    for f in ("app/my_pkg/a.py", "app/myXpkg/b.py", "app/other.py"):
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text("def f():\n    return 1\n")
+    db = tmp_path / "r.db"
+    index(root, db, "r")
+    c = store.connect(db)
+    paths = lambda sel: sorted({c.execute("SELECT path FROM nodes WHERE id = ?", (i,)).fetchone()[0] for i in rules._select(c, sel)} - {None})
+    assert paths("path:app/my_pkg") == ["app/my_pkg", "app/my_pkg/a.py"]
+    assert paths("path:App") == []
+    assert paths("path:app/my_pkg/a.py") == ["app/my_pkg/a.py"]
+    by_id = rules._select(c, "id:r:python:app.my_pkg")
+    assert by_id and not any("myXpkg" in i for i in by_id)
+    assert rules._select(c, "id:R:python:app") == set()
+    with c:
+        c.execute("INSERT INTO nodes (id, kind, name, source) VALUES ('r:ext:my_lib.io', 'external', 'my_lib.io', 't'),"
+                  " ('r:ext:myXlib.io', 'external', 'myXlib.io', 't')")
+    assert rules._select(c, "external:my_lib") == {"r:ext:my_lib.io"}
+    assert rules._select(c, "external:MY_LIB") == set()
+
+
 def test_review_compares_an_implemented_change_with_its_proposal(tmp_path):
     import shutil
 
