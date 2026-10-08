@@ -14,6 +14,7 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | --- | --- |
 | `review_pr` (`base`, `about`) | `leyline pr <base> --about "<title and description>"` |
 | `review_pr` (`github`) | `leyline pr --github <number>` |
+| `review_pr` (`gate_passed`, `blocking`) | `leyline pr <base> --gate` (exits 1 while something blocks) |
 | `spec_review_facts` | `leyline spec facts pr-<id> --reviewer logic` (or `performance`) |
 | `spec_finding` | `leyline spec finding pr-<id> --reviewer logic --severity high --claim "..." --evidence <node id> --proposal "..."` |
 | `spec_findings` | `leyline spec findings pr-<id>` |
@@ -33,14 +34,20 @@ If neither is there, say so and stop.
    performance reviewer. Fresh agents are best; if you cannot start one, do two separate passes and say so.
    Each files its findings with `spec_finding`.
 4. **Call `spec_findings`** with `pr-<id>`: everything filed, with ids.
-5. **Summarize for the person**, in this order, on one screen:
+5. **Call `review_pr` again** so the gate counts the findings just filed. It returns `gate_passed` and
+   `blocking`: what holds up the merge under the project's `[pr] blocking` in `openspec/leyline.toml` (by
+   default unedited callers of a changed signature, removed code still called, confirmed error rules newly
+   failing, and open high findings).
+6. **Summarize for the person**, in this order, on one screen:
+   - **Gate**: passes, or blocked, with each line of `blocking` and what to do about the first (the page's
+     `Next:` line). Say which config it ran under (the default, or `openspec/leyline.toml`).
    - **What changed**: two sentences, from the page's "What changed", not from the description.
    - **What it breaks or leaves**: callers of a changed signature left alone, removed code still called, other
      ends of a channel not edited, changed code no test runs. One line each, with the node.
    - **Findings**: high, then medium, then low; one line each, with its id and its evidence.
    - **Fix first**: the one finding to fix first, and why.
    - **Not checked**: what you could not check, and why.
-6. Point to the page (`written`) for the whole review. Ask the person to decide each finding; record a decision
+7. Point to the page (`written`) for the whole review. Ask the person to decide each finding; record a decision
    they state with `spec_resolve`.
 
 ## Review it again after new commits
@@ -51,7 +58,8 @@ opens with "Since the last review", and the facts carry `since_last_review`:
 1. Start there: the functions edited since the last head, and its `new_facts`.
 2. Re-check each finding under `may_be_fixed` in the new code, and tell the person which the new commits fix.
 3. Do not file again what is under `still_applies`.
-4. Review only the new code adversarially. Open the summary with what changed since the last review.
+4. Review only the new code adversarially. Open the summary with what changed since the last review, and
+   whether the gate result changed: it is judged again from the new code and the findings as they stand.
 
 ## Rules
 

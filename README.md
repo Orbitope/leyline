@@ -424,6 +424,38 @@ files one, and the page lists them. A finding whose evidence is nowhere near the
 radius, nor one call from it) is kept but marked, so the person questions it first. `leyline spec forget
 pr-123` deletes the base's map.
 
+`leyline pr` exits 0 whatever it finds. With `--gate` it exits 1 while something that blocks is left, so it
+can hold up a merge in CI. The page opens with a **Gate** section: whether it passes, what blocks under which
+config, one line for each thing that blocks, and a `Next:` line saying what to do about the first. The MCP
+`review_pr` answer carries the same lines as `blocking`, and `gate_passed`. Each run judges the gate again from
+the code at the checkout and the findings as they stand, so a commit that fixes a caller, or a finding the person
+resolves, clears it on the next run.
+
+By default four things block, the ones the map shows are broken: a caller of a changed signature that was not
+edited, removed code that is still called, a confirmed error-level rule (see [Rules](#rules)) that now fails and
+did not at the base, and an open high finding. A line that rests only on a link the map guessed by name never
+blocks; the Gate section counts those so you can read them. A project picks its own set in
+`openspec/leyline.toml`, as it does for `check`:
+
+```toml
+[pr]
+blocking = ["unedited-callers", "still-called", "failing-rules", "open-high-findings"]   # the default
+```
+
+The kinds are `unedited-callers`, `still-called`, `failing-rules`, `open-high-findings`, `open-medium-findings`
+(medium or high), `open-findings` (any severity), `other-ends` (the other end of a channel the edit changed, not
+edited) and `untested` (changed code no test on the map reaches). `blocking = []` lets everything through.
+
+In CI, check the pull request's head out with enough history to find where it left the base:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: pip install leyline-code
+- run: leyline pr origin/${{ github.base_ref }} --gate
+```
+
 ### A quick change
 
 A spec folder is too much for "make the retry count 3". `leyline quick` gives the same three answers with no folder:
@@ -904,7 +936,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label, for `review_change` |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
-| `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
+| `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`), `blocking` (one line for each thing that holds up the merge) and `gate_passed` |
 | `quick(what?, names?, done?, test_output?, test_results?, coverage_path?, change_id?)` | A small change with no spec folder: before (`what`, `names`), what it touches and the tests that run it; after (`done`), one verdict, and `grown` when it needs a spec |
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
 | `learnings(retire?, why?)` | Past decisions on review findings, kept from rejections with a reason; `retire` one the person says no longer holds |

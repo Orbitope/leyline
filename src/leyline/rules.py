@@ -81,19 +81,25 @@ def confirm_rule(con, rule_id: int) -> dict:
     return {"id": rule_id, "status": "confirmed"} if n else {"error": f"no rule {rule_id}"}
 
 
-def _links(con, kinds: list[str]):
+def _links(con, kinds: list[str], sure_only: bool = False):
+    """The links a rule reads. `sure_only` leaves out links the map guessed by name (a call is a guess only when
+    every call site behind it is one)."""
     kinds = kinds or list(DEPENDENCY_KINDS)
     if "calls" in kinds:
-        for r in con.execute("SELECT DISTINCT src_id, dst_id FROM calls ORDER BY dst_id, src_id"):
+        q = ("SELECT src_id, dst_id FROM calls GROUP BY src_id, dst_id HAVING MIN(precision = 'guess') = 0"
+             " ORDER BY dst_id, src_id" if sure_only else "SELECT DISTINCT src_id, dst_id FROM calls ORDER BY dst_id, src_id")
+        for r in con.execute(q):
             yield r[0], r[1], "calls"
     rest = [k for k in kinds if k != "calls"]
     if rest:
-        for r in con.execute(f"SELECT src_id, dst_id, kind FROM edges WHERE kind IN ({','.join('?' * len(rest))})", rest):
+        sure = " AND (precision IS NULL OR precision != 'guess')" if sure_only else ""
+        for r in con.execute(f"SELECT src_id, dst_id, kind FROM edges WHERE kind IN ({','.join('?' * len(rest))}){sure}", rest):
             yield r[0], r[1], r[2]
 
 
-def check(con, rules_from=None) -> dict:
-    """Evaluate every rule against the graph in `con`. `rules_from` reads the rules from another store."""
+def check(con, rules_from=None, sure_only: bool = False) -> dict:
+    """Evaluate every rule against the graph in `con`. `rules_from` reads the rules from another store.
+    `sure_only` reads no link the map guessed by name, so a rule that fails only through guesses passes."""
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
     out = []
     for rule in (rules_from or con).execute("SELECT * FROM rules ORDER BY id").fetchall():
@@ -101,7 +107,7 @@ def check(con, rules_from=None) -> dict:
         violations = []
         if rule["kind"] == "forbid":
             a, b = _select(con, rule["selector_from"]), _select(con, rule["selector_to"])
-            for s, d, k in _links(con, kinds):
+            for s, d, k in _links(con, kinds, sure_only):
                 if s in a and d in b:
                     violations.append({"from": s, "to": d, "kind": k})
         elif rule["kind"] == "no_cycle":
@@ -120,7 +126,8 @@ def check(con, rules_from=None) -> dict:
                     return None
                 group = {i: owner(i) for i in parent}
             graph = defaultdict(set)
-            for s, d, k in _links(con, kinds or ["calls", "uses_type", "instantiates", "extends", "implements", "imports"]):
+            for s, d, k in _links(con, kinds or ["calls", "uses_type", "instantiates", "extends", "implements", "imports"],
+                                 sure_only):
                 gs, gd = group.get(s), group.get(d)
                 if gs and gd and gs != gd:
                     graph[gs].add(gd)
