@@ -58,6 +58,7 @@ adds Go, Rust, Java, Kotlin, Swift, C, C++, Ruby, PHP, Scala, Lua, Bash and GDSc
 | Review a plan before code | "Stress-test the plan for loud-engine" | `leyline-adversarial-review` | `spec facts <id> --reviewer logic` | `spec_review_facts` |
 | Review a PR (no spec) | "Review pull request 123" | `leyline-pr-review` | `pr main --about "<description>"` or `pr --github 123` | `review_pr` |
 | Re-review after new commits | "Review it again" | `leyline-pr-review` | `pr` again, with the same `--id` or `--github` | `review_pr` |
+| Gate a merge in CI | | | `pr <base> --gate` (exits 1 while something blocks; set the kinds under `[pr] blocking` in `openspec/leyline.toml`) | `review_pr` (`gate_passed`, `blocking`) |
 | File a finding | (reviewers do this) | | `spec finding <id> --reviewer logic --severity high --claim "..." --evidence <node> --proposal "..."` | `spec_finding` |
 | List findings | | | `spec findings <id>` | `spec_findings` |
 | Decide a finding | "Reject f-7fdda7: it's on purpose" | | `spec resolve <finding> accepted\|rejected\|deferred "why"` | `spec_resolve` |
@@ -77,6 +78,7 @@ Only you resolve a finding. A rejection with a reason becomes a learning.
 | Job | Command | MCP tool |
 | --- | --- | --- |
 | Past review decisions | `learnings`, `learnings retire <id> "why"` | `learnings` |
+| Re-confirm a decision after its code changed | `learnings confirm <id>` | `learnings` (`confirm`) |
 | Specs that no longer match the code | `drift [path]` | `drift` |
 | Architecture rules (runs in CI) | `rules`, `rules --confirm <id>` | `add_rule`, `check_rules` |
 | Import measured coverage | `coverage <file>` | `coverage` |
