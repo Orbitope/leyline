@@ -86,7 +86,8 @@ def test_hostile_repository_is_indexed_and_says_what_it_left_out(tmp_path, small
     git(sub, "commit", "-m", "x")
     git(root, "init")
     git(root, "submodule", "add", sub.as_uri(), "libs/sub.js")   # a submodule whose name looks like a source file
-    links = all([symlink("good.py", root / "link.py"), symlink("missing.py", root / "dangling.py"),
+    # Windows checks out a symlink loop or a link to "." as a file git cannot add: the links are left out there.
+    links = os.name != "nt" and all([symlink("good.py", root / "link.py"), symlink("missing.py", root / "dangling.py"),
                  symlink("loop_b.py", root / "loop_a.py"), symlink("loop_a.py", root / "loop_b.py"),
                  symlink(".", root / "loopdir.ts")])
     git(root, "add", "-A")
@@ -181,7 +182,10 @@ def test_deep_nesting_is_read_on_a_large_stack_or_reported(tmp_path):
         f"  {'else ' if i else ''}if (x === {i}) {{ return g{i}(); }}\n" for i in range(3000)) + "}\n")
     write(tmp_path, "absurd.py", "y = " + "f(" * 20000 + ")" * 20000 + "\n")
     ok = indexer._parse_one(parse_job(tmp_path, "elseif.ts"))
-    assert ok[7] is None and ok[6]   # past the default recursion limit, read on the large stack
+    if os.name == "nt":   # Windows gives a thread less stack: it may be reported instead, which is the fallback
+        assert (ok[7] is None and ok[6]) or ok[7] == "nested too deeply to read"
+    else:
+        assert ok[7] is None and ok[6]   # past the default recursion limit, read on the large stack
     bad = indexer._parse_one(parse_job(tmp_path, "absurd.py"))
     assert bad[6] is None and bad[7] == "nested too deeply to read"
 

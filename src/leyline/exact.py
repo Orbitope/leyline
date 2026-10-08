@@ -49,11 +49,23 @@ def _quiet(timeout: float) -> dict:
 
 
 # -- sources ---------------------------------------------------------------------------------
+def _sdk_framework() -> str:
+    """net<major>.0 for the .NET SDK on the PATH (net8.0 when it cannot be told)."""
+    try:
+        out = subprocess.run(["dotnet", "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
+        major = int(out.split(".")[0])
+        return f"net{major}.0" if major >= 6 else "net8.0"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return "net8.0"
+
+
 def _tool() -> Optional[Path]:
     """Build the exporter once per version into the user's cache. Returns the dll, or None."""
     if not shutil.which("dotnet"):
         return None
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "leyline" / f"roslyn-refs-{TOOL_VERSION}"
+    framework = _sdk_framework()
+    cache = (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "leyline"
+             / f"roslyn-refs-{TOOL_VERSION}-{framework}")
     dll = cache / "RoslynRefs.dll"
     if dll.exists():
         return dll
@@ -61,8 +73,11 @@ def _tool() -> Optional[Path]:
         src = Path(tmp) / "src"
         src.mkdir()
         for name in ("Program.cs", "RoslynRefs.csproj"):
-            (src / name).write_text(resources.files("leyline").joinpath(f"roslyn_refs/{name}").read_text(encoding="utf-8"),
-                                    encoding="utf-8")
+            text = resources.files("leyline").joinpath(f"roslyn_refs/{name}").read_text(encoding="utf-8")
+            # Target the SDK's own framework: its reference pack ships with it, so nothing has to be restored. An SDK
+            # newer than the project's framework does not carry the older pack, and restore has no source to get it.
+            (src / name).write_text(text.replace("<TargetFramework>net8.0</TargetFramework>",
+                                                 f"<TargetFramework>{framework}</TargetFramework>"), encoding="utf-8")
         empty = Path(tmp) / "no-packages"
         empty.mkdir()
         # The project has no package references; an empty source keeps restore from going to the network.

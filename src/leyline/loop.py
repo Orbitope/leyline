@@ -54,7 +54,7 @@ def _show(path: str | Path) -> str:
     """A path as a person would type it: relative when it is under the current directory."""
     p = Path(path).resolve()
     try:
-        return str(p.relative_to(Path.cwd().resolve()))
+        return p.relative_to(Path.cwd().resolve()).as_posix()   # the same on every system
     except ValueError:
         return str(path)
 
