@@ -41,8 +41,8 @@ When the person asked for the whole review of a pull request, follow the leyline
 one twice and writes the summary. Alone, this skill is the attack step.
 
 1. Check the branch out (`gh pr checkout <number>`), then call `review_pr` with `base` (the branch it merges
-   into) and `about` (its title and description), or `github` with the number; without the server,
-   `leyline pr <base> --about "..."` or `leyline pr --github <number>`. It returns the review's id,
+   into) and `about` (its title and description, and each linked issue's title and body), or `github` with the
+   number; without the server, `leyline pr <base> --about "..."` or `leyline pr --github <number>`. It returns the review's id,
    `pr-<id>`, and a page: what changed, what it reaches and did not change, its tests.
 2. Use `pr-<id>` wherever the steps below say the change folder: `spec_review_facts` with it gives the facts
    (`leyline spec facts pr-<id> --reviewer logic`), and `spec_finding` files against it. Read the files under
@@ -106,6 +106,9 @@ one twice and writes the summary. Alone, this skill is the attack step.
 - Do not file style or naming preferences.
 - Do not refile what a learning already settled, unless the code changed in a way its reason did not cover.
   Then say in the claim what changed.
+- A finding whose claim starts "/opsx:verify:" was filed from OpenSpec's verify (the leyline-spec skill says how).
+  It is an LLM's opinion: read the code behind it like any other lead, and do not file it again. It does not
+  change `check`'s verdict, and `check` passing does not settle it.
 - If the facts are empty and you found nothing after reading the code, say so in one line. A review
   that finds nothing is a valid result.
 - Say what you could not check and why.
