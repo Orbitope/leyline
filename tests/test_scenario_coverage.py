@@ -203,6 +203,27 @@ def test_affected_tests_from_the_map_then_from_what_ran(tmp_path, monkeypatch):
     assert "No change" in affected.select(con, "spec-nothing")["error"]
 
 
+def test_a_command_runs_the_tests_from_where_it_says_when_pytest_ran_from_a_folder_below(tmp_path):
+    """pytest run from `backend/` names its tests `tests/test_ops.py::...`; the command is run from the repository's
+    root, so it must name them by their path there."""
+    root = tmp_path / "mono"
+    write(root, {"backend/src/calc/__init__.py": "", "backend/src/calc/ops.py": OPS, "backend/tests/test_ops.py": TESTS})
+    ch = change(root)
+    db = root / ".leyline/leyline.db"
+    loop.map_repos([str(root)], db, exact="off", page=False)
+    assert "error" not in loop.plan(db, ch)
+    ops = root / "backend/src/calc/ops.py"
+    con = store.connect(db)
+    coverage.import_file(con, coverage_db(tmp_path / ".coverage", {ops: {
+        "tests/test_ops.py::test_scale_by_a_factor|run": [line(ops, "return x * k")]}}))
+    r = affected.select(con, "spec-clamp-scale")
+    assert [t["pytest"] for t in r["tests"]] == ["backend/tests/test_ops.py::test_scale_by_a_factor"]
+    assert r["commands"][0]["cwd"] == str(root)
+    assert r["commands"][0]["command"] == "pytest backend/tests/test_ops.py::test_scale_by_a_factor"
+    assert [t["pytest"] for t in affected.measured_tests(con, [n for n in affected.change_code(con, "spec-clamp-scale")[0]])] \
+        == ["backend/tests/test_ops.py::test_scale_by_a_factor"]
+
+
 def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     root = tmp_path / "js"
     ops = ("export function add(a: number, b: number): number {\n  return a + b;\n}\n\n"
