@@ -688,7 +688,13 @@ def _main(argv=None) -> int:
     p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
     p = sub.add_parser("view", description="serve the map on localhost")
     p.add_argument("--port", type=int, default=8765)
-    args = ap.parse_args(argv)
+    args, extra = ap.parse_known_args(argv)
+    # Python before 3.12 stops filling a list of names once an option follows the first of them
+    # (`skills install --to repo ask`): the names after the options come back here.
+    if extra and getattr(args, "names", None) is not None and not any(e.startswith("-") for e in extra):
+        args.names = list(args.names) + extra
+    elif extra:
+        ap.error("unrecognized arguments: " + " ".join(extra))
 
     if args.cmd in ("map", "plan", "check"):
         return _loop(args)

@@ -1192,7 +1192,7 @@ function nodeHtml(i, isFocus) {
   }
   const src = n.f ? D.sources[srcKey(i)] : null;
   if (src && n.a) {
-    let lines = src.split("\n").slice(n.a - 1, Math.min(n.b, n.a + 399)).map((ln) => ln.replace(/\t/g, "    "));
+    let lines = src.split(/\r?\n/).slice(n.a - 1, Math.min(n.b, n.a + 399)).map((ln) => ln.replace(/\t/g, "    "));
     const indent = Math.min(...lines.filter((ln) => ln.trim()).map((ln) => ln.length - ln.trimStart().length));
     if (indent > 0 && isFinite(indent)) lines = lines.map((ln) => ln.slice(indent));
     h += `<h3>Source <span>${n.b - n.a + 1} lines</span></h3><pre class="code"><code>${lines.map((ln, k) => `<span class="ln">${n.a + k}</span>${esc(ln)}`).join("\n")}</code></pre>`;
@@ -1482,7 +1482,7 @@ function picked() {
 }
 // leyline.md as blocks. It is generated, so a small reader covers it: headings, paragraphs, lists, tables.
 function mdBlocks(text) {
-  const lines = text.replace(/<!--[\s\S]*?-->/g, "").split("\n"), out = [];
+  const lines = text.replace(/<!--[\s\S]*?-->/g, "").split(/\r?\n/), out = [];
   let k = 0, section = "";
   while (k < lines.length) {
     const ln = lines[k];

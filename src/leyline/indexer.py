@@ -453,6 +453,10 @@ def _deep(fn, *args):
             out.append((True, fn(*args)))
         except BaseException as exc:   # handed back to the caller's thread
             out.append((False, exc))
+    if os.name == "nt" and sys.version_info < (3, 12):
+        # Python before 3.12 on Windows does not stop a deep recursion before the thread's stack runs out: the whole
+        # process dies. The file is reported as too deeply nested instead.
+        raise RecursionError("nested too deeply to read")
     old_stack, old_limit = threading.stack_size(), sys.getrecursionlimit()
     try:
         threading.stack_size(2**30)

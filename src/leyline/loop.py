@@ -54,7 +54,7 @@ def _show(path: str | Path) -> str:
     """A path as a person would type it: relative when it is under the current directory."""
     p = Path(path).resolve()
     try:
-        return str(p.relative_to(Path.cwd().resolve()))
+        return p.relative_to(Path.cwd().resolve()).as_posix()   # the same on every system
     except ValueError:
         return str(path)
 
@@ -244,9 +244,9 @@ def map_text(m: dict) -> str:
         if isinstance(v, dict) and v.get("status") == "ok" and "calls_confirmed" in v:
             L.append(f"Checked by a compiler ({k.split(':')[1]}): {n(v['calls_confirmed'], 'call')} confirmed, "
                      f"{v.get('calls_removed', 0)} removed, {v.get('calls_added', 0)} added.")
-    L.append(f"Store: {m['db']}")
+    L.append(f"Store: {Path(m['db']).as_posix()}")
     if m.get("page"):
-        L.append(f"Map page: {m['page']} (open it in a browser)")
+        L.append(f"Map page: {Path(m['page']).as_posix()} (open it in a browser)")
     L.append("Next: write the change you want as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the "
              "leyline-spec skill says how), then run `leyline plan <id>`.")
     return "\n".join(L)

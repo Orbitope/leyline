@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import os
 import shlex
 import sqlite3
 from collections import defaultdict
@@ -27,6 +28,13 @@ PY_TEST = re.compile(r"\.py$")
 JS_TEST = re.compile(r"\.[cm]?[jt]sx?$")
 GO_TEST = re.compile(r"_test\.go$")
 
+
+
+def _quote(path: str) -> str:
+    """A path as the person's shell takes it: POSIX quoting, or on Windows double quotes when it has a space."""
+    if os.name == "nt":
+        return f'"{path}"' if " " in path else path
+    return shlex.quote(path)
 
 def per_test(con) -> bool:
     """True when some imported coverage ties functions to the test (or test file) that ran them."""
@@ -436,7 +444,7 @@ def text(r: dict) -> str:
     if runnable:
         L += ["", "Run them:" if len(runnable) == 1 else "Run them, from each directory:"]
         for c in runnable:
-            L.append(f"  cd {shlex.quote(c['cwd'])} && {c['command']}")
+            L.append(f"  cd {_quote(c['cwd'])} && {c['command']}")
     for c in r["commands"]:
         if not c["command"]:
             L += ["", "No runner recognized for: " + _some(c["unrecognized"], 6) + "."]
