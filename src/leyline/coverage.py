@@ -130,7 +130,7 @@ def import_file(con, path: str | Path, run: str = "default", test: Optional[str]
     tests_seen, tests_matched, files_matched, files_unknown = set(), set(), 0, 0
     if head.startswith(b"SQLite format 3"):
         fmt = "coverage.py"
-        src = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        src = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
         contexts = dict(src.execute("SELECT id, context FROM context"))
         cache: dict = {}
         per: dict[tuple, set] = defaultdict(set)       # (file path, context id) -> lines

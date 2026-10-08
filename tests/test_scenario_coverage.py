@@ -224,6 +224,17 @@ def test_a_command_runs_the_tests_from_where_it_says_when_pytest_ran_from_a_fold
         == ["backend/tests/test_ops.py::test_scale_by_a_factor"]
 
 
+def test_a_coverage_file_in_a_folder_named_like_a_url_is_read(tmp_path):
+    """The data file is opened read-only by URI: `#`, `?` and `%` in its folder's name are characters, not parts of
+    a URI (a `C#` folder)."""
+    root, ch, db = planned(tmp_path)
+    where = tmp_path / "C# work" / "50%25 done"
+    where.mkdir(parents=True)
+    con = store.connect(db)
+    r = coverage.import_file(con, measured_after(root, where / ".coverage"))
+    assert r["format"] == "coverage.py" and r["tests_matched_to_the_map"] == 3, r
+
+
 def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     root = tmp_path / "js"
     ops = ("export function add(a: number, b: number): number {\n  return a + b;\n}\n\n"
