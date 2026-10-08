@@ -1021,10 +1021,17 @@ def spec_resolve(finding_id: Annotated[str, Field(description="A finding id from
 @_tool(items=50)
 def learnings(retire: Annotated[Optional[str], Field(description="A learning id to retire. Only when the person says"
                                                                " the decision no longer holds.")] = None,
-              why: Annotated[str, Field(description="With retire: the person's reason.")] = "") -> dict:
+              why: Annotated[str, Field(description="With retire: the person's reason.")] = "",
+              confirm: Annotated[Optional[str], Field(description="A learning id to confirm against the code as it is"
+                                                                " now, so it is no longer stale. Only when the person"
+                                                                " says the decision still holds.")] = None) -> dict:
     """Past decisions on review findings: each finding a person rejected, the reason in their words, and the code it
-    is about. `spec_review_facts` lists the ones that apply to a change as `learnings_that_apply`."""
+    is about. `spec_review_facts` lists the ones that apply to a change as `learnings_that_apply`. A learning whose
+    code has changed since is `stale`, naming the nodes `edited` and `gone`: it still applies, and whether it holds
+    is the person's call. One kept before Leyline recorded its code has `code` unknown."""
     from . import learnings as learned
+    if confirm:
+        return learned.confirm(_db(), confirm)
     return learned.retire(_db(), retire, why) if retire else learned.listing(_db())
 
 

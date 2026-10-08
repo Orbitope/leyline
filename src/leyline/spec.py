@@ -998,6 +998,20 @@ def _plain_summary(b: dict) -> str:
     return " ".join(S)
 
 
+def _past_decision(l: dict) -> str:
+    """How an open finding that repeats a learning says so: with a warning when the code the learning was about has
+    changed since, which the person weighs; the finding stays either way."""
+    if l.get("stale"):
+        from .learnings import changed_text
+        return (f"Matches a past decision, but the code it was about has changed since:"
+                f" {changed_text(l.get('edited') or [], l.get('gone') or [])}. Decided then: {l['reason']}"
+                " Does it still hold?")
+    if l.get("code") == "unknown":
+        return (f"Matches a past decision: {l['reason']} Whether its code changed since is not known: it was kept"
+                " before Leyline recorded that.")
+    return f"Matches a past decision: {l['reason']}"
+
+
 def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list[str]:
     """Each kind of review: whether it ran, and what it filed. Open findings in full; settled ones as the claim,
     then the decision."""
@@ -1021,7 +1035,7 @@ def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list
         L += ["", "Open:"] + [f"- **{f['severity']}** ({f['reviewer']}, {f['id']}): {f['claim']}"
                               + (f" Proposed: {f['proposal']}" if f["proposal"] else "")
                               + (" (Its evidence is not near the change: question it first.)" if f.get("evidence_far_from_change") else "")
-                              + (f" (Matches a past decision: {f['learned']['reason']})" if f.get("learned") else "")
+                              + (f" ({_past_decision(f['learned'])})" if f.get("learned") else "")
                               + (" (Its code changed since it was filed: re-check it.)" if f.get("code_changed_since") else "")
                               for f in opened]
     closed = sorted((f for f in found if f["status"] != "open"), key=lambda f: order.get(f["severity"], 3))

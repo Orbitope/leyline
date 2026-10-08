@@ -29,6 +29,11 @@ the same facts as JSON and records that the review ran; `spec_finding` is `leyli
    that files nothing still shows on the plan.
    - Read `learnings_that_apply` first: past findings on this code that a person rejected, with their reason.
      A finding you file that repeats one comes back with `learned`; it is kept and marked on the page.
+     A learning marked `stale` is about code that has changed since the decision (`edited` and `gone` name
+     the nodes). It is a question for the person, not an answer: read the new code, and file what you find
+     as usual. Do not drop a finding because a stale learning matches it, and do not refile one to get
+     around it. Say in your report which stale learnings you met, so the person can confirm or retire them.
+     A learning whose `code` is unknown was kept before Leyline recorded its code: treat it as current.
 3. For every item in your section, read the code (`source`, `expand`, `flow`, or the file itself)
    before deciding. A fact from the graph is a lead, not a finding.
 4. File each real problem with `spec_finding`: one sentence a person can check, a severity, the node
@@ -106,6 +111,8 @@ one twice and writes the summary. Alone, this skill is the attack step.
 - Do not file style or naming preferences.
 - Do not refile what a learning already settled, unless the code changed in a way its reason did not cover.
   Then say in the claim what changed.
+- A stale learning settles nothing on its own. Keep the finding it matches; the page shows the person that
+  the code changed, and they decide (`learnings` with `confirm` or `retire`, only on their word).
 - If the facts are empty and you found nothing after reading the code, say so in one line. A review
   that finds nothing is a valid result.
 - Say what you could not check and why.

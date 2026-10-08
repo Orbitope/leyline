@@ -101,7 +101,9 @@ def test_a_later_similar_finding_is_marked_and_a_different_one_is_not(decided):
     far = spec.add_finding(con, "pr-later", "logic", "low", CLAIM, [_id(con, "routes")])
     assert "learned" not in far                     # different code
     page = run("pr", "feature")[1]
-    assert f"(Matches a past decision: {REASON})" in page
+    # `count` was edited on this branch: the finding is still marked, with the change named
+    assert ("(Matches a past decision, but the code it was about has changed since: `python:app.use.count` edited."
+            f" Decided then: {REASON} Does it still hold?)") in page
     assert page.count("Matches a past decision") == 1
     [l] = json.loads((root / ".leyline-learnings.json").read_text())["learnings"]
     assert l["hits"] == 1 and l["dismissals"] == 0
@@ -165,3 +167,110 @@ def test_a_spec_review_lists_the_learnings_that_apply(decided):
     # the file stays where it was made: an openspec folder that appears later does not move it
     assert learnings.path_for(root) == root / ".leyline-learnings.json"
     assert learnings.listing(con)["files"] == [str(root / ".leyline-learnings.json")]
+
+
+# -- whether the code a learning is about changed since ----------------------------------------------------
+SAME = "The caller count was not updated for load's new encoding argument"   # repeats the learning's claim
+
+
+def _branch_with(root, name, old, new):
+    """A later branch off feature whose app/use.py has `old` replaced by `new`, mapped."""
+    git(root, "checkout", "-q", "-b", name)
+    use = root / "app/use.py"
+    assert old in use.read_text()
+    use.write_text(use.read_text().replace(old, new))
+    git(root, "commit", "-qam", "Later")
+    assert run("pr", "feature")[0] == 0
+
+
+def _learning(root):
+    [l] = json.loads((root / ".leyline-learnings.json").read_text(encoding="utf-8"))["learnings"]
+    return l
+
+
+def test_a_fresh_learning_is_not_stale(decided):
+    root, lid = decided
+    l = _learning(root)
+    # one hash per evidence node, keyed without the repository's id so a clone reads it the same
+    assert list(l["fingerprint"]) == ["python:app.use.count"] and l["fingerprint"]["python:app.use.count"]
+    # code above `count` moves it, but its own text is the same: not stale
+    _branch_with(root, "moved", "def count(p):", "def extra():\n    return 0\n\n\ndef count(p):")
+    con = store.connect(root / ".leyline/leyline.db")
+    [a] = learnings.applying(con, "pr-moved", [_id(con, "count")])
+    assert (a["id"], a["code"], a["stale"]) == (lid, "unchanged", False) and "code_note" not in a
+    f = spec.add_finding(con, "pr-moved", "logic", "medium", SAME, [_id(con, "count")])
+    assert f["learned"]["stale"] is False and "changed since" not in f["learned"]["note"]
+    page = run("pr", "feature")[1]
+    assert f"(Matches a past decision: {REASON})" in page
+    r = json.loads(run("learnings", "--json")[1])
+    assert r["stale"] == 0 and r["learnings"][0]["code"] == "unchanged"
+    assert "Stale" not in run("learnings")[1]
+
+
+def test_an_edited_node_makes_the_learning_stale_and_names_it(decided):
+    root, lid = decided
+    _second_change(root, "later")
+    assert run("pr", "feature")[0] == 0
+    con = store.connect(root / ".leyline/leyline.db")
+    facts = json.loads(run("spec", "facts", "pr-later", "--reviewer", "logic")[1])
+    [a] = facts["learnings_that_apply"]          # still applies: the person decides, not Leyline
+    assert a["id"] == lid and a["stale"] is True and a["edited"] == ["python:app.use.count"] and a["gone"] == []
+    assert "`python:app.use.count` edited" in a["code_note"]
+    f = spec.add_finding(con, "pr-later", "logic", "medium", SAME, [_id(con, "count")])
+    assert f["learned"]["id"] == lid and f["learned"]["stale"] is True   # the match is kept
+    assert "question for the person" in f["learned"]["note"]
+    assert _learning(root)["status"] == "active"                          # and nothing is retired
+    r = json.loads(run("learnings", "--json")[1])
+    assert r["stale"] == 1 and r["learnings"][0]["edited"] == ["python:app.use.count"]
+    out = run("learnings")[1]
+    assert "1 active of 1 (1 about code that has changed since)" in out
+    assert "Stale: the code it was about has changed since: `python:app.use.count` edited." in out
+    assert "fingerprint" in _learning(root) and "stale" not in _learning(root)   # what is worked out is not written
+
+
+def test_a_deleted_node_makes_the_learning_stale_as_gone(decided):
+    root, lid = decided
+    _branch_with(root, "renamed", "def count(p):", "def tally(p):")
+    con = store.connect(root / ".leyline/leyline.db")
+    [l] = learnings.listing(con)["learnings"]
+    assert l["stale"] is True and l["gone"] == ["python:app.use.count"] and l["edited"] == []
+    assert "`python:app.use.count` gone" in run("learnings")[1]
+    # it still applies to code in the same file
+    [a] = learnings.applying(con, "pr-renamed", [_id(con, "tally")])
+    assert a["close_on"] == "file" and a["gone"] == ["python:app.use.count"]
+
+
+def test_confirm_takes_the_fingerprint_again(decided):
+    root, lid = decided
+    before = _learning(root)["fingerprint"]
+    _second_change(root, "later")
+    assert run("pr", "feature")[0] == 0
+    code, out = run("learnings", "confirm", lid)
+    assert code == 0 and f"Confirmed {lid}" in out
+    l = _learning(root)
+    assert l["fingerprint"] != before and l["confirmed"] and l["status"] == "active"
+    con = store.connect(root / ".leyline/leyline.db")
+    assert learnings.listing(con)["learnings"][0]["code"] == "unchanged"
+    assert run("learnings", "confirm", "l-nope")[0] == 1 and run("learnings", "confirm")[0] == 2
+    text = (root / ".leyline-learnings.json").read_text(encoding="utf-8")
+    assert text == json.dumps(json.loads(text), sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+
+
+def test_a_learning_kept_before_fingerprints_is_unknown_not_stale(decided):
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["learnings"][0]["fingerprint"]        # as a file written before this was recorded
+    path.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _second_change(root, "later")                   # even with the code edited, nothing says it changed since
+    assert run("pr", "feature")[0] == 0
+    con = store.connect(root / ".leyline/leyline.db")
+    [l] = learnings.listing(con)["learnings"]
+    assert (l["code"], l["stale"]) == ("unknown", False) and "not known" in l["code_note"]
+    assert "whether it changed is not known" in run("learnings")[1]
+    f = spec.add_finding(con, "pr-later", "logic", "medium", SAME, [_id(con, "count")])
+    assert f["learned"]["code"] == "unknown" and f["learned"]["stale"] is False and "not known" in f["learned"]["note"]
+    assert "Whether its code changed since is not known" in run("pr", "feature")[1]
+    # the file is read and written as before; confirming gives it a fingerprint
+    assert run("learnings", "confirm", lid)[0] == 0 and "fingerprint" in _learning(root)
+    assert learnings.listing(con)["learnings"][0]["code"] == "unchanged"
