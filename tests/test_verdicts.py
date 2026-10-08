@@ -182,6 +182,45 @@ def test_done_as_agreed_with_a_verdict_for_every_item(loud):
     assert "(Set in openspec/leyline.toml.)" in (ch / "leyline.md").read_text()
 
 
+@pytest.mark.parametrize("task", [
+    '- [ ] 1.1 Add `Engine.label`, which puts "ENGINE " before what `Engine.start` returns\n',
+    "- [ ] 1.1 Add `Engine.label`\n",
+])
+def test_a_change_that_only_adds_code(tmp_path, task):
+    """Every task adds code, so nothing on the map changes: the plan is still written, its view shows where the new
+    code goes, and code named beside it is related, not reached."""
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE2, work)
+    ch = work / "openspec" / "changes" / "engine-label"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: Engine label\n\n## Why\nLogs need a label.\n\n## What Changes\n- A new `Engine.label`\n")
+    (ch / "tasks.md").write_text(task + '- [ ] 1.2 Add the test "Label"\n')
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        "## ADDED Requirements\n### Requirement: Label\nThe engine SHALL have a label.\n\n"
+        "#### Scenario: Label\n- **WHEN** an engine is labelled\n- **THEN** the label starts with ENGINE\n")
+    db = tmp_path / "s.db"
+    index(work, db, "f2")
+    c = store.connect(db)
+    diff.record_tests(c, "before", BEFORE)
+    b = spec.brief(c, ch)
+    assert "error" not in b["impact"]
+    view = json.loads(c.execute("SELECT spec FROM views WHERE id = 'view-spec-engine-label'").fetchone()[0])
+    engine = "f2:python:py.src.pkg.core.Engine"
+    assert {m["id"]: m["role"] for m in view["marks"]} == {engine: "new", **({engine + ".start": "note"} if "start" in task else {})}
+    assert [(n["name"], n["parent"]) for n in view["new_nodes"]] == [("label", engine)]
+    c.close()
+    assert "Engine.label (new)" in (ch / "leyline.md").read_text()
+
+    core = work / "py/src/pkg/core.py"
+    core.write_text(core.read_text().replace("        return self.name\n",
+                                             "        return self.name\n\n    def label(self):\n        return \"ENGINE \" + self.start()\n", 1))
+    tests = work / "py/tests/test_engine.py"
+    tests.write_text(tests.read_text() + '\n\ndef test_label(engine):\n    assert engine.label().startswith("ENGINE ")\n')
+    v = _check(work, db, ch, BEFORE + [{"name": "test_label", "status": "pass"}])
+    assert v["done_as_agreed"] and not v["drift"], v["why_not"]
+    assert {s["name"]: s["verdict"] for s in v["scenarios"]} == {"Label": "proven"}
+
+
 def test_broken_and_missing_results(loud):
     work, ch, db = loud
     _implement(work)

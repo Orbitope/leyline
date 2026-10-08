@@ -424,6 +424,38 @@ files one, and the page lists them. A finding whose evidence is nowhere near the
 radius, nor one call from it) is kept but marked, so the person questions it first. `leyline spec forget
 pr-123` deletes the base's map.
 
+`leyline pr` exits 0 whatever it finds. With `--gate` it exits 1 while something that blocks is left, so it
+can hold up a merge in CI. The page opens with a **Gate** section: whether it passes, what blocks under which
+config, one line for each thing that blocks, and a `Next:` line saying what to do about the first. The MCP
+`review_pr` answer carries the same lines as `blocking`, and `gate_passed`. Each run judges the gate again from
+the code at the checkout and the findings as they stand, so a commit that fixes a caller, or a finding the person
+resolves, clears it on the next run.
+
+By default four things block, the ones the map shows are broken: a caller of a changed signature that was not
+edited, removed code that is still called, a confirmed error-level rule (see [Rules](#rules)) that now fails and
+did not at the base, and an open high finding. A line that rests only on a link the map guessed by name never
+blocks; the Gate section counts those so you can read them. A project picks its own set in
+`openspec/leyline.toml`, as it does for `check`:
+
+```toml
+[pr]
+blocking = ["unedited-callers", "still-called", "failing-rules", "open-high-findings"]   # the default
+```
+
+The kinds are `unedited-callers`, `still-called`, `failing-rules`, `open-high-findings`, `open-medium-findings`
+(medium or high), `open-findings` (any severity), `other-ends` (the other end of a channel the edit changed, not
+edited) and `untested` (changed code no test on the map reaches). `blocking = []` lets everything through.
+
+In CI, check the pull request's head out with enough history to find where it left the base:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: pip install leyline-code
+- run: leyline pr origin/${{ github.base_ref }} --gate
+```
+
 ### A quick change
 
 A spec folder is too much for "make the retry count 3". `leyline quick` gives the same three answers with no folder:
@@ -480,9 +512,10 @@ Learnings go in a file in the repository, so you commit them, the team shares th
 them: `openspec/leyline-learnings.json` when the repository has an `openspec` folder, else
 `.leyline-learnings.json` at its root. A file stays where it was first made. It is JSON with sorted keys
 and a two-space indent, one entry per learning: `id`, `status` (active or retired), `reviewer`, `claim`,
-`reason`, `scope`, `source` (the change and finding it came from), `created`, `hits`, `dismissals`,
-`accepted`, and `findings` (the later findings it matched, with what people decided). Node ids in it leave
-out the repository's id, so a clone in a folder of another name reads them.
+`reason`, `scope`, `fingerprint` (the code it is about, see below), `source` (the change and finding it
+came from), `created`, `confirmed` (when a person last said it holds for the code as it is), `hits`,
+`dismissals`, `accepted`, and `findings` (the later findings it matched, with what people decided). Node
+ids in it leave out the repository's id, so a clone in a folder of another name reads them.
 
 - **Reviewers read them first.** The facts for a spec or a pull request (`leyline spec facts`, or
   `spec_review_facts`) start with `learnings_that_apply`: active learnings about code the change touches or
@@ -499,8 +532,19 @@ out the repository's id, so a clone in a folder of another name reads them.
 - **A wrong learning retires itself.** Each later decision on a finding it matched is counted. Once people
   have accepted at least two of them, and more than they rejected, the learning is retired and the file
   says why. It is also retired if the finding it came from is later marked anything but rejected.
+- **A learning about code that has changed says so.** A learning keeps a fingerprint: for each evidence
+  node, the hash the map keeps of that node's own lines (trimmed, so moving or re-indenting it does not
+  count; the file's hash for a node with none). Each time a learning is used, in `learnings_that_apply`,
+  in `learned` on a new finding, on the page and in `leyline learnings`, it is compared with the map. If a
+  node was edited or is gone, the learning is `stale` and names them in `edited` and `gone`. It still
+  applies and still marks findings, and is not retired. The page says "Matches a past decision, but the
+  code it was about has changed since: ..." and asks whether it still holds. That is the person's call:
+  `leyline learnings confirm <id>` takes the fingerprint again for the code as it is now, and
+  `leyline learnings retire <id>` ends it. A learning kept before Leyline recorded fingerprints has none.
+  Whether its code changed is unknown, not stale, and it says so; confirming it gives it one.
 
-`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand.
+`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand;
+`leyline learnings confirm <id>` says one still holds for the code as it is now.
 
 ### How it runs: sequence diagrams
 
@@ -904,10 +948,10 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `record_test_run(run, results)` | Store one test run under a label, for `review_change` |
 | `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
-| `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`) |
+| `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`), `blocking` (one line for each thing that holds up the merge) and `gate_passed` |
 | `quick(what?, names?, done?, test_output?, test_results?, coverage_path?, change_id?)` | A small change with no spec folder: before (`what`, `names`), what it touches and the tests that run it; after (`done`), one verdict, and `grown` when it needs a spec |
 | `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
-| `learnings(retire?, why?)` | Past decisions on review findings, kept from rejections with a reason; `retire` one the person says no longer holds |
+| `learnings(retire?, why?, confirm?)` | Past decisions on review findings, kept from rejections with a reason, each marked `stale` when its code changed since; `retire` one the person says no longer holds, `confirm` one they say still holds for the code as it is now |
 | `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `drift(path?, accept?)` | Code the living specs and finished changes name that is gone, moved, changed signature or ambiguous; `fails`, the page, `next` |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
@@ -969,7 +1013,7 @@ on the map.
 | --- | --- | --- | --- |
 | TypeScript (Parlance, 160k lines) | scip-typescript | 100% / 98% | 99% / 97% |
 | Python (Flask) | scip-python | 99% / 68% | 96% / 87% |
-| C# (Signal) | Roslyn | 99.7% / 97% | 98% / 83% |
+| C# (a private project) | Roslyn | 99.7% / 97% | 98% / 83% |
 
 Where the generic adapter loses, it is on calls made on a variable whose type it cannot read from
 the text. The hand-written Python adapter misses calls inside decorators (`@app.route(...)`).
@@ -1123,11 +1167,11 @@ Measured on three repositories, counting call sites whose target is inside the r
 
 | Repository | Files | Index time | Call sites linked | Of those, by guess | Left open |
 |---|---|---|---|---|---|
-| Signal (C# and Python) | 59 | 1 s | 99% | 4% | 18 |
+| A private project (C# and Python) | 59 | 1 s | 99% | 4% | 18 |
 | Flask (Python) | 83 | 1 s | 91% | 9% | 101 |
 | Polly (C#) | 801 | 7 s | 94% | 2% | 915 |
 
-With the compiler pass on, the syntax links can be scored. On Signal the compiler confirmed 2,081
+With the compiler pass on, the syntax links can be scored. On the private project the compiler confirmed 2,081
 of them, removed 16 and added 38 it had missed. On Polly, where packages could not be restored and
 only part of the code binds, it confirmed 4,844 and removed 1,286, nearly all extra overloads of
 the right method.

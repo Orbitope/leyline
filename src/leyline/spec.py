@@ -9,7 +9,7 @@ deltas). Leyline reads it and writes one page back, `leyline.md`, that answers f
     Was it done as agreed?          after implementation: tasks, scenarios, drift, rules
 
 Conventions a spec author follows, and nothing more:
-- Name code in backticks in tasks: `Vehicle.Speed`, `SignalController.Tick`, `Signal.Core/Controls.cs`.
+- Name code in backticks in tasks: `Vehicle.Speed`, `Queue.Push`, `Core/Controls.cs`.
   A name that is not on the map yet is taken as new code; say where it goes: `Owner.NewName` for a member,
   `module.new_func`, `path/to/file.py: new_func` or `new_func` in `file.py` for a top-level function.
   Other words in backticks are noted, not checked; a task that names no code is the person's to check.
@@ -343,7 +343,7 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
                                     **({"file": True} if r.get("file") else {})})
                 if r.get("parent"):
                     targets.append({"action": "add", "name": r["new"], "parent": r["parent"],
-                                    "note": f"task {t['key']}", "used_by": []})
+                                    "note": f"task {t['key']}", "used_by": [], "related": list(link["mention_ids"])})
             else:   # a word in backticks that is not on the map: an issue code, a value, a type of effect
                 link["notes"].append(f"`{written}` is not on the map; read as a word, not code")
         links.append(link)
@@ -998,6 +998,20 @@ def _plain_summary(b: dict) -> str:
     return " ".join(S)
 
 
+def _past_decision(l: dict) -> str:
+    """How an open finding that repeats a learning says so: with a warning when the code the learning was about has
+    changed since, which the person weighs; the finding stays either way."""
+    if l.get("stale"):
+        from .learnings import changed_text
+        return (f"Matches a past decision, but the code it was about has changed since:"
+                f" {changed_text(l.get('edited') or [], l.get('gone') or [])}. Decided then: {l['reason']}"
+                " Does it still hold?")
+    if l.get("code") == "unknown":
+        return (f"Matches a past decision: {l['reason']} Whether its code changed since is not known: it was kept"
+                " before Leyline recorded that.")
+    return f"Matches a past decision: {l['reason']}"
+
+
 def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list[str]:
     """Each kind of review: whether it ran, and what it filed. Open findings in full; settled ones as the claim,
     then the decision."""
@@ -1021,7 +1035,7 @@ def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list
         L += ["", "Open:"] + [f"- **{f['severity']}** ({f['reviewer']}, {f['id']}): {f['claim']}"
                               + (f" Proposed: {f['proposal']}" if f["proposal"] else "")
                               + (" (Its evidence is not near the change: question it first.)" if f.get("evidence_far_from_change") else "")
-                              + (f" (Matches a past decision: {f['learned']['reason']})" if f.get("learned") else "")
+                              + (f" ({_past_decision(f['learned'])})" if f.get("learned") else "")
                               + (" (Its code changed since it was filed: re-check it.)" if f.get("code_changed_since") else "")
                               for f in opened]
     closed = sorted((f for f in found if f["status"] != "open"), key=lambda f: order.get(f["severity"], 3))

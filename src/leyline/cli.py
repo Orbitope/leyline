@@ -122,14 +122,19 @@ def _pr(args) -> int:
     if "error" in r:
         print(f"leyline: {r['error']}", file=sys.stderr)
         return 1
+    g = r["gate"]
+    code = 1 if args.gate and not g["passed"] else 0   # without --gate a review never fails the command
     if args.json:
         _print({k: v for k, v in r.items()})
-        return 0
+        return code
     print(pr.text(r))
     print(f"written to {r['page']}")
-    print(f"Next: have it reviewed (`leyline spec facts {r['change_id']} --reviewer logic`, then `performance`;"
-          " the leyline-adversarial-review skill runs both).")
-    return 0
+    if not g["passed"]:
+        print(f"Next: {g['next']}.")
+    else:
+        print(f"Next: have it reviewed (`leyline spec facts {r['change_id']} --reviewer logic`, then `performance`;"
+              " the leyline-adversarial-review skill runs both).")
+    return code
 
 
 def _quick(args) -> int:
@@ -313,6 +318,7 @@ that it was done as agreed. The usual path is three commands:
 Each command ends with the next step. To review a change someone else wrote, with no spec:
 
   leyline pr [base]                     what the checkout's change reaches and did not change, for review
+  leyline pr [base] --gate              the same, exiting 1 while something that blocks is left (for CI)
 
 A small change needs no spec folder:
 
@@ -347,7 +353,7 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   affected-tests  the tests to run for a change, as a command
   spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
   drift         code the specs name that has moved, changed signature or gone since they were written
-  learnings     past decisions on review findings, which later reviews read first; retire one
+  learnings     past decisions on review findings, which later reviews read first; retire or confirm one
   record-tests  store a test run under a label
   review        compare an implemented change with a proposal made through MCP
   view          serve the map on localhost
@@ -514,6 +520,8 @@ def _main(argv=None) -> int:
                                                      " (needs gh; check the pull request out first)")
     p.add_argument("--id", help="name the review pr-<id> (default: the PR number, else the branch name)")
     p.add_argument("--path", default=".", help="the checkout (default: here)")
+    p.add_argument("--gate", action="store_true", help="exit 1 when anything that blocks is left (set under [pr] in"
+                                                       " openspec/leyline.toml); without it the review exits 0")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("quick", description="A small change with no spec folder. Before editing: name the code (--about,"
                                             " or in backticks), and see what it touches, what must change with it and the"
@@ -664,8 +672,9 @@ def _main(argv=None) -> int:
     p.add_argument("--after", help="verify: label of the test run recorded after it")
     p = sub.add_parser("learnings", description="past decisions on review findings: each finding a person rejected,"
                                                 " with the reason. Later reviews read them first.")
-    p.add_argument("action", nargs="?", choices=["list", "retire"], default="list", help="retire: it no longer holds")
-    p.add_argument("id", nargs="?", help="retire: the learning's id")
+    p.add_argument("action", nargs="?", choices=["list", "retire", "confirm"], default="list",
+                   help="retire: it no longer holds; confirm: it still holds for the code as it is now")
+    p.add_argument("id", nargs="?", help="retire or confirm: the learning's id")
     p.add_argument("why", nargs="?", help="retire: why it no longer holds")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")

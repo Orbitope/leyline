@@ -15,6 +15,13 @@ A later finding of the same kind, on the same code, saying much the same thing (
 kept and marked: the reviewer and the person see which past decision it matches. If people then reject it too, the
 learning held; if they accept findings it matched more often than they reject them (at least twice), it was wrong,
 and it is retired.
+
+A learning also keeps a fingerprint of the code it is about: the text hash the map keeps for each evidence node (the
+node's own lines, trimmed, so moving or re-indenting it does not count; the file's hash for a node with none). Each
+time a learning is used it is checked against the map: when a node's code was edited, or the node is gone, the
+learning is `stale` and says which. A stale learning still applies and still marks findings; the person decides
+whether the decision holds for the new code (`confirm` records the code as it is now) or not (`retire`). A learning
+kept before Leyline recorded fingerprints has none: whether its code changed is unknown, not stale.
 """
 
 from __future__ import annotations
@@ -93,6 +100,11 @@ def _roots(con) -> dict:
     return {repo: root for repo, root in store.roots(con).items() if root.is_dir()}
 
 
+def _repos(con) -> dict:
+    """{learnings file: the repository id it belongs to}."""
+    return {path_for(root): repo for repo, root in _roots(con).items()}
+
+
 def _all(con) -> dict:
     """{file: its learnings} for every mapped repository that has a learnings file."""
     out = {}
@@ -152,6 +164,65 @@ def overlap(learned: dict, here: dict) -> Optional[str]:
         if set(learned.get(level, [])) & set(here.get(level, [])):
             return level[:-1]
     return None
+
+
+# -- whether the code changed since ----------------------------------------------------------------
+def _code_hash(con, nid: str) -> Optional[str]:
+    """The text hash the map keeps for a node (its own lines; the file's for a node with none), '' when it has
+    neither, None when the node is not in the map."""
+    row = con.execute("SELECT COALESCE(n.content_hash, f.content_hash, '') FROM nodes n LEFT JOIN ancestry a"
+                      " ON a.node_id = n.id LEFT JOIN nodes f ON f.id = a.file_id WHERE n.id = ?", (nid,)).fetchone()
+    return row[0] if row else None
+
+
+def _full(con, repo: Optional[str], bare: str) -> Optional[str]:
+    """The id in this map of a node kept without its repository's id, or None when the map has no such node."""
+    for nid in ([f"{repo}:{bare}"] if repo else []) + [bare]:
+        if con.execute("SELECT 1 FROM nodes WHERE id = ?", (nid,)).fetchone():
+            return nid
+    return None
+
+
+def fingerprint(con, repo: Optional[str], nodes) -> dict:
+    """{node id without the repository's id: its text hash now}; None for a node the map does not have."""
+    out = {}
+    for bare in sorted(set(nodes or ())):
+        nid = _full(con, repo, bare)
+        out[bare] = _code_hash(con, nid) if nid else None
+    return out
+
+
+def changed_text(edited, gone) -> str:
+    """`a` edited, `b` gone."""
+    return ", ".join([f"`{n}` edited" for n in edited] + [f"`{n}` gone" for n in gone])
+
+
+def code_check(con, repo: Optional[str], l: dict) -> dict:
+    """Whether the code a learning is about changed since it was kept or last confirmed. `code` is unchanged,
+    changed or unknown (no fingerprint: kept before Leyline recorded them); `stale` is true only for changed, with the nodes `edited`
+    and `gone`; `code_note` says it in a sentence when the code is not unchanged."""
+    kept = l.get("fingerprint")
+    if not isinstance(kept, dict):
+        return {"code": "unknown", "stale": False,
+                "code_note": "Kept before Leyline recorded the code a learning is about, so whether that code changed"
+                             f" since is not known. If the decision still holds, `leyline learnings confirm {l['id']}`"
+                             " records the code as it is now."}
+    current = fingerprint(con, repo, kept)
+    edited = sorted(n for n, h in kept.items() if current[n] is not None and current[n] != h)
+    gone = sorted(n for n, h in kept.items() if current[n] is None and h is not None)
+    if not edited and not gone:
+        return {"code": "unchanged", "stale": False}
+    return {"code": "changed", "stale": True, "edited": edited, "gone": gone,
+            "code_note": f"The code it was about has changed since: {changed_text(edited, gone)}. The decision may"
+                         f" not hold for the new code: ask the person, then `leyline learnings confirm {l['id']}` if"
+                         " it does, or retire it if not."}
+
+
+def _checked(con, repos: dict, path: Path, l: dict) -> dict:
+    try:
+        return code_check(con, repos.get(path), l)
+    except Exception as e:   # a map that cannot be read says nothing about the code; the learning still applies
+        return {"code": "unknown", "stale": False, "code_note": f"Could not compare with the map: {e}"}
 
 
 # -- what a claim says ---------------------------------------------------------------------------
@@ -359,11 +430,18 @@ def on_finding(con, fid: str, reviewer: str, claim: str, evidence: list[str]) ->
             seen[fid] = row["status"] if row is not None else "open"
             _recount(mine)
             _write(path, items)
+        code = _checked(con, _repos(con), path, mine)
+        note = f"This matches a past decision ({mine['id']}): {mine.get('reason', '')} Kept, and marked on the page"
+        if code["stale"]:
+            note += (f", with a warning: the code it was about has changed since"
+                     f" ({changed_text(code['edited'], code['gone'])}). Whether the decision still holds is a question"
+                     " for the person: do not drop or refile the finding for it.")
+        else:
+            note += "; refile only if the code changed in a way that decision did not cover."
+            if code["code"] == "unknown":
+                note += " Whether its code changed since is not known: it was kept before Leyline recorded that."
         return {"learned": {"id": mine["id"], "reason": mine.get("reason", ""), "claim": mine.get("claim", ""),
-                            "close_on": level, "similarity": round(sim, 2),
-                            "note": f"This matches a past decision ({mine['id']}): {mine.get('reason', '')} Kept, and"
-                                    " marked on the page; refile only if the code changed in a way that decision"
-                                    " did not cover."}}
+                            "close_on": level, "similarity": round(sim, 2), **code, "note": note}}
     except OSError as e:
         return {"learned_error": f"could not read or write the learnings file: {e}"}
 
@@ -411,8 +489,11 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
         items = _read(path)
         lid = "l-" + hashlib.sha1(f"{finding_id}|{row['claim']}".encode()).hexdigest()[:6]
         items = [x for x in items if x["id"] != lid]
+        scope = scope_of(con, evidence)
+        repo = next((r for r in sorted(repos) if roots.get(r) == root), None)
         items.append({"id": lid, "status": "active", "created": now(), "reviewer": row["reviewer"],
-                      "claim": row["claim"], "reason": resolution.strip(), "scope": scope_of(con, evidence),
+                      "claim": row["claim"], "reason": resolution.strip(), "scope": scope,
+                      "fingerprint": fingerprint(con, repo, scope["nodes"]),
                       "source": {"change": row["change_id"], "finding": finding_id},
                       "hits": 0, "dismissals": 0, "accepted": 0, "findings": {}})
         _write(path, items)
@@ -423,11 +504,14 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
 
 def by_finding(con) -> dict:
     """{finding id: the learning it matched}, for the pages."""
-    out = {}
-    for items in _all(con).values():
+    out, repos = {}, _repos(con)
+    for path, items in _all(con).items():
         for l in items:
-            for fid in l.get("findings") or {}:
-                out[fid] = {"id": l["id"], "reason": l.get("reason", ""), "status": l.get("status", "active")}
+            if not l.get("findings"):
+                continue
+            code = _checked(con, repos, path, l)
+            for fid in l["findings"]:
+                out[fid] = {"id": l["id"], "reason": l.get("reason", ""), "status": l.get("status", "active"), **code}
     return out
 
 
@@ -440,8 +524,8 @@ def applying(con, change_id: str, nodes: Optional[list[str]] = None, limit: int 
     """Active learnings about code the change touches or reaches, closest first: what reviewers read before filing."""
     try:
         here = scope_of(con, list(dict.fromkeys([*(nodes or []), *_marks(con, change_id)])))
-        found = []
-        for items in _all(con).values():
+        found, repos = [], _repos(con)
+        for path, items in _all(con).items():
             for l in items:
                 if l.get("status", "active") != "active":
                     continue
@@ -450,7 +534,8 @@ def applying(con, change_id: str, nodes: Optional[list[str]] = None, limit: int 
                     found.append({"id": l["id"], "reviewer": l.get("reviewer"), "claim": l.get("claim"),
                                   "reason": l.get("reason"), "close_on": level,
                                   "where": (l.get("scope") or {}).get("paths", []),
-                                  "matched_since": l.get("hits", 0), "rejected_again": l.get("dismissals", 0)})
+                                  "matched_since": l.get("hits", 0), "rejected_again": l.get("dismissals", 0),
+                                  **_checked(con, repos, path, l)})
         found.sort(key=lambda x: (LEVELS.index(x["close_on"]), x["id"]))
         return found[:limit]
     except OSError:
@@ -459,12 +544,30 @@ def applying(con, change_id: str, nodes: Optional[list[str]] = None, limit: int 
 
 # -- listing and retiring ------------------------------------------------------------------------
 def listing(con) -> dict:
-    files = _all(con)
-    items = [{**l, "file": str(p)} for p, xs in files.items() for l in xs]
+    files, repos = _all(con), _repos(con)
+    items = [{**l, "file": str(p), **_checked(con, repos, p, l)} for p, xs in files.items() for l in xs]
     items.sort(key=lambda l: (l.get("status", "active") != "active", l.get("created", ""), l["id"]))
     where = [str(path_for(r)) for r in _roots(con).values()]
-    return {"active": sum(l.get("status", "active") == "active" for l in items), "learnings": items,
+    active = [l for l in items if l.get("status", "active") == "active"]
+    return {"active": len(active), "stale": sum(l["stale"] for l in active), "learnings": items,
             "files": [str(p) for p in files] or where}
+
+
+def confirm(con, lid: str) -> dict:
+    """A person's call that a learning still holds for the code as it is now: its fingerprint is taken again, so it
+    is no longer stale. Its status is left as it is."""
+    repos = _repos(con)
+    for path, items in _all(con).items():
+        for l in items:
+            if l["id"] == lid:
+                was = _checked(con, repos, path, l)["code"]
+                l["fingerprint"] = fingerprint(con, repos.get(path), (l.get("scope") or {}).get("nodes", []))
+                l["confirmed"] = now()
+                _write(path, items)
+                gone = sorted(n for n, h in l["fingerprint"].items() if h is None)
+                return {"id": lid, "status": l.get("status", "active"), "file": str(path), "was": was,
+                        **({"not_in_map": gone} if gone else {})}
+    return {"error": f"no learning {lid!r}; `leyline learnings` lists them"}
 
 
 def retire(con, lid: str, why: str = "") -> dict:
@@ -483,7 +586,9 @@ def text(r: dict) -> str:
     if not r["learnings"]:
         return ("No learnings yet. One is kept when a person rejects a review finding with a reason"
                 " (`leyline spec resolve <finding> rejected \"why\"`). They go in " + " or ".join(r["files"] or [FILE_AT_ROOT]) + ".")
-    L = [f"{r['active']} active of {len(r['learnings'])}, in " + ", ".join(r["files"]) + ".", ""]
+    L = [f"{r['active']} active of {len(r['learnings'])}"
+         + (f" ({r['stale']} about code that has changed since)" if r.get("stale") else "")
+         + ", in " + ", ".join(r["files"]) + ".", ""]
     for l in r["learnings"]:
         where = ", ".join((l.get("scope") or {}).get("paths", [])[:3]) or "?"
         L.append(f"{l['id']}  {l.get('status', 'active'):<7} {l.get('reviewer', '')}, {where}")
@@ -492,11 +597,29 @@ def text(r: dict) -> str:
         L.append(f"    Matched {l.get('hits', 0)} later findings: {l.get('dismissals', 0)} rejected, {l.get('accepted', 0)} accepted.")
         if l.get("retired"):
             L.append(f"    Retired {l['retired']}")
+        elif l.get("code") == "changed":
+            L.append(f"    Stale: the code it was about has changed since: {changed_text(l['edited'], l['gone'])}."
+                     f" Ask whether it still holds: `leyline learnings confirm {l['id']}` if it does, retire it if not.")
+        elif l.get("code") == "unknown":
+            L.append("    Code: not recorded (kept before Leyline did that), so whether it changed is not known."
+                     f" `leyline learnings confirm {l['id']}` records it now.")
     return "\n".join(L)
 
 
 def cli(con, args) -> int:
-    """`leyline learnings` lists them; `leyline learnings retire <id> ["why"]` retires one."""
+    """`leyline learnings` lists them; `leyline learnings retire <id> ["why"]` retires one; `leyline learnings
+    confirm <id>` says one still holds for the code as it is now."""
+    if args.action == "confirm":
+        if not args.id:
+            print("leyline: say which learning: leyline learnings confirm <id>")
+            return 2
+        r = confirm(con, args.id)
+        if "error" in r:
+            print(r["error"])
+            return 1
+        print(f"Confirmed {r['id']} against the code as it is now, in {r['file']}."
+              + (f" Not in the map now: {', '.join(r['not_in_map'])}." if r.get("not_in_map") else ""))
+        return 0
     if args.action == "retire":
         if not args.id:
             print("leyline: say which learning: leyline learnings retire <id> \"why\"")

@@ -157,6 +157,9 @@ def test_the_loop_over_mcp(repo):
         assert r["status"] == "rejected"
         learned = await a.call("learnings")   # the rejection, with its reason, is kept for later reviews
         assert learned["active"] == 1 and learned["learnings"][0]["id"] == r["learning"]
+        assert learned["stale"] == 0 and learned["learnings"][0]["code"] == "unchanged"
+        confirmed = await a.call("learnings", confirm=r["learning"])   # the person says it holds for the code now
+        assert confirmed["id"] == r["learning"] and confirmed["was"] == "unchanged"
         p = await a.call("plan", change="loud-engine")
         # The low finding is still open: next names it and the call that records the decision (Signal item 9).
         assert p["status"]["blocking"] == [] and f2["id"] in p["next"][0] and "spec_resolve" in p["next"][0]
@@ -420,6 +423,9 @@ def test_a_pull_request_is_reviewed_over_mcp(tmp_path):
         r = await a.call("review_pr", base="main", about="Read files with an encoding")
         assert r["change_id"] == "pr-feature" and "Signature: `load`" in r["page"]
         assert {m["name"] for m in r["reaches"]["signature_changed_callers_not_edited"]} == {"use.py.first", "use.py.count"}
+        assert r["gate_passed"] is False and r["gate"]["config"] == "the default"
+        assert "`use.py.count` calls code whose signature changed, and was not edited" in r["blocking"]
+        assert r["next"][0].startswith("Blocked: update the call in")
         f = await a.call("spec_review_facts", change="pr-feature", reviewer="logic")
         assert f["what_it_says_it_does"] == "Read files with an encoding"
         assert f["since_last_review"] == {"first_review": True} and "related_changes" in f
@@ -428,6 +434,8 @@ def test_a_pull_request_is_reviewed_over_mcp(tmp_path):
                              claim="first and count still pass one argument", evidence=[ev])
         assert filed["change_id"] == "pr-feature"
         assert (await a.call("spec_findings", change="pr-feature"))["open"] == 1
+        again = await a.call("review_pr", base="main")   # the gate is judged again, with the open high finding
+        assert not again["gate_passed"] and any(b.startswith(f"open high finding {filed['id']}") for b in again["blocking"])
         assert await a.fail("review_pr", base="main", github="1")   # no gh, no sign-in, or no such pull request
         c = await a.call("coupling", path="store.py", min_together=2)    # git history: the base and the branch
         assert c["path"] == "app/store.py" and c["changes"] == 2 and c["partners"] == []
