@@ -217,3 +217,14 @@ def test_counts_written_in_one_order(tmp_path):
     the coverage rows must still read the same."""
     root = copy(tmp_path, "fixture")
     check(tmp_path, root, "fx", [("remove file", lambda: (root / "scripts/run.py").unlink())])
+
+
+def test_module_variable_type_changed(tmp_path):
+    """A call on a module-level variable (`current.render()`, with `current: App = App()` in another file) takes the
+    variable's declared type. Removing the variable, or changing its type, must resolve its users again."""
+    root = copy(tmp_path, "fixture6")
+    glob = root / "web/globals.py"
+    check(tmp_path, root, "f6", [
+        ("variable removed", lambda: edit(glob, 'current: App = App("current")\n', "")),
+        ("variable added", lambda: glob.write_text(glob.read_text() + 'current: App = App("current")\n')),
+    ])

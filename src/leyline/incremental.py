@@ -19,7 +19,8 @@ Which files an edit can reach. Calls resolve by name, scope and import, so a fil
 - it mentions (anywhere in its parse output) the name or id of a node that was added, removed or changed in a way a
   resolver can read (kind, name, parent, attributes; for a type also its text, which the generic resolver reads
   declarations from), or a name whose "seen on an outside type" standing changed, or a test whose fixture types
-  changed;
+  changed, or a module-level variable whose stated type changed, or a type whose constructor (its own or one it
+  inherits) was added, removed or changed;
 - it imports, directly or through other files, a file whose import resolution changed.
 A change to a type's base types, to a project file (package.json, .csproj, pyproject.toml, setup.py), or to which
 directories are modules makes every file's calls be resolved again (still without parsing them again). With
@@ -322,6 +323,7 @@ class Run:
         self.imports = self._imports()
         self.bases = {k: tuple(v) for k, v in ix.bases.items() if v}
         self.param_types = dict(getattr(ix, "py_param_type", {}))
+        self.var_types = {fid: dict(v) for fid, v in getattr(ix, "py_vars", {}).items()}
         self.removed = {f for f in self.rows if f not in self.seen} if not self.full else set()
         if self.full:
             return
@@ -371,6 +373,12 @@ class Run:
         for k in set(self.param_types) | set(p["param_types"]):
             if self.param_types.get(k) != p["param_types"].get(k):
                 tokens.add(k[0])
+        # A module-level variable of a stated type (`current: App = App()`) is not a node: a call made on it
+        # elsewhere names the variable, which goes in when the type it is stated with changes.
+        for fid in set(self.var_types) | set(p["var_types"]):
+            new, old = self.var_types.get(fid, {}), p["var_types"].get(fid, {})
+            if new != old:
+                tokens.update(n for n in set(new) | set(old) if new.get(n) != old.get(n))
         old_imports = p["imports"]
         moved = {f for f in set(self.imports) | set(old_imports)
                  if self.imports.get(f, (None,))[0] != old_imports.get(f, (None,))[0]}
@@ -734,7 +742,7 @@ class Run:
             return
         token = uuid.uuid4().hex
         state = {"shapes": self.shapes, "imports": self.imports, "bases": self.bases, "param_types": self.param_types,
-                 "outside": self.outside, "markers": self.markers, "flow_hashes": self.flow_hashes,
+                 "var_types": self.var_types, "outside": self.outside, "markers": self.markers, "flow_hashes": self.flow_hashes,
                  "flow_sizes": self.flow_sizes, "groups": self.groups, "pattern_groups": self.pattern_groups,
                  "commits": self.commits}
         c = self.cache.con
