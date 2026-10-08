@@ -114,9 +114,24 @@ def _safe_members(tar: tarfile.TarFile, into: Path):
         yield m
 
 
+def _archive(root: Path, sha: str) -> bytes:
+    """`git archive` of a commit with every file in it as the checkout has it. The repository's `export-ignore` and
+    `export-subst` attributes shape release tarballs (tests left out, a version string filled in), so the archive is
+    made from an empty repository that borrows this one's objects and unsets both, at the highest precedence."""
+    objects = (root / _git(root, "rev-parse", "--git-path", "objects")).resolve()
+    with tempfile.TemporaryDirectory(prefix="leyline-archive-") as tmp:
+        bare = Path(tmp)
+        _git(bare, "init", "-q", "--bare")
+        (bare / "objects" / "info").mkdir(parents=True, exist_ok=True)
+        (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n")
+        (bare / "info").mkdir(exist_ok=True)
+        (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
+        return _git(bare, "archive", "--format=tar", sha, binary=True)
+
+
 def _export(root: Path, sha: str, into: Path) -> None:
     """The files of a commit, as git keeps them, written under `into`. Nothing in the repository changes."""
-    data = _git(root, "archive", "--format=tar", sha, binary=True)
+    data = _archive(root, sha)
     tmp = into.parent / (into.name + ".tar")
     tmp.write_bytes(data)
     try:

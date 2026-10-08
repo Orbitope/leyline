@@ -133,6 +133,31 @@ def test_a_hostile_archive_cannot_write_outside(tmp_path):
     assert kept == ["ok/a.py", "in"]
 
 
+def test_the_base_is_every_file_of_the_commit_whatever_its_export_attributes_say(tmp_path, monkeypatch):
+    """`export-ignore` and `export-subst` shape release tarballs, not the code: a base mapped from an archive that
+    applied them would lack the ignored tests (so the branch seems to add them all) and hold a substituted version
+    file (so the branch seems to edit it)."""
+    root = tmp_path / "repo"
+    files = {**FILES, "app/_version.py": "def version():\n    return \"$Format:%H$\"\n",
+             ".gitattributes": "tests export-ignore\napp/_version.py export-subst\n"}
+    for f, text in files.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    other = root / "app/other.py"
+    other.write_text(other.read_text().replace("return 1", "return 2"))
+    git(root, "commit", "-qam", "Return two")
+    monkeypatch.chdir(root)
+    r = pr.review(root / ".leyline/leyline.db", root, "main")
+    c = r["changed"]
+    assert [x["name"] for x in c["edited"]] == ["unrelated"]
+    assert c["added"] == [] and c["files"] == ["app/other.py"]
+    assert git(root, "status", "--porcelain") == ""
+
+
 def test_a_moved_checkout_maps_without_parsing_again(tmp_path):
     """Parse output depends on a file's text, not on where the checkout is: a store mapped again from another place
     (as the base of a pull request is) reuses it."""
