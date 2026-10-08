@@ -282,6 +282,21 @@ def test_task_verdicts(loud):
     assert "not Engine.child" in t["1.5"]["verdict_why"]
 
 
+def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tmp_path):
+    """A byte-order mark hid the first task and the title; `## ` alone crashed; `2FA login` was task 2, "FA login"."""
+    ch = tmp_path / "c"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("﻿# Change: Loud engine\n", encoding="utf-8")
+    (ch / "tasks.md").write_text("﻿- [ ] 1.1 Change `Engine.start`\n- [ ] 2FA login uses `Engine.child`\n"
+                                 "- [ ] 1.3: Add `Engine.shout`\n", encoding="utf-8")
+    (ch / "specs" / "engine" / "spec.md").write_text("﻿## \n" + SPEC, encoding="utf-8")
+    p = spec.parse(ch)
+    assert p["title"] == "Loud engine"
+    assert [(t["key"], t["text"]) for t in p["tasks"]] == [
+        ("1.1", "Change `Engine.start`"), ("2", "2FA login uses `Engine.child`"), ("1.3", "Add `Engine.shout`")]
+    assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"] and not p["problems"]
+
+
 def test_task_numbers_that_restart_in_each_section(loud):
     """Numbering that restarts under each heading (`1.` twice) crashed the plan on a duplicate key; each task is judged."""
     work, ch, db = loud

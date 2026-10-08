@@ -32,7 +32,8 @@ from typing import Optional
 from . import change, diff, rules, store
 from . import verdicts
 
-TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(\d+(?:\.\d+)*)?\.?\s*(.+?)\s*$")
+# A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
+TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
 CODE = re.compile(r"`([^`\n]+)`")
 VERBS = (("add", ("add ", "create ", "introduce ", "new ", "implement ")), ("remove", ("remove ", "delete ", "drop ")),
          ("rename", ("rename ",)), ("signature", ("change the signature", "change signature", "add a parameter", "add parameter",
@@ -73,7 +74,7 @@ def parse(change_dir: str | Path) -> dict:
            "requirements": [], "problems": []}
     proposal = d / "proposal.md"
     if proposal.is_file():
-        text = proposal.read_text(encoding="utf-8", errors="replace")
+        text = proposal.read_text(encoding="utf-8-sig", errors="replace")
         m = re.search(r"^#\s+(.+)$", text, re.M)
         if m:
             out["title"] = re.sub(r"^(change|proposal)\s*:\s*", "", m.group(1).strip(), flags=re.I)
@@ -87,7 +88,7 @@ def parse(change_dir: str | Path) -> dict:
     keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
     if tasks.is_file():
         n = 0
-        for line in tasks.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in tasks.read_text(encoding="utf-8-sig", errors="replace").splitlines():
             m = TASK.match(line)
             if not m:
                 continue
@@ -105,9 +106,9 @@ def parse(change_dir: str | Path) -> dict:
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
-        for line in spec.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in spec.read_text(encoding="utf-8-sig", errors="replace").splitlines():
             if line.startswith("## "):
-                section = line[3:].strip().split()[0].upper()
+                section = (line[3:].split() or [""])[0].upper() or None   # `## ` alone names no section
             elif line.startswith("### Requirement:"):
                 req = line.split(":", 1)[1].strip()
                 out["requirements"].append({"capability": capability, "name": req, "kind": section or "ADDED"})
