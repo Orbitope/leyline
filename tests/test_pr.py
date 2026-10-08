@@ -158,6 +158,18 @@ def test_the_base_is_every_file_of_the_commit_whatever_its_export_attributes_say
     assert git(root, "status", "--porcelain") == ""
 
 
+def test_files_the_map_does_not_read_are_named_as_they_are(branch):
+    """git quotes a path with a byte outside ASCII (`"caf\\303\\251.py"`) unless told not to: a mapped file of that
+    name must not be listed as one the map does not read, and a doc must be listed by its own name."""
+    for f in ("app/café.py", "docs/résumé.md", "docs/my notes.md"):
+        (branch / f).parent.mkdir(parents=True, exist_ok=True)
+        (branch / f).write_text("x = 1\n")
+    git(branch, "add", "app/café.py", "docs/résumé.md")
+    git(branch, "commit", "-qm", "More files")
+    base = git(branch, "merge-base", "main", "HEAD").strip()
+    assert pr._other_files(branch, base, ["app/café.py", "app/store.py", "app/use.py", "web/server.ts"]) == ["docs/my notes.md", "docs/résumé.md"]
+
+
 def test_a_moved_checkout_maps_without_parsing_again(tmp_path):
     """Parse output depends on a file's text, not on where the checkout is: a store mapped again from another place
     (as the base of a pull request is) reuses it."""

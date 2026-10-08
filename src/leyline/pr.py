@@ -719,8 +719,9 @@ def _other_files(root: Path, base_sha: str, mapped: list[str]) -> list[str]:
     """Files the change touches that the map does not read (docs, styles, data, config): the page names them so a
     reviewer knows the map's view of the change stops short of them."""
     try:
-        listed = _git(root, "diff", "--name-only", base_sha).splitlines()
-        listed += _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+        # NUL-separated and unquoted: git otherwise quotes a path with a byte outside ASCII ("caf\303\251.py")
+        listed = _git(root, "-c", "core.quotePath=false", "diff", "--name-only", "-z", base_sha).split("\0")
+        listed += _git(root, "-c", "core.quotePath=false", "ls-files", "-z", "--others", "--exclude-standard").split("\0")
     except GitError:
         return []
     seen = set(mapped)
