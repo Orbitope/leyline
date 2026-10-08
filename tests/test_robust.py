@@ -149,6 +149,18 @@ def test_walk_without_git_applies_gitignore_and_skips_nested_repositories(tmp_pa
     assert reasons(listing)["inner"].startswith("nested repository")
 
 
+def test_walk_without_git_anchors_a_directory_pattern_with_a_leading_slash(tmp_path):
+    """`/build/` in a .gitignore is the top-level build directory only, as git reads it: a build/ deeper down is kept."""
+    root = tmp_path / "plain"
+    write(root, ".gitignore", "/build/\n")
+    write(root, "build/b.py", "x = 1\n")
+    write(root, "src/build/c.py", "x = 1\n")
+    listing = scan(root)
+    if listing.how == "git":
+        pytest.skip("the temporary directory is inside a git repository")
+    assert sorted(f for f in listing.files if f.endswith(".py")) == ["src/build/c.py"]
+
+
 @pytest.mark.skipif(sys.platform == "win32" or not hasattr(os, "geteuid") or os.geteuid() == 0,
                     reason="permissions do not stop root, and Windows has no chmod 000")
 def test_unreadable_files_are_left_out(tmp_path):

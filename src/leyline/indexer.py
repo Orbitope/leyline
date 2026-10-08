@@ -183,8 +183,8 @@ def _ignore_rules(path: Path, base: str) -> list[tuple]:
         if neg:
             line = line[1:]
         dir_only = line.endswith("/")
-        line = line.strip("/") if dir_only else line
-        anchored = "/" in line.rstrip("/")
+        line = line.rstrip("/") if dir_only else line
+        anchored = "/" in line   # a leading or inner slash; the trailing one only says "a directory"
         line = line.lstrip("/")
         if not line:
             continue
