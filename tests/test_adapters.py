@@ -61,3 +61,22 @@ def test_csharp_calls_and_fields_on_this_and_base_are_on_the_own_type(tmp_path):
     assert got[("App.A.Run()", "App.A.Go()")] == "heuristic"      # not left unlinked beside Other.Go
     assert got[("App.A.Run()", "App.B.Run()")] == "heuristic"     # not a guess
     assert edges(con, "writes")[("App.A.Run()", "App.A.total")] == "heuristic"
+
+
+def test_csharp_a_named_arguments_label_and_an_anonymous_objects_member_are_not_field_reads(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/A.cs": (
+            "namespace App;\n"
+            "public class A {\n"
+            "    private int count;\n"
+            "    private string Name;\n"
+            "    void Labels() { Take(count: 5); var o = new { Name = \"x\" }; }\n"
+            "    void Reads() { Take(count); var p = new { Name }; }\n"
+            "    void Take(int count) {}\n"
+            "}\n"),
+    })
+    reads = edges(con, "reads")
+    assert ("App.A.Labels()", "App.A.count") not in reads
+    assert ("App.A.Labels()", "App.A.Name") not in reads
+    assert ("App.A.Reads()", "App.A.count") in reads and ("App.A.Reads()", "App.A.Name") in reads

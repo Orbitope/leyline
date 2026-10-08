@@ -728,6 +728,10 @@ class _Walker:
                     return
             if same(parent.child_by_field_name("type"), node) or same(parent.child_by_field_name("name"), node) and pt != "argument":
                 return  # a type name, or the name being declared
+            if pt == "argument" and same(parent.child_by_field_name("name"), node) and any(_text(c) == ":" for c in parent.children):
+                return  # the label of a named argument: Take(count: 5)
+            if pt == "anonymous_object_creation_expression" and node.next_sibling is not None and node.next_sibling.type == "=":
+                return  # a member an anonymous object declares: new { Name = x }
             if pt == "assignment_expression" and parent.parent is not None and parent.parent.type == "initializer_expression" \
                     and same(parent.child_by_field_name("left"), node):
                 made = parent.parent.parent
