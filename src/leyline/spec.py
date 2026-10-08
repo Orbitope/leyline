@@ -95,7 +95,9 @@ def parse(change_dir: str | Path) -> dict:
             n += 1
             text = m.group(3)
             lower = text.lower().lstrip("`* ")
-            action = next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)), "behavior")
+            # "Add a parameter to `X`" changes X's signature: the longer phrase wins over the "add " it starts with.
+            action = "signature" if lower.startswith(dict(VERBS)["signature"]) else next(
+                (a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)), "behavior")
             key = m.group(2) or str(n)
             keys[key] += 1
             out["tasks"].append({"key": key if keys[key] == 1 else f"{key} ({keys[key]})", "text": text,

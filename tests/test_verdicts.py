@@ -297,6 +297,19 @@ def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tm
     assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"] and not p["problems"]
 
 
+def test_adding_or_removing_a_parameter_is_a_change_of_signature(loud):
+    """"Add a parameter to `X`" was read as an add (so X's callers were not listed as must change) and "Remove a
+    parameter from `X`" as a removal of X, though VERBS lists both phrases under signature."""
+    work, ch, db = loud
+    (ch / "tasks.md").write_text("- [ ] 1.1 Add a parameter `loud` to `Engine.child`\n"
+                                 "- [ ] 1.2 Remove a parameter from `Engine.start`\n- [ ] 1.3 Add `Engine.shout`\n")
+    assert [t["action"] for t in spec.parse(ch)["tasks"]] == ["signature", "signature", "add"]
+    c = store.connect(db)
+    b = spec.brief(c, ch, write=False)
+    c.close()
+    assert {m["id"].rsplit(".", 1)[-1] for m in b["must_edit_uncovered"]} >= {"poke", "test_chain"}
+
+
 def test_results_from_before_the_code_last_changed_do_not_prove_it(loud):
     """`check` with no new test output, after the code changed again, judged the new code by the old run and said
     done as agreed."""
