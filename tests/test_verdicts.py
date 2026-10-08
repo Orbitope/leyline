@@ -297,6 +297,25 @@ def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tm
     assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"] and not p["problems"]
 
 
+def test_results_from_before_the_code_last_changed_do_not_prove_it(loud):
+    """`check` with no new test output, after the code changed again, judged the new code by the old run and said
+    done as agreed."""
+    from leyline import loop
+    work, ch, db = loud
+    _implement(work)
+    assert loop.check(db, ch, AFTER)["done_as_agreed"]
+    core = work / "py/src/pkg/core.py"   # an edit after the run: what the tests would say now is not known
+    core.write_text(core.read_text().replace("return self.name.upper()\n", "return self.name.upper() + \"?\"\n", 1))
+    v = loop.check(db, ch)
+    assert v["tests_old"] and not v["done_as_agreed"]
+    assert {s["name"]: s["verdict"] for s in v["scenarios"]}["Start"] == "inconclusive"
+    assert "the test results on record are from before the code last changed" in loop.next_after_check(v, "loud-engine")[0]
+    v = loop.check(db, ch)   # the map is up to date now, and the results are still older than the code
+    assert v["tests_old"] and not v["done_as_agreed"]
+    assert loop.check(db, ch, AFTER)["done_as_agreed"]   # a fresh run is evidence again
+    assert loop.check(db, ch)["done_as_agreed"]          # and stays so while the code is as it ran
+
+
 def test_task_numbers_that_restart_in_each_section(loud):
     """Numbering that restarts under each heading (`1.` twice) crashed the plan on a duplicate key; each task is judged."""
     work, ch, db = loud
