@@ -108,3 +108,23 @@ def test_the_command_line(con, tmp_path, capsys, monkeypatch):
     r = json.loads(capsys.readouterr().out)
     assert r["shown"]["symbols"] >= 2 and r["text"]
     assert main(["context", "no_such_thing_anywhere"]) == 1
+
+
+def test_what_was_not_found_and_left_out_stays_inside_the_budget(con, tmp_path):
+    # A focus item not on the map is named at the end, and so are the nearest symbols left out: both count against
+    # the budget, however long the item or the paths.
+    r = context.build(con, ["Engine.start", "qqqzzz" * 150], 200)
+    assert "Not found: 'qqqzzz" in r["text"] and r["tokens"] <= 200, r["tokens"]
+    deep = tmp_path / "deep"
+    folder = deep / "/".join(["a_rather_long_folder_name_for_this_test"] * 4)
+    folder.mkdir(parents=True)
+    (folder / "core.py").write_text("def target():\n    return 1\n")
+    for k in range(12):
+        (folder / f"caller_with_a_long_file_name_number_{k}.py").write_text(
+            f"from .core import target\n\n\ndef caller_with_a_long_function_name_{k}():\n    return target()\n")
+    db = deep / ".leyline/leyline.db"
+    index(str(deep), str(db))
+    c = store.connect(db)
+    r = context.build(c, ["target"], 200)
+    c.close()
+    assert "Left out:" in r["text"] and r["tokens"] <= 200, r["tokens"]

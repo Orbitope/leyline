@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import query, store
+from .diagrams import cut as diagrams_cut
 
 WEIGHTS = {"calls": 1.0, "overrides": 1.0, "communicates": 1.0, "extends": 0.8, "implements": 0.8,
            "instantiates": 0.6, "uses_type": 0.4, "reads": 0.3, "writes": 0.3}
@@ -432,7 +433,9 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     budget_chars = budget * 4
     head_names = [f["focus"] for f in found if "ids" in f]
     header = f"Code around {', '.join(head_names)[:200]}: declarations, the most related files first; > marks the focus."
-    reserve = len(header) + 520          # the header, the summary line and the left-out line
+    # What the focus named that is not on the map is said at the end, and counts against the budget too.
+    missing = [f"Not found: {diagrams_cut(f['focus'], 60)!r} ({f['error']})." for f in found if "error" in f]
+    reserve = len(header) + 520 + sum(len(m) + 1 for m in missing)   # the header, the summary and left-out lines
     chosen: set[int] = set()
     lines_of: dict[int, tuple] = {}      # node -> (declaration, notes)
     files: dict[str, float] = {}         # path -> best score in it, for the order of files
@@ -475,15 +478,13 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     left_files = sorted({g.path[u] for u in related})
     out.append(f"Shown: {len(chosen)} symbol{'s' * (len(chosen) != 1)} in {len(files)} file{'s' * (len(files) != 1)}.")
     if related:
-        top = ", ".join(f"{_short(g, u)} ({g.path[u]})" for u in related[:3])
+        top = diagrams_cut(", ".join(f"{_short(g, u)} ({g.path[u]})" for u in related[:3]), 260)
         out.append(f"Left out: {direct} more symbol{'s' * (direct != 1)} linked directly to the focus and"
                    f" {len(related) - direct} two links away, in {len(left_files)} file{'s' * (len(left_files) != 1)};"
                    f" the nearest: {top}. Raise the budget to see more.")
     else:
         out.append("Left out: nothing within two links of the focus.")
-    for f in found:
-        if "error" in f:
-            out.append(f"Not found: {f['focus']!r} ({f['error']}).")
+    out += missing
     text = "\n".join(out).rstrip() + "\n"
     return {"focus": found, "budget_tokens": budget, "tokens": len(text) // 4, "text": text,
             "shown": {"symbols": len(chosen), "files": len(files)},
