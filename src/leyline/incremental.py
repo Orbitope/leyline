@@ -278,16 +278,18 @@ class Run:
         return out
 
     def _shapes(self) -> dict:
-        """node id -> (name, kind, hash of what a resolver can read of it, the text hash of a type). Where a node
-        sits (its span, and the attributes that only repeat a line number) is left out: an edit above a node moves
-        it without changing what it declares."""
+        """node id -> (name, kind, hash of what a resolver can read of it, the text hash of a type, the type a
+        constructor belongs to). Where a node sits (its span, and the attributes that only repeat a line number) is
+        left out: an edit above a node moves it without changing what it declares."""
+        from .indexer import CTORS
         out = {}
         for i, n in self.ix.nodes.items():
             attrs = n.attrs
             if attrs and any(k in attrs for k in POSITIONS):
                 attrs = {k: v for k, v in attrs.items() if k not in POSITIONS}
             out[i] = (n.name, n.kind, _crc((n.kind, n.name, n.parent_id, n.language, n.path, attrs)),
-                      n.content_hash if n.kind == "type" else None)
+                      n.content_hash if n.kind == "type" else None,
+                      n.parent_id if n.kind == "callable" and n.name in CTORS else None)
         return out
 
     def _imports(self) -> dict:
@@ -347,6 +349,25 @@ class Run:
         for i, o in old_shapes.items():
             if i not in self.shapes:
                 tokens.update((i, o[0]))
+        # A constructor is called by its type's name (`Engine()`, `new Shape()`), and by the name of any type that
+        # inherits it: when one is added, removed or changed, so are the calls that make such an object.
+        owners = {s[4] for i, s in self.shapes.items() if s[4] and old_shapes.get(i) != s}
+        owners |= {o[4] for i, o in old_shapes.items() if o[4] and self.shapes.get(i) != o}
+        if owners:
+            derived = defaultdict(set)
+            for bases in (self.bases, p["bases"]):
+                for t, bs in bases.items():
+                    for b in bs:
+                        derived[b].add(t)
+            todo = list(owners)
+            while todo:
+                for t in derived.get(todo.pop(), ()):
+                    if t not in owners:
+                        owners.add(t)
+                        todo.append(t)
+            for t in owners:
+                tokens.add(t)
+                tokens.update(s[0] for s in (self.shapes.get(t), old_shapes.get(t)) if s)
         for k in set(self.param_types) | set(p["param_types"]):
             if self.param_types.get(k) != p["param_types"].get(k):
                 tokens.add(k[0])

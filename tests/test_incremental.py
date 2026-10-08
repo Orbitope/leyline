@@ -177,3 +177,25 @@ def test_values_passed_in(tmp_path):
     con = sqlite3.connect(tmp_path / "inc.db")
     got = {r[0].split(":", 2)[2] for r in con.execute("SELECT dst_id FROM calls WHERE src_id = 'f6:python:web.app.run_app'")}
     assert "web.app.Middleware.__call__" in got
+
+
+def test_constructor_added_or_removed(tmp_path):
+    """A call that makes an object (`pkg.Engine(...)`, `new Shape()`) is written with the class's name and links to
+    its constructor, inherited or not. Adding or removing a constructor must resolve again the files that make one,
+    though they never mention `__init__` or `constructor`."""
+    root = tmp_path / "ctor"
+    (root / "pkg").mkdir(parents=True)
+    (root / "ts").mkdir()
+    core = root / "pkg/core.py"
+    (root / "pkg/__init__.py").write_text("from .core import Engine, Sub\n")
+    core.write_text("class Engine:\n    def __init__(self, name):\n        self.name = name\n\n\nclass Sub(Engine):\n    pass\n")
+    (root / "use.py").write_text("import pkg\n\n\ndef make():\n    return pkg.Engine('x')\n\n\ndef sub():\n    return pkg.Sub('y')\n")
+    shape = root / "ts/shape.ts"
+    shape.write_text("export class Shape {\n  constructor(public n: number) {}\n}\n")
+    (root / "ts/main.ts").write_text('import { Shape } from "./shape";\n\nexport function make(): Shape {\n  return new Shape(1);\n}\n')
+    check(tmp_path, root, "c", [
+        ("python constructor removed", lambda: edit(core, "    def __init__(self, name):\n", "    def setup(self, name):\n")),
+        ("python constructor added", lambda: edit(core, "    def setup(self, name):\n", "    def __init__(self, name):\n")),
+        ("typescript constructor removed", lambda: edit(shape, "  constructor(public n: number) {}\n", "  n = 1;\n")),
+        ("typescript constructor added", lambda: edit(shape, "  n = 1;\n", "  constructor(public n: number) {}\n")),
+    ])
