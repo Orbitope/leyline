@@ -9,7 +9,7 @@ deltas). Leyline reads it and writes one page back, `leyline.md`, that answers f
     Was it done as agreed?          after implementation: tasks, scenarios, drift, rules
 
 Conventions a spec author follows, and nothing more:
-- Name code in backticks in tasks: `Vehicle.Speed`, `SignalController.Tick`, `Signal.Core/Controls.cs`.
+- Name code in backticks in tasks: `Vehicle.Speed`, `Queue.Push`, `Core/Controls.cs`.
   A name that is not on the map yet is taken as new code; say where it goes: `Owner.NewName` for a member,
   `module.new_func`, `path/to/file.py: new_func` or `new_func` in `file.py` for a top-level function.
   Other words in backticks are noted, not checked; a task that names no code is the person's to check.

@@ -969,7 +969,7 @@ on the map.
 | --- | --- | --- | --- |
 | TypeScript (Parlance, 160k lines) | scip-typescript | 100% / 98% | 99% / 97% |
 | Python (Flask) | scip-python | 99% / 68% | 96% / 87% |
-| C# (Signal) | Roslyn | 99.7% / 97% | 98% / 83% |
+| C# (a private project) | Roslyn | 99.7% / 97% | 98% / 83% |
 
 Where the generic adapter loses, it is on calls made on a variable whose type it cannot read from
 the text. The hand-written Python adapter misses calls inside decorators (`@app.route(...)`).
@@ -1123,11 +1123,11 @@ Measured on three repositories, counting call sites whose target is inside the r
 
 | Repository | Files | Index time | Call sites linked | Of those, by guess | Left open |
 |---|---|---|---|---|---|
-| Signal (C# and Python) | 59 | 1 s | 99% | 4% | 18 |
+| A private project (C# and Python) | 59 | 1 s | 99% | 4% | 18 |
 | Flask (Python) | 83 | 1 s | 91% | 9% | 101 |
 | Polly (C#) | 801 | 7 s | 94% | 2% | 915 |
 
-With the compiler pass on, the syntax links can be scored. On Signal the compiler confirmed 2,081
+With the compiler pass on, the syntax links can be scored. On the private project the compiler confirmed 2,081
 of them, removed 16 and added 38 it had missed. On Polly, where packages could not be restored and
 only part of the code binds, it confirmed 4,844 and removed 1,286, nearly all extra overloads of
 the right method.

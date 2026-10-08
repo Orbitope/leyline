@@ -58,7 +58,7 @@ why not.
    - `tasks.md`: `- [ ] 1.1 <task>` lines.
    - `design.md` only when there is a real decision to record.
 4. **Follow three conventions**, because the check depends on them:
-   - Name code in backticks in tasks: `` `Vehicle.Speed` ``, `` `SignalController.Tick` ``. New code
+   - Name code in backticks in tasks: `` `Vehicle.Speed` ``, `` `Queue.Push` ``. New code
      states its home: `` `Owner.NewName` `` for a member; `` `module.new_func` ``,
      `` `path/to/file.py: new_func` `` or `` `new_func` in `file.py` `` for a top-level function. A task
      that names no code (docs) is left for the person to check; it does not block.
