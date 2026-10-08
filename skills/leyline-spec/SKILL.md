@@ -99,7 +99,7 @@ why not.
    Then read the lines under "Must agree with the change" (other ends of a channel the change crosses,
    such as a second program that reads the same pipe) and "Shares a caller or a field with the change,
    and no task names it". Each is code that shares a channel, a caller, a field or a look-alike new
-   member with the change. For each, either add a task or be able
+   member with the change. For each, either propose a task (see "Proposing a missing task") or be able
    to say why it is right to leave alone. Do not pass this list to the person undigested.
    "Usually changes with the files the tasks touch" comes from git history, not the map: a doc, schema,
    fixture or test-case folder that changed in most past commits to a file the tasks touch. Treat it the
@@ -115,7 +115,8 @@ why not.
    It re-maps the code itself.
 2. Report `done_as_agreed` first. Then each task not done, each scenario not proven, and each edit
    outside the spec. For every edit outside the spec, read its source and say whether the spec was
-   incomplete or the implementation wandered. The person decides which; do not decide for them.
+   incomplete or the implementation wandered. The person decides which; do not decide for them. Propose
+   the task, or the undo, as in "Proposing a missing task".
    Each task and scenario carries a `verdict` (proven, partial, contradicted, inconclusive, needs a
    person) and `verdict_why`; quote them as they are, and name every item that needs a person.
 3. Pass on `next`.
@@ -128,6 +129,35 @@ the change. Call `drift` with `accept=true` only when the person says the specs 
 
 `spec_brief`, `spec_verify` and `record_test_run` are the steps inside `plan` and `check`, for when one
 is needed alone. `plan` stores its test run as `before:spec-<id>` and `check` as `after:spec-<id>`.
+
+## Proposing a missing task
+
+When `check` lists an edit outside the spec, or `plan` lists a line under "Shares a caller or a field with the
+change, and no task names it" that needs a task:
+
+1. Draft the exact line to add to `tasks.md`, numbered after the tasks around it, in the conventions above: it
+   starts with add, remove, rename or "change the signature of" when that is what it does, and names the code in
+   backticks with its owner: `` - [ ] 2.4 Change the signature of `Queue.push` to take a priority ``.
+2. Show the person the line and its evidence: the node, what was edited or what it shares with the change, and
+   the source you read. For an edit outside the spec, also propose the other way out: undo the edit, and say what
+   undoing it loses.
+3. Add the line only when the person agrees. If they choose the undo, undo that edit and nothing else.
+4. Call `plan` again, and `check` again once the code is written.
+
+## OpenSpec's verify
+
+If the project uses OpenSpec's expanded profile and `/opsx:verify` is there, you may run it after `check`. Its
+findings are an LLM's opinion, not a verdict. File each CRITICAL or WARNING as a finding with `spec_finding`, so
+it is tracked and the person resolves it like any other:
+
+- reviewer `logic` (Leyline has only logic and performance);
+- severity high for CRITICAL, medium for WARNING;
+- the claim in one sentence, starting "/opsx:verify:";
+- as evidence, the node ids it is about (`search`, `expand`). A finding needs at least one node on the map; one
+  you cannot tie to a node goes in your report to the person instead, saying so.
+
+The two verdicts are separate. Report `check`'s `done_as_agreed` as it is, whatever `/opsx:verify` says, and do
+not drop a `/opsx:verify` finding because `check` passed.
 
 ## When the spec changes part-way
 
@@ -142,6 +172,7 @@ the spec. Read it anyway.
 ## Rules
 
 - Never tick a task or call a change done from the agent's own report. `check` reads the code.
+- Never add a task or tick one without the person.
 - A scenario with no test is unproven, however obvious it looks.
 - Keep the spec short. If the brief does not fit on a page, the change is two changes.
 - You do not resolve review findings. The person does.
