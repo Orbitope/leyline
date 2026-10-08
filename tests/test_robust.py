@@ -57,7 +57,7 @@ def ordinary(root: Path) -> None:
     write(root, "empty.py", "")
     write(root, "comments.go", "// nothing here\n")
     write(root, "dir with space/ünïcødé файл.py", "def unicode_name():\n    return 1\n")
-    write(root, "nul.java", 'class K { String s = "\0a\0"; void m() {} }\n')   # a NUL in a literal is still text
+    write(root, "nulbyte.java", 'class K { String s = "\0a\0"; void m() {} }\n')   # a NUL in a literal is still text
     write(root, "blob.py", bytes(range(256)) * 40)
     write(root, "app.min.js", "function a(){return 1}\n")
     write(root, "long.js", "var a=[" + ",".join(["1"] * 40000) + "];\n")
@@ -109,7 +109,7 @@ def test_hostile_repository_is_indexed_and_says_what_it_left_out(tmp_path, small
         assert why["link.py"].startswith("symlink to another listed file")
     assert "ignored/i.py" not in listing.files and "ignored/i.py" not in why   # .gitignore is git's to apply
     for f in ("good.py", "half.py", "half.ts", "bom.py", "latin1.py", "utf16.py", "crlf.py", "empty.py", "comments.go",
-              "nul.java", "dir with space/ünïcødé файл.py"):
+              "nulbyte.java", "dir with space/ünïcødé файл.py"):
         assert f in listing.files, f
 
     db = tmp_path / "s.db"
