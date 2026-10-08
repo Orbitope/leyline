@@ -47,3 +47,4 @@ jobs:
         run: |
           grep -E "^(FAILED|ERROR) " pytest-output.txt | head -40 | while IFS= read -r line; do echo "::error::$line"; done
           grep -E "^(E  |[^ ].*:[0-9]+: )" pytest-output.txt | head -40 | while IFS= read -r line; do echo "::warning::$line"; done
+          tail -n 25 pytest-output.txt | while IFS= read -r line; do echo "::notice::$line"; done
