@@ -589,7 +589,7 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         return {"error": f"no commit or branch {base!r} in {root}"}
     base_sha = _git(root, "merge-base", base, "HEAD")
     head_sha = _git(root, "rev-parse", "HEAD")
-    dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
+    dirty = bool(_git(root, "status", "--porcelain"))   # a new file not yet added is mapped, so it counts too
     given = about.strip() or None   # said by the person (or the pull request); a description made here is not kept
     if not given:
         about = _described(root, base_sha, db, given_id, github)

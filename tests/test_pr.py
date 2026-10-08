@@ -113,6 +113,16 @@ def test_uncommitted_edits_count_and_a_missing_base_is_said(branch, monkeypatch)
     assert code == 1
 
 
+def test_a_new_file_not_yet_added_counts_as_an_uncommitted_edit(branch, monkeypatch):
+    """The map reads the files git lists, untracked ones included, so a new file not yet added is in the review: the
+    page must say the checkout has uncommitted edits, not that it is the head commit."""
+    monkeypatch.chdir(branch)
+    (branch / "app/extra.py").write_text("def extra():\n    return 3\n")
+    r = pr.review(branch / ".leyline/leyline.db", branch, "main")
+    assert "extra" in [x["name"] for x in r["changed"]["added"]]
+    assert r["dirty"] is True and "with uncommitted edits" in Path(r["page"]).read_text()
+
+
 def test_a_hostile_archive_cannot_write_outside(tmp_path):
     """The base of someone else's branch is extracted from an archive: entries that climb out, and links that point
     out, are left out."""
