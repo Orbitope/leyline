@@ -288,3 +288,19 @@ def test_a_long_builder_chain_is_mapped_in_linear_time(tmp_path):
     run(200)   # warm up the parsers
     small, large = run(1000), run(4000)
     assert large < 8 * small + 1.0, (small, large)   # quadratic would be about 16 times
+
+
+def test_a_typescript_import_inside_a_dot_directory(tmp_path):
+    """Files under a directory whose name starts with a dot (.storybook, .vitepress) import each other like any other."""
+    root = write(tmp_path / "dots", {
+        ".storybook/helper.ts": "export function helper(): number {\n  return 1;\n}\n",
+        ".storybook/main.ts": 'import { helper } from "./helper";\n\nexport function main(): number {\n  return helper();\n}\n',
+    })
+    db = tmp_path / "d.db"
+    index(root, db, "d")
+    con = store.connect(db)
+    assert {r[0] for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'imports' AND src_id = 'd:file:.storybook/main.ts'")} \
+        == {"d:file:.storybook/helper.ts"}
+    assert {r[0] for r in con.execute("SELECT dst_id FROM calls WHERE src_id LIKE 'd:typescript:%main.main'")} \
+        == {"d:typescript:.storybook.helper.helper"}
+    con.close()

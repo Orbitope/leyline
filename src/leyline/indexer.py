@@ -1417,7 +1417,8 @@ class Indexer:
         """A TypeScript import: ./path from the repo root (the adapter resolved it), or a workspace package,
         which may live in another repository of the workspace."""
         def at(path, repo=repo or self.repo):
-            path = re.sub(r"\.(d\.[cm]?ts|[cm]?[jt]sx?)$", "", path.lstrip("./"))
+            # only a leading ./ goes: lstrip("./") also took the dot off a directory such as .storybook
+            path = re.sub(r"\.(d\.[cm]?ts|[cm]?[jt]sx?)$", "", path[2:] if path.startswith("./") else path)
             return self.path_modules[repo].get(path) or self.path_modules[repo].get(path + "/index")
         if target.startswith("."):
             return at(target[2:] if target.startswith("./") else target)
