@@ -63,7 +63,9 @@ def generate(con, repo_id: str) -> dict:
     repo = q("SELECT id, name FROM nodes WHERE id = ? AND kind = 'repo'", repo_id)
     if not repo:
         return {"error": f"no repo {repo_id!r}"}
-    mods = {r["id"]: r for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ?", repo_id)}
+    # In id order, not the order the rows were written in: a module an incremental run adds is written last, and a
+    # tie between modules must be settled as a full run would settle it.
+    mods = {r["id"]: r for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY id", repo_id)}
     if not mods:
         return {"stops": 0}
     # The few module ids and kinds are one string each: every row read gives its own copy, and on a large

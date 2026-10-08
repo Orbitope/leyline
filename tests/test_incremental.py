@@ -199,3 +199,14 @@ def test_constructor_added_or_removed(tmp_path):
         ("typescript constructor removed", lambda: edit(shape, "  constructor(public n: number) {}\n", "  n = 1;\n")),
         ("typescript constructor added", lambda: edit(shape, "  n = 1;\n", "  constructor(public n: number) {}\n")),
     ])
+
+
+def test_tour_with_tied_modules(tmp_path):
+    """The tour's library stop picks the module most used by others; between modules used as much, the choice must
+    not depend on the order their rows were written in (a module added by an incremental run is written last)."""
+    root = tmp_path / "tie"
+    (root / "b").mkdir(parents=True)
+    (root / "b/one.py").write_text("def one():\n    return 1\n")
+    check(tmp_path, root, "t", [
+        ("module added", lambda: ((root / "a").mkdir(), (root / "a/two.py").write_text("def two():\n    return 2\n"))),
+    ])
