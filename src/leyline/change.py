@@ -66,7 +66,7 @@ def _side_entry(path: str) -> bool:
 
 def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: Optional[dict] = None) -> dict:
     """Work out what a change reaches. Each target is {id, action, note?}; for action `add` it is
-    {action: "add", name, parent, uses?: [ids], used_by?: [ids], note?}. `test_entries` maps entry points that are
+    {action: "add", name, parent, uses?: [ids], used_by?: [ids], related?: [ids], note?}. `test_entries` maps entry points that are
     tests of their own (a script that runs its checks and prints a result for each) to what to call them."""
     test_entries = test_entries or {}
     nodes, anc = _load(con)
@@ -141,6 +141,9 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
             for u in t.get("uses", []):
                 if u in nodes:
                     mark(u, "direct", f"used by the new {t['name']}", 1)
+            for u in t.get("related", []):   # named beside it: worth reading, but adding code does not reach it
+                if u in nodes:
+                    mark(u, "note", f"named beside the new {t['name']}", 1)
             continue
         i, n = t["id"], nodes[t["id"]]
         mark(i, "changed", t.get("note", "") or t["action"], 0)
@@ -297,7 +300,7 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
     by_system: dict[str, dict] = {}
     home_modules = {module_of(t) for t in touched} | {module_of(n["parent"]) or n["parent"] for n in new_nodes}
     for i, m in marks.items():
-        if m["role"] in ("test",):
+        if m["role"] in ("test", "note"):
             continue
         mod = module_of(i) or (i if nodes[i]["kind"] == "module" else None)
         if mod:
@@ -415,6 +418,9 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
         marks = marks + [m for m in prior.get("marks", []) if m["id"] not in have]
         named = {n["name"] for n in report["new_nodes"]}
         report["new_nodes"] = report["new_nodes"] + [n for n in prior.get("new_nodes", []) if n["name"] not in named]
+    if not any(m["role"] in ("changed", "new", "must_edit", "contract") for m in marks):
+        # A change that only adds code marks nothing it writes to: show it on where the new code will go.
+        marks = marks + [{"id": n["parent"], "role": "new", "note": f"will hold the new {n['name']}"} for n in report["new_nodes"]]
     view = save_view(con, title, intent, marks, kind="change", source=source, change_id=cid,
                      extra={"summary": report["summary"], "risks": report["risks"], "tests_to_run": report["tests_to_run"],
                             "channels": report["channels"], "by_module": report["by_module"], "by_system": report["by_system"],
@@ -431,7 +437,7 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
             report["snapshot"] = "new"
         except Exception:
             report["snapshot"] = False
-    report["change_id"], report["view_id"] = cid, view["id"]
+    report["change_id"], report["view_id"] = cid, view.get("id")
     report["marks"] = report["marks"][:60]
     return report
 
