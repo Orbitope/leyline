@@ -10,6 +10,7 @@ read in a minute and the same facts arranged for the adversarial reviewers, whos
     leyline pr main                         # the checkout against where it left main
     leyline pr main --about "Fix the retry"  # with what the change says it does
     leyline pr --github 123                 # base, title and description from GitHub (needs gh, and the PR checked out)
+    leyline pr main --gate                  # exit 1 while something that blocks is left ([pr] in openspec/leyline.toml)
 
 The base is mapped once per commit, from `git archive` into a temporary directory (the repository and its
 worktrees are not touched), reusing the parse output of the checkout's map for every file that did not change.
@@ -244,6 +245,7 @@ def _params(text: str, start: int, name: str) -> Optional[str]:
     past any decorators, with the spacing made plain. None when it cannot be found."""
     lines = text.split("\n")[start - 1:start + 40]
     body = "\n".join(lines)
+    name = (name or "").rsplit(".", 1)[-1]   # a method is named `Owner.name` on the map, and `name` in its text
     at = body.find(name) if name and name not in ("<module>", "<top-level>") else -1
     if at < 0:
         return None
@@ -321,13 +323,14 @@ def _touching(con, names, crossings: list, changed: set, own: Optional[dict], ad
         if not hub and not moved:
             continue
         what = f"{c['channel']} {address}".strip()
+        guessed = bool(c.get("guessed"))
         kept.append({**c, "hub_touched": hub, "spokes_touched": [sp["name"] for sp in moved]})
         if hub:   # what the hub writes, sends or answers changed: every other end must agree
             for sp in c.get("spokes", []):
                 if sp["changed"]:
                     continue
                 must.append({"id": sp["id"], "name": sp["name"], "channel": c["channel"], "address": address,
-                             "hub": c["hub_name"], "why": (f"starts {c.get('program') or c['hub_name']}, whose input or output the edit changed"
+                             "hub": c["hub_name"], "guessed": guessed, "why": (f"starts {c.get('program') or c['hub_name']}, whose input or output the edit changed"
                                                            if c["channel"] == "process"
                                                            else f"takes apart keys of the form {address}, which the edit to {c['hub_name']} changed"
                                                            if c["channel"] == "format"
@@ -339,7 +342,7 @@ def _touching(con, names, crossings: list, changed: set, own: Optional[dict], ad
                                   " check it reads what is written"})
         else:             # a caller changed what it sends: the other end must accept it
             must.append({"id": c["hub"], "name": c["hub_name"], "channel": c["channel"], "address": address,
-                         "hub": c["hub_name"], "why": f"answers {', '.join(sp['name'] for sp in moved)} over {what}"})
+                         "hub": c["hub_name"], "guessed": guessed, "why": f"answers {', '.join(sp['name'] for sp in moved)} over {what}"})
     dedupe = lambda xs: list({x["id"]: x for x in xs}.values())
     return kept, dedupe(must), dedupe(across)
 
@@ -368,8 +371,10 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
         removed_callers = {}
         for n in d["nodes"]["removed"]:
             if n["kind"] in ("callable", "test", "type"):
-                removed_callers[n["id"]] = sorted({r[0] for r in before.execute(
-                    "SELECT DISTINCT src_id FROM calls WHERE dst_id = ? OR dst_id LIKE ?", (n["id"], n["id"] + ".%"))})
+                # caller -> whether every call it made was a guess by name
+                removed_callers[n["id"]] = dict(sorted((r[0], bool(r[1])) for r in before.execute(
+                    "SELECT src_id, MIN(precision = 'guess') FROM calls WHERE dst_id = ? OR dst_id LIKE ? GROUP BY src_id",
+                    (n["id"], n["id"] + ".%"))))
     finally:
         before.close()
     names = spec._Names(con)
@@ -419,11 +424,14 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     must = [m for m in report.get("must_edit") or [] if not _inside(m["id"], changed)]
     sig_targets = [i for i in resigned if i in names.by_id]
     for m in must:   # how many calls each must fix: a caller can call the changed code more than once
+        sure = 0
         if sig_targets:
-            m["call_sites"] = con.execute(
-                f"SELECT COUNT(*) FROM calls WHERE src_id = ? AND dst_id IN ({','.join('?' * len(sig_targets))})",
-                (m["id"], *sig_targets)).fetchone()[0]
+            m["call_sites"], sure = con.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(precision != 'guess'), 0) FROM calls WHERE src_id = ?"
+                f" AND dst_id IN ({','.join('?' * len(sig_targets))})", (m["id"], *sig_targets)).fetchone()
         m["test"] = bool(names.in_tests(m["id"]))
+        # the map's only link to the changed code is a guess by name: worth a read, never a reason to block
+        m["guessed"] = "a guess" in (m.get("note") or "") and not sure
 
     still_called = []
     for rid_, callers in removed_callers.items():
@@ -431,7 +439,8 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
         if live:
             still_called.append({"id": rid_, "removed": next(n["name"] for n in removed if n["id"] == rid_),
                                  "callers": [spec._label(names, c) for c in live], "caller_ids": live,
-                                 "test_callers": [spec._label(names, c) for c in live if names.in_tests(c)]})
+                                 "test_callers": [spec._label(names, c) for c in live if names.in_tests(c)],
+                                 "guessed": all(callers[c] for c in live)})
 
     flagged = {m["id"] for m in must} | {c for x in still_called for c in x["caller_ids"]}
     existing = [i for i in dict.fromkeys([n["id"] for n in edited + types]) if i in names.by_id]
@@ -447,6 +456,10 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     now_rules = rules.check(con)
     was_failing = {r["id"] for r in rules_before.get("rules", []) if not r["passes"]}
     new_violations = [r for r in now_rules["rules"] if not r["passes"] and r["id"] not in was_failing]
+    if any(r["status"] == "confirmed" for r in new_violations):   # does it fail on links the map is sure of?
+        sure_fail = {r["id"] for r in rules.check(con, sure_only=True)["rules"] if not r["passes"]}
+        for r in new_violations:
+            r["guessed"] = r["id"] not in sure_fail
 
     def is_test(i):
         n = names.by_id.get(i)
@@ -625,7 +638,8 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         out["since_last_review"] = rereview.since(con, cid, summary, fp)
         rereview.mark(out["findings"], out["since_last_review"])
         rereview.record(con, cid, head_sha, dirty, summary, fp)
-        page = Path(db).parent / "reviews" / f"{cid}.md"
+        out["gate"] = gate(out, gate_config(root))   # judged from this run's facts and the findings as they are now
+        page =Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
         page.write_text(text(out), encoding="utf-8")
         out["page"] = str(page)
@@ -789,6 +803,140 @@ def _usually(con, cid: str, a: dict, root: Path) -> dict:
     return coupling.for_pr(con, rid, root, a["base_sha"]) if rid and a.get("base_sha") else {}
 
 
+# -- the gate ---------------------------------------------------------------------------------------------
+# What can hold up a pull request under `leyline pr --gate`, by the name a project lists in openspec/leyline.toml:
+#
+#     [pr]
+#     blocking = ["unedited-callers", "still-called", "failing-rules", "open-high-findings"]
+#
+# The default blocks only what the map shows is broken. A link the map guessed by name never blocks on its own.
+GATE_KINDS = {
+    "unedited-callers": "callers of a changed signature that were not edited",
+    "still-called": "removed code that is still called",
+    "failing-rules": "confirmed error-level rules that now fail",
+    "open-high-findings": "open high findings",
+    "open-medium-findings": "open findings of medium severity or higher",
+    "open-findings": "open findings of any severity",
+    "other-ends": "other ends of a channel the edit changed, not edited",
+    "untested": "changed code no test reaches",
+}
+DEFAULT_GATE = ("unedited-callers", "still-called", "failing-rules", "open-high-findings")
+_GATE_ALIASES = {"callers": "unedited-callers", "removed": "still-called", "rules": "failing-rules",
+                 "high-findings": "open-high-findings", "medium-findings": "open-medium-findings",
+                 "findings": "open-findings", "channels": "other-ends", "no-test": "untested"}
+_AT_LEAST = {"open-high-findings": ("high",), "open-medium-findings": ("high", "medium"), "open-findings": None}
+
+
+def gate_config(root: Path) -> dict:
+    """Which kinds block, from `[pr] blocking` in the repository's openspec/leyline.toml, else the default. Never
+    raises: a file that cannot be read leaves the default in place and says why in `notes`."""
+    from . import verdicts
+    out = {"blocking": list(DEFAULT_GATE), "file": None, "notes": []}
+    path = Path(root) / "openspec" / verdicts.CONFIG
+    if not path.is_file():
+        return out
+    shown = f"openspec/{verdicts.CONFIG}"
+    try:
+        data = verdicts._toml(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        out["notes"].append(f"{shown} could not be read ({e}), so the default gate applies.")
+        return out
+    section = data.get("pr")
+    if not isinstance(section, dict) or "blocking" not in section:
+        return out
+    listed = section["blocking"]
+    if isinstance(listed, str):
+        listed = [listed]
+    if not isinstance(listed, list):
+        out["notes"].append(f"{shown}: `[pr] blocking` should be a list of kinds, so the default gate applies.")
+        return out
+    kinds = []
+    for w in listed:
+        k = re.sub(r"[_\s]+", "-", str(w).strip().lower())
+        k = _GATE_ALIASES.get(k, k)
+        if k not in GATE_KINDS:
+            out["notes"].append(f"{shown} names \"{w}\" under [pr], which is not a kind; it was left out."
+                                f" The kinds are {', '.join(GATE_KINDS)}.")
+        elif k not in kinds:
+            kinds.append(k)
+    out["blocking"] = [k for k in GATE_KINDS if k in kinds]
+    out["file"] = shown
+    return out
+
+
+def gate(r: dict, config: dict) -> dict:
+    """What is left that blocks, from the facts of this run and the findings as they stand now: one line each,
+    with what to do about it. Running `leyline pr` again after new commits judges it again from scratch."""
+    on = set(config["blocking"])
+    reach, t = r["reaches"], r["tests"]
+    out = []   # (reason, what to do)
+    guessed = 0   # left out: the map's only link behind them is a guess by name
+    if "unedited-callers" in on:
+        for m in reach["signature_changed_callers_not_edited"]:
+            guessed += bool(m.get("guessed"))
+            if not m.get("guessed"):
+                out.append((f"`{m['name']}` calls code whose signature changed, and was not edited",
+                            f"update the call in `{m['name']}` ({m.get('path') or 'see the page'}) to the new signature"))
+    if "still-called" in on:
+        for x in reach["removed_but_still_called"]:
+            guessed += bool(x.get("guessed"))
+            if not x.get("guessed"):
+                out.append((f"`{x['removed']}` was removed and is still called by {_names(x['callers'], 3)}",
+                            f"remove the calls to `{x['removed']}` from {_names(x['callers'], 3)}, or keep `{x['removed']}`"))
+    if "failing-rules" in on:
+        for rule in r["structure"]["rules_now_failing"]:
+            if rule.get("status") != "confirmed" or rule.get("severity") != "error":
+                continue
+            guessed += bool(rule.get("guessed"))
+            if not rule.get("guessed"):
+                what = f"{rule['kind']} {rule['from']}" + (f" -> {rule['to']}" if rule.get("to") else "")
+                out.append((f"rule {rule['id']} ({what}) now fails",
+                            f"remove what breaks rule {rule['id']} ({what}); `leyline rules` lists it"))
+    sev = next((_AT_LEAST[k] for k in ("open-findings", "open-medium-findings", "open-high-findings") if k in on), False)
+    if sev is not False:
+        order = {"high": 0, "medium": 1, "low": 2}
+        for f in sorted((f for f in r.get("findings") or [] if f["status"] == "open"),
+                        key=lambda f: order.get(f["severity"], 3)):
+            if sev is None or f["severity"] in sev:
+                out.append((f"open {f['severity']} finding {f['id']}: {spec._first_sentence(f['claim'], 120)}",
+                            f"fix what finding {f['id']} says, or have the person resolve it"
+                            f" (`leyline spec resolve {f['id']} accepted|rejected|deferred \"why\"`)"))
+    if "other-ends" in on:
+        for a in reach["other_ends_not_edited"]:
+            guessed += bool(a.get("guessed"))
+            if not a.get("guessed"):
+                out.append((f"`{a['name']}` {a['why']}, and was not edited",
+                            f"check that `{a['name']}` agrees with the change, and edit it if not"))
+    if "untested" in on:
+        for u in t["changed_code_no_test_reaches"]:
+            out.append((f"no test reaches `{u['name']}`", f"add a test that runs `{u['name']}`"))
+    return {"blocking": [why for why, _ in out], "passed": not out, "kinds": config["blocking"],
+            "config": config["file"], "notes": config["notes"], "next": out[0][1] if out else None,
+            "guessed": guessed}
+
+
+def gate_lines(g: Optional[dict]) -> list[str]:
+    """The page's Gate section: whether it passes, what blocks and under which config, and the first thing to do."""
+    if not g:
+        return []
+    under = (f"set in {g['config']}" if g.get("config") else "the default") + "; `leyline pr --gate` exits 1 when blocked"
+    kinds = ", ".join(g["kinds"]) or "nothing"
+    L = ["", "## Gate", ""]
+    if g["passed"]:
+        L.append(f"**Passes.** Nothing that blocks is left. Blocking: {kinds} ({under}).")
+    else:
+        L.append(f"**Blocked** by {_n(len(g['blocking']), 'thing')}. Blocking: {kinds} ({under}).")
+        L += [f"- {b.rstrip('.')}." for b in g["blocking"][:10]]
+        if len(g["blocking"]) > 10:
+            L.append(f"- and {len(g['blocking']) - 10} more")
+        L += ["", f"Next: {g['next']}."]
+    if g.get("guessed"):
+        L += ["", f"Left out of the gate: {_n(g['guessed'], 'item')} below that rest only on links the map guessed by name."
+                  " Read the code behind them."]
+    L += g.get("notes") or []
+    return L
+
+
 # -- the page ---------------------------------------------------------------------------------------------
 def _n(n: int, word: str, plural: str = "") -> str:
     return f"{n} {word if n == 1 else plural or word + 's'}"
@@ -841,6 +989,7 @@ def text(r: dict) -> str:
                                               else "no description given (`--about`, or `--github <number>`). Judge it by the code.")]
     from . import related, rereview
     L += rereview.lines(r.get("since_last_review"), head)
+    L += gate_lines(r.get("gate"))
     # what changed
     parts = [_n(s["functions"], "function") + " edited or added" if s["functions"] else "",
              _n(s["types"], "type") + " changed" if s["types"] else "",

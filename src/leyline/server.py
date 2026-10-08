@@ -897,7 +897,7 @@ def spec_review_facts(change: ChangeArg,
     return spec_loop.review_facts(_db(), folder, reviewer)
 
 
-@_tool(needs_store=False, items=20, keep=("next",),
+@_tool(needs_store=False, items=20, keep=("next", "blocking"),
        more="Lists were cut to keep this answer short; `page` has the whole review page and `spec_review_facts` the facts.")
 def review_pr(base: Annotated[Optional[str], Field(description="The branch the change will merge into, or a commit."
                                                              " Default: origin's default branch, else main.")] = None,
@@ -912,8 +912,11 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
     """Review a change someone else wrote, with no spec: a branch or a pull request, checked out here. Maps the commit
     it left its base at, compares it with the checkout, and returns a page saying what changed, what it reaches and
     did not change (callers of a changed signature, the other ends of channels its edits touch, removed code still
-    called), and which tests run it. Then run the adversarial review on the returned `change_id` with
-    `spec_review_facts` and `spec_finding`, as for a spec."""
+    called), and which tests run it. `blocking` lists, one line each, what holds up the merge under the project's
+    gate (`[pr] blocking` in openspec/leyline.toml; by default unedited callers of a changed signature, removed code
+    still called, confirmed error rules newly failing, and open high findings), and `gate_passed` is true when
+    nothing does. Then run the adversarial review on the returned `change_id` with `spec_review_facts` and
+    `spec_finding`, as for a spec."""
     from . import pr
     try:
         with _lock:
@@ -925,10 +928,14 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
         return {"error": str(e)}
     if "error" in r:
         return r
-    return {"change_id": r["change_id"], "page": pr.text(r), "written": r["page"], "size": r["size"],
+    g = r["gate"]
+    return {"change_id": r["change_id"], "gate_passed": g["passed"], "blocking": g["blocking"],
+            "gate": {"kinds": g["kinds"], "config": g["config"] or "the default", "notes": g["notes"]},
+            "page": pr.text(r), "written": r["page"], "size": r["size"],
             "reaches": r["reaches"], "tests": r["tests"], "other_files": r["other_files"], "house_rules": r["house_rules"],
-            "next": [f"Run the leyline-adversarial-review skill on {r['change_id']}: spec_review_facts with reviewer logic,"
-                     " then performance; file findings with spec_finding. Show the person the page."]}
+            "next": ([f"Blocked: {g['next']}."] if not g["passed"] else [])
+            + [f"Run the leyline-adversarial-review skill on {r['change_id']}: spec_review_facts with reviewer logic,"
+               " then performance; file findings with spec_finding. Show the person the page."]}
 
 
 @_tool(needs_store=False, items=15, keep=("items", "next"),

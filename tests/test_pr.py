@@ -190,3 +190,145 @@ def test_the_description_follows_the_commits_and_keeps_what_a_person_said(tmp_pa
     assert "Make counting and doubling agree" in said(page)
     page = run("pr", "main")[1]
     assert "Make counting and doubling agree" in said(page) and "commit messages" not in said(page)
+
+
+# -- the gate: `leyline pr --gate` exits 1 while something that blocks is left ----------------------------
+def gate_of(page: str) -> str:
+    return page.split("## Gate")[1].split("\n## ")[0]
+
+
+def fix_the_branch(root):
+    """Update the caller `count` that the branch forgot, and stop `double` calling the removed `helper`."""
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p, \"utf-8\"))")
+                   .replace("return helper(x)", "return x * 2"))
+    git(root, "commit", "-qam", "Update the callers")
+
+
+def configure(root, text):
+    (root / "openspec").mkdir(exist_ok=True)
+    (root / "openspec/leyline.toml").write_text(text)
+
+
+def test_a_review_exits_0_without_gate_even_with_blockers(branch, monkeypatch):
+    monkeypatch.chdir(branch)
+    code, out = run("pr", "main")
+    assert code == 0
+    gate = gate_of(out)
+    assert "**Blocked** by 2 things" in gate and "(the default; `leyline pr --gate` exits 1 when blocked)" in gate
+    assert "`use.py.count` calls code whose signature changed, and was not edited" in gate
+    assert "`helper` was removed and is still called by `double`" in gate
+    assert out.rstrip().splitlines()[-1].startswith("Next: update the call in `use.py.count`")
+    page = (branch / ".leyline/reviews/pr-feature.md").read_text()
+    assert "## Gate" in page and "Next: update the call in `use.py.count`" in page
+    assert run("pr", "main", "--json")[0] == 0
+
+
+def test_the_gate_fails_on_an_unedited_caller_and_passes_once_fixed(branch, monkeypatch):
+    monkeypatch.chdir(branch)
+    configure(branch, '[pr]\nblocking = ["unedited-callers"]\n')
+    code, out = run("pr", "main", "--gate")
+    assert code == 1
+    assert "**Blocked** by 1 thing" in gate_of(out) and "set in openspec/leyline.toml" in gate_of(out)
+    code, out = run("pr", "main", "--gate", "--json")
+    r = json.loads(out)
+    assert code == 1 and r["gate"]["passed"] is False
+    assert r["gate"]["blocking"] == ["`use.py.count` calls code whose signature changed, and was not edited"]
+    fix_the_branch(branch)   # a re-review after a new commit judges the gate again from what is there now
+    code, out = run("pr", "main", "--gate")
+    assert code == 0 and "**Passes.** Nothing that blocks is left." in gate_of(out)
+    assert "Next: have it reviewed" in out
+
+
+def test_the_project_narrows_and_widens_what_blocks(branch, monkeypatch):
+    monkeypatch.chdir(branch)
+    configure(branch, '[pr]\nblocking = ["still-called"]\n')
+    code, out = run("pr", "main", "--gate")
+    assert code == 1 and "**Blocked** by 1 thing" in gate_of(out) and "`helper` was removed" in gate_of(out)
+    configure(branch, "[pr]\nblocking = []\n")
+    code, out = run("pr", "main", "--gate")
+    assert code == 0 and "Blocking: nothing (set in openspec/leyline.toml" in gate_of(out)
+
+    fix_the_branch(branch)
+    configure(branch, "")   # the default: nothing the map shows broken is left
+    assert run("pr", "main", "--gate")[0] == 0
+    # wider: the client that reads what the edited route answers, which the branch did not edit
+    configure(branch, '[pr]\nblocking = ["unedited-callers", "other_ends", "no such kind"]\n')
+    code, out = run("pr", "main", "--gate")
+    gate = gate_of(out)
+    assert code == 1 and "`client.ts.items`" in gate and "Blocking: unedited-callers, other-ends" in gate
+    assert "names \"no such kind\" under [pr], which is not a kind" in gate
+
+
+def test_an_open_high_finding_blocks_and_a_resolved_one_does_not(branch, monkeypatch):
+    monkeypatch.chdir(branch)
+    fix_the_branch(branch)
+    assert run("pr", "main", "--gate")[0] == 0
+    con = store.connect(branch / ".leyline/leyline.db")
+    count = con.execute("SELECT id FROM nodes WHERE name = 'count'").fetchone()[0]
+    con.close()
+    run("spec", "finding", "pr-feature", "--reviewer", "logic", "--severity", "low",
+        "--claim", "count could say what it counts", "--evidence", count)
+    assert run("pr", "main", "--gate")[0] == 0     # a low finding is not in the default set
+    out = run("spec", "finding", "pr-feature", "--reviewer", "logic", "--severity", "high",
+              "--claim", "count reads the whole file into memory.", "--evidence", count)[1]
+    high = json.loads(out)["id"]
+    code, out = run("pr", "main", "--gate")
+    assert code == 1
+    assert f"- open high finding {high}: count reads the whole file into memory." in gate_of(out)
+    assert f"Next: fix what finding {high} says, or have the person resolve it" in out
+    assert run("spec", "resolve", high, "rejected", "it is small")[0] == 0
+    assert run("pr", "main", "--gate")[0] == 0
+    configure(branch, '[pr]\nblocking = ["open-findings"]\n')   # wider: any open finding, the low one too
+    code, out = run("pr", "main", "--gate")
+    assert code == 1 and "open low finding" in gate_of(out)
+
+
+def test_a_confirmed_error_rule_newly_failing_blocks(branch, monkeypatch):
+    from leyline import rules
+    monkeypatch.chdir(branch)
+    fix_the_branch(branch)
+    run("pr", "main")
+    con = store.connect(branch / ".leyline/leyline.db")
+    rules.add_rule(con, "forbid", "path:app/use.py", "path:app/other.py", status="confirmed")
+    rules.add_rule(con, "forbid", "path:app/use.py", "path:app/store.py", status="suggested")   # never blocks
+    con.close()
+    assert run("pr", "main", "--gate")[0] == 0
+    use = branch / "app/use.py"
+    use.write_text("from app.other import unrelated\n" + use.read_text().replace("return x * 2", "return unrelated() * x"))
+    git(branch, "commit", "-qam", "Use other")
+    code, out = run("pr", "main", "--gate")
+    assert code == 1 and "forbid path:app/use.py -> path:app/other.py) now fails" in gate_of(out)
+    assert "path:app/store.py" not in gate_of(out)
+
+
+def guess_repo(root, param: str):
+    """`Repo.fetch_rows` gains a parameter and its one caller, `run`, is not edited. When `run`'s parameter has no
+    type the map links `r.fetch_rows(1)` by name only, as a guess; typed `r: Repo`, the link is certain."""
+    files = {"app/repo.py": "class Repo:\n    def fetch_rows(self, q):\n        return [q]\n",
+             "app/use.py": f"from app.repo import Repo\n\n\ndef run({param}):\n    return r.fetch_rows(1)\n"}
+    for f, text in files.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    (root / "app/repo.py").write_text("class Repo:\n    def fetch_rows(self, q, limit):\n        return [q][:limit]\n")
+    git(root, "commit", "-qam", "Limit the rows")
+    return root
+
+
+def test_a_caller_linked_only_by_a_guess_does_not_block(tmp_path, monkeypatch):
+    root = guess_repo(tmp_path / "guess", "r")
+    monkeypatch.chdir(root)
+    code, out = run("pr", "main", "--gate")
+    assert "Signature: `Repo.fetch_rows` (self, q) -> (self, q, limit)" in out
+    assert "**Not edited, calls changed code:** `use.py.run` (its call must change (link is a guess))" in out
+    assert code == 0 and "**Passes.**" in gate_of(out)
+    assert "Left out of the gate: 1 item below that rest only on links the map guessed by name" in gate_of(out)
+
+    sure = guess_repo(tmp_path / "sure", "r: Repo")   # the same caller, linked for certain
+    monkeypatch.chdir(sure)
+    code, out = run("pr", "main", "--gate")
+    assert code == 1 and "`use.py.run` calls code whose signature changed" in gate_of(out)
