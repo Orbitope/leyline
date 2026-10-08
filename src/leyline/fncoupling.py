@@ -83,7 +83,7 @@ def _hunks(root: Path, commits: list[str], paths: list[str]) -> dict:
         if ln.startswith(b"\x01"):
             cur, path = ln[1:].decode().strip(), None
         elif ln.startswith(b"+++ "):
-            p = ln[4:].decode("utf-8", "replace")
+            p = ln[4:].decode("utf-8", "replace").removesuffix("\t")   # git ends a path with a space in it with a tab
             path = p[2:] if p.startswith("b/") else None   # /dev/null: the file was deleted
         elif ln.startswith(b"@@") and cur and path:
             m = HUNK.match(ln)
