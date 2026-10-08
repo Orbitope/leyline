@@ -33,6 +33,9 @@ CALLABLE_DECLS = {
 }
 ACCESS = ("public", "private", "protected", "internal")
 LAMBDAS = ("lambda_expression", "anonymous_method_expression")
+# `this` and `base` as the grammar names them: this_expression in older releases, this from 0.23 on.
+THIS = ("this_expression", "this")
+BASE = ("base_expression", "base")
 
 
 LITERALS = {"integer_literal": "int", "real_literal": "double", "boolean_literal": "bool", "character_literal": "char",
@@ -769,7 +772,7 @@ class _Walker:
             return scope.get(_text(expr) + "[]") or own.get(_text(expr) + "[]")
         if expr.type == "member_access_expression":
             inner = expr.child_by_field_name("expression")
-            if inner is not None and inner.type == "this_expression":
+            if inner is not None and inner.type in THIS:
                 return own.get(_text(expr.child_by_field_name("name")) + "[]")
         return None
 
@@ -800,7 +803,7 @@ class _Walker:
             if n.type == "member_access_expression":
                 expr = n.child_by_field_name("expression")
                 name = _text(n.child_by_field_name("name"))
-                if expr is not None and expr.type == "this_expression":
+                if expr is not None and expr.type in THIS:
                     return self.field_types.get(type_id or "", {}).get(name)
         return None
 
@@ -963,9 +966,9 @@ class _Walker:
             return None, None
         t = expr.type
         own = self.field_types.get(type_id or "", {})
-        if t == "this_expression":
+        if t in THIS:
             return "this", None
-        if t == "base_expression":
+        if t in BASE:
             return "base", None
         if t == "identifier":
             nm = _text(expr)
@@ -976,7 +979,7 @@ class _Walker:
         if t == "member_access_expression":
             inner = expr.child_by_field_name("expression")
             nm = _text(expr.child_by_field_name("name"))
-            if inner is not None and inner.type == "this_expression":
+            if inner is not None and inner.type in THIS:
                 return nm, own.get(nm)
             # a.b.Call(): the receiver is member b of something; mark it as chained.
             return "." + nm, None
