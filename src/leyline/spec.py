@@ -25,7 +25,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +84,7 @@ def parse(change_dir: str | Path) -> dict:
     else:
         out["problems"].append("proposal.md is missing")
     tasks = d / "tasks.md"
+    keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
     if tasks.is_file():
         n = 0
         for line in tasks.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -94,8 +95,10 @@ def parse(change_dir: str | Path) -> dict:
             text = m.group(3)
             lower = text.lower().lstrip("`* ")
             action = next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)), "behavior")
-            out["tasks"].append({"key": m.group(2) or str(n), "text": text, "done": m.group(1).strip().lower() == "x",
-                                 "action": action, "names": CODE.findall(text)})
+            key = m.group(2) or str(n)
+            keys[key] += 1
+            out["tasks"].append({"key": key if keys[key] == 1 else f"{key} ({keys[key]})", "text": text,
+                                 "done": m.group(1).strip().lower() == "x", "action": action, "names": CODE.findall(text)})
     else:
         out["problems"].append("tasks.md is missing")
     for spec in sorted((d / "specs").rglob("spec.md")) if (d / "specs").is_dir() else []:
@@ -109,7 +112,14 @@ def parse(change_dir: str | Path) -> dict:
                 req = line.split(":", 1)[1].strip()
                 out["requirements"].append({"capability": capability, "name": req, "kind": section or "ADDED"})
             elif line.startswith("#### Scenario:"):
-                cur = {"key": f"{capability}/{line.split(':', 1)[1].strip()}", "name": line.split(":", 1)[1].strip(),
+                name = line.split(":", 1)[1].strip()
+                key = f"{capability}/{name}"
+                keys[key] += 1
+                if keys[key] > 1:   # one test of that name would prove both
+                    out["problems"].append(f"{spec.relative_to(d)}: two scenarios are named \"{name}\"; a scenario is"
+                                           " proven by the test of its name, so give each its own")
+                    key += f" ({keys[key]})"
+                cur = {"key": key, "name": name,
                        "requirement": req, "capability": capability, "kind": section or "ADDED", "when": [], "then": []}
                 out["scenarios"].append(cur)
             elif cur is not None and re.match(r"^\s*[-*]\s*\*\*(WHEN|GIVEN|AND|THEN)\*\*", line):
@@ -1280,6 +1290,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     own_checks = _self_tests(con, [r for r in (before_run, after_run) if r])
 
     scenarios, scenario_ran = [], {}
+    scenario_name = {s["key"]: s["name"] for s in parsed["scenarios"]}
     for s in parsed["scenarios"]:
         tid = tests.get(_norm(s["name"]))
         gen = None if tid else _generated(test_names, s["name"])
@@ -1333,10 +1344,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         unproven = []
         for key in extra.get("scenarios", []):       # a task to write a scenario's test is done when that test exists or ran
             want += 1
-            there = _norm(key.split("/", 1)[-1]) in tests or scenario_ran.get(key, False)
+            title = scenario_name.get(key, key.split("/", 1)[-1])
+            there = _norm(title) in tests or scenario_ran.get(key, False)
             got += there
             if not there:
-                unproven.append(f"a result for the test \"{key.split('/', 1)[-1]}\"")
+                unproven.append(f"a result for the test \"{title}\"")
         if not want and extra.get("into"):           # "add something to `Foo`": done when something inside Foo is new or edited
             want = 1
             files = {r[0] for i in extra["into"] for r in con.execute("SELECT node_id FROM ancestry WHERE file_id = ? OR module_id = ?", (i, i))}

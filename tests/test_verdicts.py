@@ -280,3 +280,34 @@ def test_task_verdicts(loud):
     t = {t["key"]: t for t in v["tasks"]}
     assert t["1.1"]["verdict"] == "proven" and t["1.5"]["state"] == "partly" and t["1.5"]["verdict"] == "partial"
     assert "not Engine.child" in t["1.5"]["verdict_why"]
+
+
+def test_task_numbers_that_restart_in_each_section(loud):
+    """Numbering that restarts under each heading (`1.` twice) crashed the plan on a duplicate key; each task is judged."""
+    work, ch, db = loud
+    (ch / "tasks.md").write_text("## Engine\n- [ ] 1. Change `Engine.start` to return the name in upper case\n"
+                                 "- [ ] 2. Add `Engine.shout`, the name with an exclamation mark\n"
+                                 "## Tests\n- [ ] 1. Add the test \"Shout\"\n")
+    c = store.connect(db)
+    b = spec.brief(c, ch)
+    c.close()
+    assert [t["key"] for t in b["tasks"]] == ["1", "2", "1 (2)"]
+    _implement(work)
+    v = _check(work, db, ch, AFTER)
+    assert {t["key"]: t["verdict"] for t in v["tasks"]} == {"1": "proven", "2": "proven", "1 (2)": "proven"}
+    assert v["done_as_agreed"], v["why_not"]
+
+
+def test_two_scenarios_with_one_name(loud):
+    """Two requirements each with a scenario named "Start" crashed the plan on a duplicate key; it is a gap instead."""
+    work, ch, db = loud
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        SPEC + "\n### Requirement: Quiet names\nThe engine SHALL start.\n\n"
+               "#### Scenario: Start\n- **WHEN** an engine starts\n- **THEN** it returns\n")
+    c = store.connect(db)
+    b = spec.brief(c, ch)
+    c.close()
+    assert any('two scenarios are named "Start"' in g for g in b["gaps"]) and not b["ready"]
+    _implement(work)
+    v = _check(work, db, ch, AFTER)
+    assert [s["verdict"] for s in v["scenarios"] if s["name"] == "Start"] == ["proven", "proven"]
