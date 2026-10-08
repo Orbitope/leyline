@@ -548,11 +548,12 @@ def impact(node_id: NodeId,
     gives a fuller assessment and saves it as a view."""
     if (err := _known(node_id)):
         return err
-    r = query.impact(_db(), node_id, max_depth)
+    r = query.impact(_db(), node_id, max_depth, limit)
     mods = r["by_module"]
     for m in mods:
-        if len(m["direct"]) > 5:
-            m["direct"], m["direct_more"] = m["direct"][:5], len(m["direct"]) - 5
+        total = m.pop("direct_total", len(m["direct"]))
+        if total > 5:
+            m["direct"], m["direct_more"] = m["direct"][:5], total - 5
     r["by_module"] = {"total": len(mods), "items": mods[:limit]}
     r["flows_through"]["items"] = r["flows_through"]["items"][:limit]
     return r
