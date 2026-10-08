@@ -18,7 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[scip]" pytest
+      # The generic-adapter tests need the extra grammars, as in test.yml. Ubuntu has a wheel for each of them.
+      - run: pip install -e ".[scip,languages]" pytest
       - run: python -m pytest -q
 
   build:
