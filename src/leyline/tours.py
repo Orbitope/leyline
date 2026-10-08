@@ -66,16 +66,22 @@ def generate(con, repo_id: str) -> dict:
     mods = {r["id"]: r for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ?", repo_id)}
     if not mods:
         return {"stops": 0}
-    module = {r["node_id"]: r["module_id"] for r in q("SELECT node_id, module_id FROM ancestry")}
+    # The few module ids and kinds are one string each: every row read gives its own copy, and on a large
+    # repository the copies were hundreds of MB.
+    share = {}
+    share = share.setdefault
+    module = {r[0]: share(r[1], r[1]) for r in con.execute("SELECT node_id, module_id FROM ancestry")}
     names, kind_of, parent = {}, {}, {}
     for r in con.execute("SELECT id, name, kind, parent_id FROM nodes WHERE repo_id = ?", (repo_id,)):   # one pass, not three
-        names[r[0]], kind_of[r[0]], parent[r[0]] = r[1], r[2], r[3]
+        names[r[0]], kind_of[r[0]], parent[r[0]] = r[1], share(r[2], r[2]), r[3]
 
     def qual(i):
         p = parent.get(i)
         return f"{names[p]}.{names[i]}" if kind_of.get(p) == "type" and kind_of.get(i) in ("callable", "field") else names.get(i, i)
-    flows = q("SELECT id, name, entry_id, attrs FROM flows WHERE entry_id IN (SELECT id FROM nodes WHERE repo_id = ?)", repo_id)
-    flow_kind = {f["id"]: (json.loads(f["attrs"] or "{}").get("kind")) for f in flows}
+    # Only each flow's kind is read from its attrs, which list every module the flow passes (hundreds of MB in all).
+    flows = q("SELECT id, name, entry_id, json_extract(attrs, '$.kind') AS kind FROM flows"
+              " WHERE entry_id IN (SELECT id FROM nodes WHERE repo_id = ?)", repo_id)
+    flow_kind = {f["id"]: f["kind"] for f in flows}
     test_mods = {module.get(f["entry_id"]) for f in flows if flow_kind[f["id"]] == "test"} - {None}
 
     def side(m):  # samples, docs, benchmarks and test helpers: real code, but not the product
@@ -87,7 +93,7 @@ def generate(con, repo_id: str) -> dict:
     deps, users = defaultdict(set), defaultdict(set)
     for sql in ("SELECT src_id, dst_id FROM calls",
                 "SELECT src_id, dst_id FROM edges WHERE kind IN ('imports','uses_type','instantiates','extends','implements')"):
-        for r in q(sql):
+        for r in con.execute(sql):   # read as they come: held all at once, millions of rows were GBs
             a, b = module.get(r[0], r[0] if r[0] in mods else None), module.get(r[1], r[1] if r[1] in mods else None)
             if a and b and a != b and a in mods and b in mods:
                 deps[a].add(b)

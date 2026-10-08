@@ -52,38 +52,69 @@ class _Parsed(dict):
         return self[key] if key in self.text else default
 
 
+# A node as _Graph keeps it: a tuple, these fields.
+_ID, _KIND, _NAME, _PARENT, _LANG, _PATH = range(6)
+_ATTR_EDGES = ("uses_type", "communicates")   # the edge kinds whose attrs a matcher reads
+
+
 class _Graph:
     def __init__(self, con):
-        self.nodes = {r["id"]: r for r in con.execute(
-            "SELECT id, kind, name, parent_id, language, path, attrs FROM nodes WHERE layer = 'fact'")}
-        self.attrs = _Parsed({i: r["attrs"] for i, r in self.nodes.items()})
+        # Each id is one string, used everywhere the node is named, and the few kinds, languages, paths and modules
+        # are one string each: every row read gives its own copies, and on a large repository the copies were
+        # most of what this held (GBs).
+        share = {}
+        share = share.setdefault
+        nodes = self.nodes = {}
+        text = {}
+        for r in con.execute("SELECT id, kind, name, parent_id, language, path, attrs FROM nodes WHERE layer = 'fact'"):
+            i = r[0]
+            nodes[i] = (i, share(r[1], r[1]), r[2], r[3], share(r[4], r[4]), share(r[5], r[5]))
+            text[i] = r[6]
+        for i, n in nodes.items():
+            p = nodes.get(n[_PARENT])
+            if p is not None and p[_ID] is not n[_PARENT]:
+                nodes[i] = (n[0], n[1], n[2], p[_ID], n[4], n[5])
+        self.attrs = _Parsed(text)
         self.children = defaultdict(list)
-        for i, r in self.nodes.items():
-            self.children[r["parent_id"]].append(i)
+        for i, n in nodes.items():
+            self.children[n[_PARENT]].append(i)
         self.out = defaultdict(lambda: defaultdict(set))
         self.inn = defaultdict(lambda: defaultdict(set))
         edge_attrs = {}
         for e in con.execute("SELECT kind, src_id, dst_id, attrs FROM edges WHERE kind != 'contains'"):
-            self.out[e["kind"]][e["src_id"]].add(e["dst_id"])
-            self.inn[e["kind"]][e["dst_id"]].add(e["src_id"])
-            edge_attrs[(e["kind"], e["src_id"], e["dst_id"])] = e["attrs"]
+            kind, src, dst = share(e[0], e[0]), e[1], e[2]
+            n = nodes.get(src)
+            src = n[_ID] if n is not None else src
+            n = nodes.get(dst)
+            dst = n[_ID] if n is not None else dst
+            self.out[kind][src].add(dst)
+            self.inn[kind][dst].add(src)
+            if kind in _ATTR_EDGES:
+                edge_attrs[(kind, src, dst)] = e[3]
         self.edge_attrs = _Parsed(edge_attrs)
         self.calls = defaultdict(set)
         for c in con.execute("SELECT DISTINCT src_id, dst_id FROM calls"):
-            self.calls[c["src_id"]].add(c["dst_id"])
-        self.module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
+            src, dst = c[0], c[1]
+            n = nodes.get(src)
+            src = n[_ID] if n is not None else src
+            n = nodes.get(dst)
+            self.calls[src].add(n[_ID] if n is not None else dst)
+        self.module = {}
+        for r in con.execute("SELECT node_id, module_id FROM ancestry"):
+            n = nodes.get(r[0])
+            self.module[n[_ID] if n is not None else r[0]] = share(r[1], r[1])
         self.test_files, self.test_modules = store.test_places(con)
 
     def kind(self, i):
-        return self.nodes[i]["kind"] if i in self.nodes else None
+        return self.nodes[i][_KIND] if i in self.nodes else None
 
     def name(self, i):
         if i not in self.nodes:
             return i
         n = self.nodes[i]
-        if n["kind"] == "type" and "`" in i.rsplit(".", 1)[-1]:
-            return n["name"] + "<T>"  # tell Foo<T> from Foo
-        return n["name"]
+        if n[_KIND] == "type" and "`" in i.rsplit(".", 1)[-1]:
+            return n[_NAME] + "<T>"  # tell Foo<T> from Foo
+        return n[_NAME]
 
     def qual(self, i):
         """A member with its owner: Simulation.Step."""
@@ -103,9 +134,9 @@ class _Graph:
 
     def owner(self, i) -> Optional[str]:
         """The type a member belongs to."""
-        cur = self.nodes[i]["parent_id"] if i in self.nodes else None
-        while cur in self.nodes and self.nodes[cur]["kind"] != "type":
-            cur = self.nodes[cur]["parent_id"]
+        cur = self.nodes[i][_PARENT] if i in self.nodes else None
+        while cur in self.nodes and self.nodes[cur][_KIND] != "type":
+            cur = self.nodes[cur][_PARENT]
         return cur if cur in self.nodes else None
 
     def fields(self, t):
@@ -117,11 +148,11 @@ class _Graph:
     def is_abstraction(self, t) -> bool:
         a = self.attrs.get(t, {})
         return a.get("native_kind") == "interface" or bool(a.get("is_abstract")) or (
-            self.nodes[t]["language"] == "python" and len(self.subtypes(t)) >= 2)
+            self.nodes[t][_LANG] == "python" and len(self.subtypes(t)) >= 2)
 
     def in_tests(self, i) -> bool:
         """Test code, and code beside the product: samples, benchmarks, docs."""
-        path = (self.nodes[i]["path"] or "") if i in self.nodes else ""
+        path = (self.nodes[i][_PATH] or "") if i in self.nodes else ""
         parts = [p.lower() for p in path.split("/")[:-1]]
         return (self.module.get(i) in self.test_modules or path in self.test_files
                 or any(p.startswith("test") or p in SIDE_DIRS for p in parts))
@@ -165,7 +196,7 @@ def detect(con) -> list[dict]:
                       "confidence": confidence or CONFIDENCE[pattern],
                       "in_tests": g.in_tests(anchor.split("|")[0]) if peripheral is None else peripheral})
 
-    types = [i for i, r in g.nodes.items() if r["kind"] == "type"]
+    types = [i for i, r in g.nodes.items() if r[_KIND] == "type"]
     wrappers: dict[str, set] = defaultdict(set)   # abstraction -> types already explained as decorator/composite
 
     # Decorator and composite first: a wrapper also holds the abstraction, and should not count as a strategy's context.
@@ -221,7 +252,7 @@ def detect(con) -> list[dict]:
             continue
         own = g.methods(t)
         overridden = {m for m in own if g.inn["overrides"][m]}
-        hooks_all = {m for m in overridden if g.attrs[m].get("is_virtual") or g.nodes[m]["language"] == "python"}
+        hooks_all = {m for m in overridden if g.attrs[m].get("is_virtual") or g.nodes[m][_LANG] == "python"}
         if not hooks_all:
             continue
         for m in own:
@@ -279,7 +310,7 @@ def detect(con) -> list[dict]:
                 continue  # a marker type with no behavior: creating several of them is not a choice between implementations
             a = g.attrs[f]
             rets = [n.split("`")[0] for n in (a.get("returns_names") or ([a["returns"]] if a.get("returns") else []))]
-            returns_base = bool(rets) and rets[0] == g.nodes[base]["name"]
+            returns_base = bool(rets) and rets[0] == g.nodes[base][_NAME]
             kinds = f"{len(products)} kinds of {g.name(base)} ({', '.join(g.name(p) for p in sorted(products)[:4])})"
             if returns_base:
                 add("factory", f, {"factory": [f], "product": list(products), "product type": [base]},
@@ -373,10 +404,12 @@ def label(con, pattern: str, roles: dict, rationale: str, confidence: float = 0.
 def listing(con, pattern: Optional[str] = None, node_id: Optional[str] = None, include_tests: bool = False,
             limit: int = 100) -> dict:
     """Pattern labels, optionally of one kind or touching one node (or anything inside it)."""
-    names = {r["id"]: (r["name"], r["kind"], r["path"]) for r in con.execute("SELECT id, name, kind, path FROM nodes")}
+    share = {}   # one string for each kind, path and module, not one per row (hundreds of MB on a large repository)
+    share = share.setdefault
+    names = {r[0]: (r[1], share(r[2], r[2]), share(r[3], r[3])) for r in con.execute("SELECT id, name, kind, path FROM nodes")}
     test_mods = {r[0] for r in con.execute(
         "SELECT DISTINCT a.module_id FROM nodes n JOIN ancestry a ON a.node_id = n.id WHERE n.kind = 'test'")}
-    module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
+    module = {r[0]: share(r[1], r[1]) for r in con.execute("SELECT node_id, module_id FROM ancestry")}
     out, counts = [], defaultdict(int)
     for p in con.execute("SELECT * FROM pattern_instances ORDER BY confidence DESC, pattern, id"):
         roles = defaultdict(list)

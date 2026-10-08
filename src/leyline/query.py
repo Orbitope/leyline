@@ -604,8 +604,10 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
     """Fields assigned from outside the type that declares them, most widely written first.
     `scope` narrows to a module, type or path prefix of the field's id. `guesses=False` leaves out links found only
     by a unique field name."""
-    parent = {r["id"]: (r["parent_id"], r["kind"]) for r in con.execute("SELECT id, parent_id, kind FROM nodes")}
-    module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
+    share = {}   # one string for each kind and module, not one per row (hundreds of MB on a large repository)
+    share = share.setdefault
+    parent = {r[0]: (r[1], share(r[2], r[2])) for r in con.execute("SELECT id, parent_id, kind FROM nodes")}
+    module = {r[0]: share(r[1], r[1]) for r in con.execute("SELECT node_id, module_id FROM ancestry")}
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
     tests = {r[0] for r in con.execute("SELECT entry_id FROM flows WHERE json_extract(attrs, '$.kind') = 'test'")}
     test_mods = {module.get(t) for t in tests}

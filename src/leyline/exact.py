@@ -299,9 +299,10 @@ def apply(ix, records: list[dict], source: str, repo: Optional[str] = None) -> d
                     g["open"] = True
     if groups:
         sites = defaultdict(int)   # how many times the syntax pass saw (function, name) called
-        for res in ix.results.values():
-            for c in res.calls:
+        for fid, res in ix.results.items():
+            for c in ix._open(fid, res).calls:
                 sites[(c.src_id, c.name)] += 1
+        ix._shut()
         kept = []
         have = defaultdict(set)
         for row in ix.calls:

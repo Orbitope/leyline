@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
-from . import store
+from . import packing, store
 from .adapters import BY_EXTENSION, BY_LANGUAGE
 from .adapters.python import module_path
 from .model import CallSite, Edge, Endpoint, FieldUse, FileResult, Node
@@ -424,14 +424,15 @@ def _parse_one(job):
     """Parse one file: (path, ext, module dir, module id, lines, sha1, pickled (result, declarations) or None,
     error or None, the names the result mentions). Runs in a worker process on large repositories, so it touches
     nothing but its arguments. The result comes back pickled because that is how it would cross from the worker
-    anyway, and the same bytes are what the parse cache keeps (leyline.incremental)."""
+    anyway, and the same bytes are what the parse cache keeps (leyline.incremental); its calls are packed apart
+    (leyline.packing)."""
     from .incremental import mentions
     try:
         out = _parse_file(job)
         res, decls = out[6], out[8]
         if res is None:
             return (*out[:6], None, out[7], b"")
-        return (*out[:6], pickle.dumps((res, decls), protocol=pickle.HIGHEST_PROTOCOL), None, mentions(res, decls))
+        return (*out[:6], packing.pack(res, decls), None, mentions(res, decls))
     except Exception as exc:   # MemoryError, or a result that will not pickle: the file fails, not the run
         f, ext, mod_dir, mod_id = job[2]
         return f, ext, mod_dir, mod_id, 1, None, None, f"{type(exc).__name__}: {exc}"[:300], b""
@@ -690,7 +691,8 @@ class FlowSteps:
     def __init__(self):
         self.flows: list[tuple] = []          # (flow id, index of its first step)
         self.callable: list[str] = []         # the node ids themselves, shared with the nodes
-        self.depth, self.via, self.line, self.parent = array("i"), array("b"), array("q"), array("q")
+        # depth is at most the walk's max_depth, a parent is a step of the same flow, and a line is under 10**9
+        self.depth, self.via, self.line, self.parent = array("h"), array("b"), array("i"), array("i")
         self.via_names: list[str] = []
         self._via: dict[str, int] = {}
 
@@ -786,6 +788,12 @@ class Indexer:
         self.edges: list[Edge] = []
         self.calls: list[tuple] = []
         self.results: dict[str, FileResult] = {}  # file id -> adapter output
+        # On a large repository, file id -> its calls and field uses, packed (leyline.packing); see _open
+        self._packed: dict[str, bytes] = {}
+        self._packed_decls: dict[str, bytes] = {}
+        self._opened: Optional[list] = None      # [file id, result, changed] of the one file unpacked now
+        self._ckeys: Optional[dict] = None
+        self._file_index: dict[str, int] = {}
         self.file_lang: dict[str, str] = {}
         self.file_of_path: dict[str, str] = {}
         self._decl_cache: dict[str, dict] = {}
@@ -888,12 +896,17 @@ class Indexer:
             from . import channels as more
             more.resolve(self)   # dependency injection, queues, databases, RPC
         self._timed("channels", channels)
+        if not self.keep_results:
+            # Flows and the write are left, which read nodes, edges, calls (with their columns) and flows. What the
+            # parse and the resolvers held (GBs on a large repository) is let go first, so the flows' lists and the
+            # write's reuse that memory instead of adding to it.
+            for held in (self.results, self._read_decls, self._decl_cache, self._name_ix, self._sets, self._text_cache,
+                         getattr(self, "_chain_memo", {}), self._packed, self._packed_decls,
+                         getattr(self, "_decls_unpacked", {})):
+                held.clear()
         self._timed("flows", self._build_flows)
         if not self.keep_results:
-            # Only the write is left, which reads nodes, edges, calls and flows. What the resolvers held (a GB on
-            # a large repository) is let go first, so the write's own lists reuse that memory instead of adding to it.
-            for held in (self.results, self._read_decls, self._decl_cache, self._name_ix, self._sets, self._vis_cache,
-                         self._text_cache, self.call_col, getattr(self, "_chain_memo", {})):
+            for held in (self._vis_cache, self.call_col, self._loose_reach):
                 held.clear()
         self._timed("write", self._write, con)
         return {k: dict(v) for k, v in self.stats.items()}
@@ -918,12 +931,18 @@ class Indexer:
         cached = cache.lookup(repo, root, work) if cache is not None else {}
         fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached])
         failed_here = self.failed.setdefault(repo, [])
+        packs = packing.packs(len(work))
         for w in work:
-            got = cached.get(w[0]) or next(fresh)
+            got = cached.pop(w[0], None)   # let go as it is used: on a large repository the blobs add up
+            fresh_one = got is None
+            if fresh_one:
+                got = next(fresh)
             f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
             if cache is not None:
-                cache.keep(f"{repo}:file:{f}", got, w[0] not in cached)
-            res, decls = pickle.loads(blob) if blob is not None else (None, None)
+                cache.keep(f"{repo}:file:{f}", got, fresh_one)
+            del got
+            res, heavy, decls = packing.unpack(blob) if blob is not None else (None, None, None)
+            blob = None
             adapter = BY_EXTENSION[ext]
             file_id = f"{repo}:file:{f}"
             self._add(Node(id=file_id, kind="file", name=f.rsplit("/", 1)[-1], parent_id=mod_id,
@@ -935,15 +954,77 @@ class Indexer:
                 print(f"leyline: failed to parse {f}: {failed}", file=sys.stderr)
                 continue
             self.results[file_id] = res
-            if decls is not None:
-                self._read_decls[file_id] = decls
+            # Python's calls are kept unpacked: the argument-flow rule holds on to them after their file's turn.
+            if packs and adapter.LANGUAGE != "python":
+                self._packed[file_id] = heavy
+                if decls is not None:
+                    self._packed_decls[file_id] = decls
+            else:
+                res.calls, res.field_uses = packing.unpack_heavy(heavy)
+                if decls is not None:
+                    self._read_decls[file_id] = packing.unpack_decls(decls)
             self.file_of_path[f] = file_id
             self.file_lang[file_id] = adapter.LANGUAGE
             self.stats[adapter.NAME]["files"] += 1
             for n in res.nodes:
                 self._add(n)
+            if res.calls is not None:
+                self._share_ids(res)
             self.edges.extend(res.edges)
         next(fresh, None)   # lets the worker pool, if one was started, shut down
+
+    # -- packed calls (leyline.packing) -----------------------------------------
+    def _open(self, fid: str, res: FileResult) -> FileResult:
+        """The file's result with its calls and field uses in place. Packed ones are unpacked here, one file at a
+        time: opening a file lets go of the one opened before (packing it again if it was changed)."""
+        if res.calls is not None:
+            return res
+        self._shut()
+        res.calls, res.field_uses = packing.unpack_heavy(self._packed[fid])
+        self._share_ids(res)
+        self._opened = [fid, res, False]
+        return res
+
+    def _share_ids(self, res: FileResult) -> None:
+        """Point each call's and field use's caller at its node's own id string. Unpacked apart from the nodes,
+        each was a copy of it, and every call row made from the call kept that copy."""
+        nodes = self.nodes
+        for group in (res.calls, res.field_uses):
+            for c in group:
+                n = nodes.get(c.src_id)
+                if n is not None:
+                    c.src_id = n.id
+
+    def _shut(self) -> None:
+        if self._opened is None:
+            return
+        fid, res, changed = self._opened
+        if changed:
+            self._packed[fid] = packing.pack_heavy(res.calls, res.field_uses)
+        res.calls = res.field_uses = None
+        self._opened = self._ckeys = None
+
+    def _ckey(self, call: CallSite):
+        """What _chain_memo keeps a call's results under: the call itself while it lives, which for a packed file
+        is only while the file is open, so there a key that names the same call each time it is unpacked."""
+        if self._opened is None:
+            return id(call)
+        if self._ckeys is None:
+            fid = self._opened[0]
+            self._ckeys = packing.call_keys(self._opened[1], self._file_index.setdefault(fid, len(self._file_index)))
+        return self._ckeys.get(id(call), id(call))
+
+    def _decls_read(self, fid: Optional[str]) -> dict:
+        """node id -> (span, declarations) the parse read in a file, unpacked for the last file asked about."""
+        got = self._read_decls.get(fid)
+        if got is None and fid in self._packed_decls:
+            cache = self.__dict__.setdefault("_decls_unpacked", {})
+            got = cache.get(fid)
+            if got is None:
+                if len(cache) >= 2:
+                    cache.clear()
+                got = cache[fid] = packing.unpack_decls(self._packed_decls[fid])
+        return got or {}
 
     # -- structure -----------------------------------------------------------
     def _add(self, n: Node) -> None:
@@ -1212,7 +1293,7 @@ class Indexer:
             if top not in self.nodes or top + "#entry" in self.nodes or re.search(r"\.(test|spec|bench|config|setup|d)\.", base) \
                     or "/test/" in "/" + path or "/__tests__/" in "/" + path or any(n.kind == "test" for n in res.nodes):
                 continue
-            calls = [c for c in res.calls if c.src_id == top and not c.ref]
+            calls = [c for c in self._open(fid, res).calls if c.src_id == top and not c.ref]
             if len(calls) < 1:
                 continue
             ep = Node(id=top + "#entry", kind="entry_point", name=path, parent_id=fid, language="typescript", path=path,
@@ -1238,10 +1319,13 @@ class Indexer:
             if len(near) == 1:
                 n.parent_id = near[0]
                 n.attrs["type_id"] = near[0]
-                for res in (self.results.get(f"{_repo_of(n.id)}:file:{n.path}"),):
-                    for c in (res.calls if res else ()):
+                fid = f"{_repo_of(n.id)}:file:{n.path}"
+                for res in (self.results.get(fid),):
+                    for c in (self._open(fid, res).calls if res else ()):
                         if c.src_id == n.id and c.enclosing_type is None:
                             c.enclosing_type = near[0]
+                            if self._opened is not None:
+                                self._opened[2] = True   # packed again when it is let go
 
     def _find_module(self, fid: str, target: str) -> Optional[str]:
         if getattr(BY_LANGUAGE.get(self.file_lang[fid]), "GENERIC", False):
@@ -1815,7 +1899,7 @@ class Indexer:
     def _returned_type(self, lang: str, inner: CallSite, depth: int = 0) -> Optional[tuple]:
         """The type of a call's result, from the declared return type of what it resolves to.
         Returns (type id or None, known) like _receiver_type, or None when nothing can be said."""
-        key = id(inner)
+        key = self._ckey(inner)
         if key in self._chain_memo:
             return self._chain_memo[key]
         self._chain_memo[key] = None
@@ -1899,7 +1983,7 @@ class Indexer:
         self._py_fixtures()
         for fid, res in self._calls_pass(1):
             lang = self.file_lang[fid]
-            for call in res.calls:
+            for call in self._open(fid, res).calls:
                 if call.receiver not in (None, "this", "base") and call.name != ".ctor":
                     if lang in FILE_MODULE and (self._py_bound(fid, call.src_id, call.receiver) if lang == "python" else call.receiver in self.py_names[fid]):
                         continue
@@ -1912,7 +1996,7 @@ class Indexer:
             lang = self.file_lang[fid]
             adapter = BY_LANGUAGE[lang].NAME
             st = self.stats[adapter]
-            for call in res.calls:
+            for call in self._open(fid, res).calls:
                 if call.ref:
                     # A function handed over by name. Linked when the name is one of ours; otherwise it was a value.
                     self._guessed, self._call = False, None
@@ -1947,6 +2031,7 @@ class Indexer:
                             self._arg_log.append((t.id, call))
                     elif not targets:
                         self._pending.append(call)
+        self._shut()
         # Kept as lists on the indexer, so an incremental run records each file's share with its turn and replays it.
         incoming: dict[str, list] = defaultdict(list)   # Python: function -> the calls that reach it
         for tid, call in self._arg_log:
@@ -2105,7 +2190,7 @@ class Indexer:
         if got is None:
             n = self.nodes[holder]
             fid = self.file_of.get(holder)
-            read = self._read_decls.get(fid, {}).get(holder)
+            read = self._decls_read(fid).get(holder)
             if read is not None and read[:2] == (n.span_start, n.span_end):
                 found = read[2]   # read by the parse worker from the same text
             else:
@@ -2117,6 +2202,10 @@ class Indexer:
                 if typed:
                     # the first type written for it, or, if that one is not in the repo, the first after it that is
                     decls[name] = next((t for t in typed if self.types_by_name.get((lang, t))), None)
+            if len(self._decl_cache) >= 4096:
+                # Asked about the functions of the file being resolved; made again the same when asked later.
+                # Kept for every function, it was hundreds of MB on a large repository.
+                self._decl_cache.clear()
             got = self._decl_cache[holder] = (decls, raw)
         return got
 
@@ -2196,7 +2285,7 @@ class Indexer:
     def _generic_return_name(self, lang: str, inner: CallSite) -> Optional[str]:
         """The type name a call's target declares it returns, from outside the repo or not (None when the call
         does not resolve, or when what it returns is a type parameter)."""
-        key = ("ret", id(inner))
+        key = ("ret", self._ckey(inner))
         if key in self._chain_memo:
             return self._chain_memo[key]
         self._chain_memo[key] = None
@@ -2619,7 +2708,7 @@ class Indexer:
         for fid, res in self.results.items():
             lang = self.file_lang[fid]
             st = self.stats[BY_LANGUAGE[lang].NAME]
-            for u in res.field_uses:
+            for u in self._open(fid, res).field_uses:
                 if u.src_id not in self.nodes:
                     continue
                 target, guessed = None, False
@@ -2653,6 +2742,7 @@ class Indexer:
                     slot[1] = min(slot[1], u.line)
                     slot[2] = slot[2] or guessed
                     slot[3] += u.access == "i"
+        self._shut()
         for (kind, src, dst), (n, line, guessed, init) in found.items():
             attrs = {"n": n, "line": line}
             if init == n:
@@ -2972,7 +3062,7 @@ class Indexer:
         # A loose file with no project: it can only be composed of the modules its own module imports.
         mod = self.nodes[home].parent_id
         if mod not in self._loose_reach:
-            files = {f for f in self.results if self.nodes[f].parent_id == mod}
+            files = {f for f in self.file_lang if self.nodes[f].parent_id == mod}
             self._loose_reach[mod] = {mod} | {e.dst_id for e in self.edges if e.kind == "imports" and e.src_id in files}
         target = self.file_of.get(impl)
         return target is not None and self.nodes[target].parent_id in self._loose_reach[mod]
@@ -2982,6 +3072,8 @@ class Indexer:
         out: dict[str, list] = defaultdict(list)
         for src, dst, _disp, _prec, line in self.calls:
             out[src].append(((line or 0) + self.call_col.get((src, dst, line), 0) / 10000, dst, "calls", None))
+        if not self.keep_results:
+            self.call_col.clear()   # read only here (an entry per call): the walk's steps reuse its memory
         for e in self.edges:
             if e.kind == "communicates":
                 a = e.attrs or {}
@@ -3115,7 +3207,7 @@ class Indexer:
                 edges.append(e)
         for n in self.nodes.values():
             if n.parent_id:
-                edges.append(Edge("contains", n.parent_id, n.id, "exact"))
+                edges.append(Edge("contains", n.parent_id, n.id, "exact", None))   # no attrs: not an empty dict per node
         calls = sorted({c for c in self.calls if c[0] in self.nodes})
         self._final_rows = (edges, calls)
         return self._final_rows

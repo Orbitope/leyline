@@ -148,8 +148,9 @@ class _NotingDict(dict):
             self.into.append((k, v))
 
 
-def _ancestry(nodes: dict) -> dict:
-    """node id -> (file id, module id), as store.rebuild_derived works them out."""
+def _ancestry(nodes: dict, groups: bool = False) -> dict:
+    """node id -> (file id, module id), as store.rebuild_derived works them out. With `groups`, node id -> the
+    group its rows are written in (see Run._groups): its file id, or its own id when it is in no file."""
     out = {}
     for i, n in nodes.items():
         file_id = module_id = None
@@ -161,8 +162,24 @@ def _ancestry(nodes: dict) -> dict:
                 module_id = cur.id
             cur = nodes.get(cur.parent_id) if cur.parent_id else None
             seen += 1
-        out[i] = (file_id, module_id)
+        out[i] = (file_id or i) if groups else (file_id, module_id)
     return out
+
+
+class _Hits(dict):
+    """path -> a file whose kept parse output is used, read from the cache when the indexer takes it (pop): held
+    all at once, every file's output was in memory for the whole run."""
+
+    def __init__(self, con, hits: dict):
+        super().__init__(hits)
+        self.con = con
+
+    def pop(self, path, default=None):
+        if path not in self:
+            return default
+        f, ext, mod_dir, mod_id, file_id, sha = dict.pop(self, path)
+        loc, blob, err, toks = self.con.execute("SELECT loc, blob, err, toks FROM files WHERE id = ?", (file_id,)).fetchone()
+        return f, ext, mod_dir, mod_id, loc, sha, blob, err, toks
 
 
 # -- a run ----------------------------------------------------------------------------------------------------
@@ -191,12 +208,13 @@ class Run:
         # the store: a full run that was not asked for (a moved checkout, a store copied to map another commit)
         # still takes it, when the same Leyline made it.
         if not self.full or (not full and self.cache.get("code") == code_version()):
-            for r in self.cache.con.execute("SELECT id, sha, module, loc, blob, err, toks FROM files"):
+            # Only what tells whether a file changed: its parse output is read when it is used (see _Hits).
+            for r in self.cache.con.execute("SELECT id, sha, module FROM files"):
                 self.rows[r[0]] = r
         self.toks: dict[str, bytes] = {}
         self.seen: set = set()
         self.reparsed: set = set()
-        self.resolved_rows: dict[str, tuple] = {}
+        self.resolved = 0   # files whose resolving was done again and kept (in the cache's `resolved` table)
         self.resolve_all = self.full
         self.flows_all = self.full
         self.affected: Optional[set] = None
@@ -229,8 +247,8 @@ class Run:
                 continue
             sha = hashlib.sha1(data).hexdigest()
             if row[1] == sha and row[2] == mod_dir:
-                out[f] = (f, ext, mod_dir, mod_id, row[3], sha, row[4], row[5], row[6])
-        return out
+                out[f] = (f, ext, mod_dir, mod_id, row[0], sha)
+        return _Hits(self.cache.con, out)
 
     def keep(self, file_id: str, got: tuple, fresh: bool) -> None:
         f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
@@ -411,12 +429,21 @@ class Run:
         todo = self.affected
         order = list(ix.results.items())
 
+        c = self.cache.con
+        if self.full:
+            c.execute("DELETE FROM resolved")
+
         def turns(which):
             for fid, res in order:
                 if which(fid):
                     mark = self._mark()
                     yield fid, res
-                    self.first[fid] = self._since(mark)
+                    if self.full:
+                        # kept in the cache as it is made (with the second pass's turn added then), not held
+                        c.execute("INSERT INTO resolved VALUES (?,?,NULL)", (fid, self._since(mark)))
+                        self.first[fid] = None
+                    else:
+                        self.first[fid] = self._since(mark)
         yield from turns(lambda f: todo is None or f in todo or self._old(f) is None)
         if todo is not None:
             todo |= set(self.first)
@@ -437,11 +464,18 @@ class Run:
     def _pass_calls(self):
         ix = self.ix
         todo = self.affected
+        c = self.cache.con
+        # Each file's turns go to the cache as they are made, not held to the end of the run (finish commits them).
         for fid, res in list(ix.results.items()):
             if todo is None or fid in todo:
                 mark = self._mark()
                 yield fid, res
-                self.resolved_rows[fid] = (self.first[fid], self._since(mark))
+                first = self.first.pop(fid)
+                if first is None:   # a full run: the first pass's turn is in the cache already
+                    c.execute("UPDATE resolved SET out = ? WHERE id = ?", (self._since(mark), fid))
+                else:
+                    c.execute("INSERT OR REPLACE INTO resolved VALUES (?,?,?)", (fid, first, self._since(mark)))
+                self.resolved += 1
             else:
                 self._replay(pickle.loads(self._old(fid)[1]))
 
@@ -485,37 +519,53 @@ class Run:
         return dirty
 
     # -- writing --------------------------------------------------------------------------------------------
-    def _groups(self) -> tuple[dict, dict, dict]:
+    def _groups(self, ancestry: bool = True) -> tuple[dict, dict, dict]:
         """The rows a run writes, grouped by the file each row's node (for an edge or call, its source) sits in,
-        or by the node itself when it is in no file; and a hash of each group."""
+        or by the node itself when it is in no file; and a hash of each group. A group lists its nodes' ids, its
+        edges and its calls, and _rows makes its rows from them: made for every group at once, the rows were a
+        copy of the whole map (GBs on a large repository)."""
         ix = self.ix
-        anc = self.anc = _ancestry(ix.nodes)
-        group = {i: (a[0] or i) for i, a in anc.items()}
-        rows: dict[str, list] = defaultdict(lambda: ([], [], []))
-        for i, n in ix.nodes.items():
-            rows[group[i]][0].append((i, n.kind, n.name, n.parent_id, ix._owner(i), n.language, n.path, n.span_start,
-                                      n.span_end, n.content_hash, n.attrs or None))
+        if ancestry:
+            anc = self.anc = _ancestry(ix.nodes)
+            group = {i: (a[0] or i) for i, a in anc.items()}
+        else:
+            group = _ancestry(ix.nodes, groups=True)
+        members: dict[str, tuple] = defaultdict(lambda: ([], [], []))
+        for i in ix.nodes:
+            members[group[i]][0].append(i)
         edges, calls = ix._final()
         for e in edges:
-            rows[group[e.src_id]][1].append((e.kind, e.src_id, e.dst_id, e.precision, e.attrs or None))
+            members[group[e.src_id]][1].append(e)
         for c in calls:
-            rows[group[c[0]]][2].append(c)
+            members[group[c[0]]][2].append(c)
         # Edges are hashed in a sorted order: the same edges can come out of a run in another order (one found
         # while resolving a receiver in the first pass of a full run is found in the second pass of a later
         # one), and rewriting them would change nothing.
         hashes, self.pattern_groups = {}, {}
-        for g, r in rows.items():
+        for g, m in members.items():
+            r = self._rows(m)
             edges_ = sorted(marshal.dumps(e, 0) for e in r[1])
             hashes[g] = hashlib.blake2b(marshal.dumps((r[0], r[2], edges_), 0), digest_size=8).digest()
             # what the pattern matchers read of the group besides its nodes: its edges and which functions call which
             self.pattern_groups[g] = hashlib.blake2b(marshal.dumps((edges_, sorted({c[:2] for c in r[2]})), 0),
                                                      digest_size=8).digest()
-        return rows, hashes, group
+        return members, hashes, group
+
+    def _rows(self, members: tuple) -> tuple[list, list, list]:
+        """A group's rows: (id, kind, name, parent, repository, language, path, span start, span end, content hash,
+        attrs) per node, (kind, source, target, precision, attrs) per edge, and its calls as they are."""
+        ix = self.ix
+        nodes = ix.nodes
+        out = []
+        for i in members[0]:
+            n = nodes[i]
+            out.append((i, n.kind, n.name, n.parent_id, ix._owner(i), n.language, n.path, n.span_start,
+                        n.span_end, n.content_hash, n.attrs or None))
+        return out, [(e.kind, e.src_id, e.dst_id, e.precision, e.attrs or None) for e in members[1]], members[2]
 
     def _after_full_write(self) -> None:
-        self.rows_by_group, self.groups, _ = self._groups()
+        _, self.groups, _ = self._groups(ancestry=False)
         self.flow_sizes = self._sizes_of(self.ix.flows, self.ix.flow_steps, {})
-        self.rows_by_group = None
 
     @staticmethod
     def _sizes_of(flows, steps, sizes: dict) -> dict:
@@ -566,7 +616,7 @@ class Run:
             new_nodes, new_edges, new_calls = [], [], []
             for g in changed:
                 if g in rows:
-                    n, e, c = rows[g]
+                    n, e, c = self._rows(rows[g])
                     new_nodes += n
                     new_edges += e
                     new_calls += c
@@ -668,12 +718,10 @@ class Run:
                  "commits": self.commits}
         c = self.cache.con
         if self.full:
-            c.execute("DELETE FROM resolved")
             c.execute("DELETE FROM files WHERE id NOT IN (SELECT value FROM json_each(?))", (json.dumps(sorted(self.seen)),))
         else:
             c.executemany("DELETE FROM files WHERE id = ?", [(f,) for f in self.removed])
             c.executemany("DELETE FROM resolved WHERE id = ?", [(f,) for f in self.removed])
-        c.executemany("INSERT OR REPLACE INTO resolved VALUES (?,?,?)", [(f, *r) for f, r in self.resolved_rows.items()])
         c.execute("INSERT OR REPLACE INTO meta VALUES ('key', ?)", (self.key,))
         c.execute("INSERT OR REPLACE INTO meta VALUES ('code', ?)", (code_version(),))
         c.execute("INSERT OR REPLACE INTO meta VALUES ('state', ?)", (pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL),))

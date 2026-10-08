@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import hashlib
 import itertools
 import json
@@ -169,7 +170,7 @@ def _insert_calls(con, rows) -> None:
 
 def _keys(con, ids) -> dict:
     ids = list(dict.fromkeys(ids))
-    con.executemany("INSERT OR IGNORE INTO keys (id) VALUES (?)", [(i,) for i in ids])
+    con.executemany("INSERT OR IGNORE INTO keys (id) VALUES (?)", ((i,) for i in ids))
     out = {}
     for i in range(0, len(ids), 900):
         chunk = ids[i:i + 900]
@@ -311,31 +312,43 @@ def rebuild_derived(con: sqlite3.Connection, systems_of: Optional[str] = None) -
     else:
         con.execute("DELETE FROM ancestry")
         con.execute("DELETE FROM search")
-    rows = con.execute("SELECT id, kind, name, parent_id, path FROM nodes").fetchall()
-    by_id = {r["id"]: r for r in rows}
-    rows = [r for r in rows if r["id"] not in have]
-    out = []
-    for r in rows:
-        file_id = module_id = None
-        cur = r
-        seen = 0
-        while cur is not None and seen < 64:
-            if cur["kind"] == "file" and file_id is None:
-                file_id = cur["id"]
-            if cur["kind"] == "module" and module_id is None:
-                module_id = cur["id"]
-            cur = by_id.get(cur["parent_id"]) if cur["parent_id"] else None
-            seen += 1
-        out.append((r["id"], file_id, module_id))
-    con.executemany("INSERT INTO ancestry VALUES (?,?,?)", out)
-    con.executemany(
-        "INSERT INTO search (node_id, name, qualified, path, kind) VALUES (?,?,?,?,?)",
-        [
-            (r["id"], r["name"], _searchable(r["id"]), r["path"] or "", r["kind"])
-            for r in rows
-            if r["kind"] not in ("repo",)
-        ],
-    )
+    # The node table is read three times, as rows come, and in between only each node's kind and parent is held
+    # (by number): every row held at once, and every row made before inserting, was most of a GB on a large
+    # repository. The same query each time, so the rows come in the same order.
+    q = "SELECT id, kind, name, parent_id, path FROM nodes"
+    share = {}.setdefault   # one string per kind
+    index: dict[str, int] = {}
+    ids: list[str] = []
+    kinds: list[str] = []
+    parents: list = []
+    for r in con.execute(q):
+        index[r[0]] = len(ids)
+        ids.append(r[0])
+        kinds.append(share(r[1], r[1]))
+        parents.append(r[3])
+    up = array.array("i", (index.get(p, -1) if p else -1 for p in parents))
+    del parents
+
+    def ancestry():
+        for r in con.execute(q):
+            if r[0] in have:
+                continue
+            file_id = module_id = None
+            k, seen = index[r[0]], 0
+            while k >= 0 and seen < 64:
+                kind = kinds[k]
+                if kind == "file" and file_id is None:
+                    file_id = ids[k]
+                if kind == "module" and module_id is None:
+                    module_id = ids[k]
+                k = up[k]
+                seen += 1
+            yield r[0], file_id, module_id
+
+    con.executemany("INSERT INTO ancestry VALUES (?,?,?)", ancestry())
+    con.executemany("INSERT INTO search (node_id, name, qualified, path, kind) VALUES (?,?,?,?,?)",
+                    ((r[0], r[2], _searchable(r[0]), r[4] or "", r[1]) for r in con.execute(q)
+                     if r[0] not in have and r[1] not in ("repo",)))
 
 
 def derive_some(con, gone: Iterable[str], ids: Iterable[str]) -> None:
