@@ -343,7 +343,7 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
                                     **({"file": True} if r.get("file") else {})})
                 if r.get("parent"):
                     targets.append({"action": "add", "name": r["new"], "parent": r["parent"],
-                                    "note": f"task {t['key']}", "used_by": []})
+                                    "note": f"task {t['key']}", "used_by": [], "related": list(link["mention_ids"])})
             else:   # a word in backticks that is not on the map: an issue code, a value, a type of effect
                 link["notes"].append(f"`{written}` is not on the map; read as a word, not code")
         links.append(link)
