@@ -34,4 +34,15 @@ jobs:
       # and Python, so a failure here only narrows the run.
       - run: python -m pip install -e ".[languages]"
         continue-on-error: true
-      - run: python -m pytest -q
+      - name: Run the tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rfE --tb=line -p no:cacheprovider 2>&1 | tee pytest-output.txt
+      # The failures as annotations, so they can be read without the full log.
+      - name: Name the failures
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest-output.txt | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          grep -E "^(E  |[^ ].*:[0-9]+: )" pytest-output.txt | head -40 | while IFS= read -r line; do echo "::warning::$line"; done
