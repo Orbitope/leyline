@@ -141,6 +141,14 @@ def test_a_signature_change_that_leaves_a_caller_broken(repo):
     assert "| 1.1 " in out and "| 1.2 " in out and "not done" not in out.split("## 4.")[1].split("| Scenario")[0], out
 
 
+def test_adding_a_parameter_is_a_change_of_signature(repo):
+    """"add a parameter to `load`" was read as adding code, so the callers that must change with it were not named."""
+    assert quick._action("add a parameter `encoding` to `load`") == "signature"
+    code, page = run("quick", "add a parameter `encoding` to `load`", "--tests", "-", stdin=PASSING)
+    must = next(ln for ln in page.splitlines() if ln.startswith("Must edit with it"))
+    assert "first` (its call must change)" in must and "count` (its call must change)" in must, page
+
+
 def test_the_review_steps_take_a_quick_id(repo):
     run("quick", "make the retry count 3", "--about", "RETRIES", "fetch")
     edit(repo, "app/net.py", "RETRIES = 5", "RETRIES = 3")

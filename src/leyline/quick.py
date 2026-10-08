@@ -55,8 +55,7 @@ def names_in(about: str) -> list[str]:
 
 def _action(about: str) -> str:
     lower = re.sub(r"`", "", about.lower()).strip()
-    return next((a for a, starts in spec.VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)),
-                "behavior")
+    return spec.action_of(lower)
 
 
 def _assignment(name: str):

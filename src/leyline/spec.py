@@ -42,6 +42,15 @@ BEGIN, END = "<!-- leyline:begin -->", "<!-- leyline:end -->"
 REVIEWERS = ("logic", "performance")
 
 
+def action_of(lower: str) -> str:
+    """What a task (lower-cased) does to the code it names. "Add a parameter to `X`" changes X's signature: the longer
+    phrase wins over the "add " it starts with."""
+    if lower.startswith(dict(VERBS)["signature"]):
+        return "signature"
+    return next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)),
+                "behavior")
+
+
 def run_label(change_id: str, when: str) -> str:
     """The label a change's own test runs are stored under: before:spec-<id> and after:spec-<id>."""
     return f"{when}:{change_id}"
@@ -95,9 +104,7 @@ def parse(change_dir: str | Path) -> dict:
             n += 1
             text = m.group(3)
             lower = text.lower().lstrip("`* ")
-            # "Add a parameter to `X`" changes X's signature: the longer phrase wins over the "add " it starts with.
-            action = "signature" if lower.startswith(dict(VERBS)["signature"]) else next(
-                (a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)), "behavior")
+            action = action_of(lower)
             key = m.group(2) or str(n)
             keys[key] += 1
             out["tasks"].append({"key": key if keys[key] == 1 else f"{key} ({keys[key]})", "text": text,
