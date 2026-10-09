@@ -269,7 +269,8 @@ def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, li
         return f"cannot read: {e.strerror or e}"
     if _binary(head[:8192]):
         return "binary"
-    if len(head) == 65536 and head.count(b"\n") < 65536 // LONG_LINES:
+    # a bundle of a few tens of KB on one line is as minified as a larger one; a short file is let through
+    if len(head) >= 4 * LONG_LINES and head.count(b"\n") < len(head) // LONG_LINES:
         return "minified or generated (very long lines)"
     return None
 

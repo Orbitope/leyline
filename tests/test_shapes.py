@@ -205,6 +205,17 @@ def test_a_sparse_checkout_does_not_review_the_files_it_left_out_as_removed(tmp_
     assert changed["files"] == ["pkg/core.py"], changed["files"]
 
 
+def test_a_minified_bundle_smaller_than_64_kb_is_left_out(tmp_path):
+    """vendor.js, 47 KB on one line with no .min in its name: 1,500 functions nobody wrote."""
+    from leyline.indexer import scan
+    (tmp_path / "vendor.js").write_text(";".join(f"function q{i}(a){{return a+{i}}}" for i in range(1500)))
+    (tmp_path / "app.js").write_text("export function ok() {\n  return 1;\n}\n" * 400)
+    (tmp_path / "short.js").write_text("export const x = 1;" * 50)   # one line, but short: kept
+    listing = scan(tmp_path)
+    assert sorted(listing.files) == ["app.js", "short.js"]
+    assert ("vendor.js", "minified or generated (very long lines)") in listing.skipped
+
+
 def _graph(db) -> tuple[set, set]:
     from leyline import store
     con = store.connect(db)
