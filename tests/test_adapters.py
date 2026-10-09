@@ -131,3 +131,20 @@ def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     fields = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE kind = 'field'")}
     assert {"App.Item.Id", "App.Item.Name", "App.Tagged.Tag"} <= fields
     assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")
+
+
+def test_python_attributes_assigned_together_are_fields(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/box.py": (
+            "class Box:\n"
+            "    def __init__(self, w, h):\n"
+            "        self.w, self.h = w, h\n"
+            "        (self.x, self.y) = (0, 0)\n"
+            "\n"
+            "    def area(self):\n"
+            "        return self.w * self.h + self.y\n"),
+    })
+    fields = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE kind = 'field'")}
+    assert {"pkg.box.Box.w", "pkg.box.Box.h", "pkg.box.Box.x", "pkg.box.Box.y"} <= fields
+    assert ("pkg.box.Box.__init__", "pkg.box.Box.h") in edges(con, "writes")
+    assert ("pkg.box.Box.area", "pkg.box.Box.h") in edges(con, "reads")

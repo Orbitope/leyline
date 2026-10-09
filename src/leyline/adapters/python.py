@@ -773,6 +773,11 @@ class _Walker:
                 attr = _text(left.child_by_field_name("attribute"))
                 if _text(obj) == "self" and attr:
                     self._field(class_id, attr, node, node, scope, cid)
+            elif left is not None and left.type in ("pattern_list", "tuple_pattern", "list_pattern") and class_id is not None:
+                # self.w, self.h = w, h: each is a field, of no type the right side says outright.
+                for el in left.named_children:
+                    if el.type == "attribute" and _text(el.child_by_field_name("object")) == "self":
+                        self._field(class_id, _text(el.child_by_field_name("attribute")), node)
             for c in node.children:
                 if right is None or c.start_byte != right.start_byte or c.end_byte != right.end_byte:
                     self._body(c, cid, class_id, scope, qual)
