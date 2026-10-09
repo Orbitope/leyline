@@ -426,8 +426,8 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
     how_it_runs = diagrams.safe(diagrams.for_snapshot, snap, con, [n["id"] for n in edited + added] or [n["id"] for n in types],
                                 [n["id"] for n in d["nodes"]["removed"]])
-    top = [{"id": f["id"], "path": f["path"], "lines": len(own[f["id"]])} for f in files
-           if own is not None and any(t.strip() for _, t in own.get(f["id"]) or [])]
+    top = [{"id": f["id"], "path": f["path"], "lines": sum(1 for _, t in own[f["id"]] if diff._code_line(t))} for f in files
+           if own is not None and any(diff._code_line(t) for _, t in own.get(f["id"]) or [])]
     changed = {n["id"] for n in edited + types} | {n["id"] for n in added}
     removed = d["nodes"]["removed"]
 

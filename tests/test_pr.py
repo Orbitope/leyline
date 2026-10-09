@@ -433,6 +433,15 @@ def test_a_caller_linked_only_by_a_guess_does_not_block(tmp_path, monkeypatch):
     assert code == 1 and "`use.py.run` calls code whose signature changed" in gate_of(out)
 
 
+def test_a_comment_edited_outside_any_function_is_not_code_outside_any_function(branch, monkeypatch):
+    other = branch / "app/other.py"
+    other.write_text("# Kept for the old importer.\n" + other.read_text())
+    git(branch, "commit", "-qam", "Say why other stays")
+    monkeypatch.chdir(branch)
+    code, page = run("pr", "main")
+    assert "Outside any function" not in page, page
+
+
 def test_the_tests_that_run_the_change_are_counted_past_the_thirty_listed(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     (root / "app").mkdir(parents=True)
