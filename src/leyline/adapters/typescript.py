@@ -447,6 +447,8 @@ class _Walker:
         elif t in ("jsx_opening_element", "jsx_self_closing_element"):
             self._jsx(node, cid, class_id)
         elif t == "assignment_expression":
+            if top and self._commonjs(node, qual, scope):
+                return
             self._assign(node, cid, class_id, scope)
         elif t in ("string", "template_string"):
             s = _string(node)
@@ -960,6 +962,42 @@ class _Walker:
         for m in obj.named_children:
             if (m.start_byte, m.end_byte) not in done:
                 self._walk(m, self.top_id, None, {}, qual)
+        return True
+
+    def _commonjs(self, node, qual, scope) -> bool:
+        """CommonJS exports: `exports.foo = function () {}`, `module.exports.foo = () => ...` and
+        `module.exports = { foo() {}, bar: function () {}, baz }`. Each function is a function of the file, as an
+        exported declaration would be, so `require("./x").foo()` and `const { foo } = require("./x")` reach it."""
+        left, right = _unwrap(node.child_by_field_name("left")), _unwrap(node.child_by_field_name("right"))
+        if left is None or right is None or left.type != "member_expression":
+            return False
+        obj, prop = _text(left.child_by_field_name("object")), _text(left.child_by_field_name("property"))
+        if obj in ("exports", "module.exports") and re.fullmatch(r"[A-Za-z_$][\w$]*", prop):
+            fn = self._fn_of(right)
+            if fn is None:
+                return False
+            self.exported.add(prop)
+            self._function(prop, fn, node, self.file_id, qual, None, scope, exported=True)
+            return True
+        if _text(left) != "module.exports" or right.type != "object":
+            return False
+        for m in right.named_children:
+            if m.type == "method_definition" and self._member_name(m):
+                self.exported.add(self._member_name(m))
+                self._function(self._member_name(m), m, m, self.file_id, qual, None, scope, exported=True)
+                continue
+            if m.type == "shorthand_property_identifier":
+                self.exported.add(_text(m))
+                continue
+            if m.type == "pair":
+                key = m.child_by_field_name("key")
+                kname = (_string(key) if key is not None and key.type == "string" else _text(key)) if key is not None else ""
+                fn = self._fn_of(m.child_by_field_name("value"))
+                if fn is not None and re.fullmatch(r"[A-Za-z_$][\w$]*", kname or ""):
+                    self.exported.add(kname)
+                    self._function(kname, fn, m, self.file_id, qual, None, scope, exported=True)
+                    continue
+            self._walk(m, self.top_id, None, scope, qual)
         return True
 
     def _namespace(self, node, parent_id, qual, exported) -> None:

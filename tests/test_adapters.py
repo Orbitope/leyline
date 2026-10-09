@@ -451,6 +451,36 @@ def test_typescript_a_request_on_an_axios_instance_is_not_a_route_and_a_made_han
     assert got["web.src.calls.tags"] == ("server.src.routes.more", "GET /api/tags")
 
 
+def test_javascript_commonjs_exported_functions_are_functions(tmp_path):
+    con = _map(tmp_path, {
+        "lib/util.js": (
+            "exports.add = function (a, b) { return helper(a); };\n"
+            "module.exports.sub = (a, b) => helper(b);\n"
+            "function helper(x) { return x; }\n"),
+        "lib/obj.js": (
+            "function helper2(x) { return x; }\n"
+            "module.exports = {\n"
+            "  mul: function (a) { return helper2(a); },\n"
+            "  div(a) { return a; },\n"
+            "  helper2,\n"
+            "};\n"),
+        "app.js": (
+            "const util = require('./lib/util');\n"
+            "const { mul, div, helper2 } = require('./lib/obj');\n"
+            "function main() {\n"
+            "  util.add(1, 2);\n"
+            "  util.sub(1, 2);\n"
+            "  mul(1);\n"
+            "  div(2);\n"
+            "  helper2(3);\n"
+            "}\n"),
+    })
+    got = calls(con)
+    for callee in ("lib.util.add", "lib.util.sub", "lib.obj.mul", "lib.obj.div", "lib.obj.helper2"):
+        assert ("app.main", callee) in got, callee
+    assert ("lib.util.add", "lib.util.helper") in got and ("lib.obj.mul", "lib.obj.helper2") in got
+
+
 def test_typescript_namespace_members_are_declared_under_the_namespace(tmp_path):
     con = _map(tmp_path, {
         "src/geo.ts": (
