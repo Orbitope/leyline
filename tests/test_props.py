@@ -54,6 +54,12 @@ def test_hypothesis_counterexamples_from_real_pytest_output(fixture):
     assert got["tests/test_ledger.py::test_plain_example"]["status"] == "pass"
 
 
+def test_hypothesis_counterexample_with_an_escaped_quote_in_a_string():
+    # repr() of a string holding both quotes escapes one: s='a\'b"c'. The escaped quote does not close the string.
+    text = "Falsifying example: test_quote(\n    s='a\\'b\"c',\n    n=1,\n)\n"
+    assert [c["example"] for c in props.counterexamples(text)] == ["s='a\\'b\"c', n=1"]
+
+
 def test_fast_check_counterexamples_from_real_vitest_tap():
     got = {r["name"].split(" > ")[-1]: r for r in diff.parse_test_output((OUT / "fastcheck_vitest_tap.txt").read_text())}
     assert got["Balance is never negative"]["message"].startswith("fails for 0, -1 (fast-check).\nProperty failed after 1 tests")
