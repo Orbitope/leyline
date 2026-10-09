@@ -153,3 +153,22 @@ def test_a_baseline_goes_when_its_change_folder_is_archived(tmp_path, monkeypatc
         assert not diff.snapshot_path(con, "spec-report-queued").exists()
     finally:
         con.close()
+
+
+def test_check_says_when_the_baseline_was_taken_by_another_version(repo):
+    """A plan made before upgrading Leyline keeps a baseline read by the old version. What the new one reads differently
+    (a name defined twice is one node now) showed as edits outside the spec, with nothing to say why."""
+    import sqlite3
+    from test_signalfix import AFTER, implement
+    from leyline import diff
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    v = loop.check(db, ch, diff.parse_test_output(AFTER))
+    assert not v["baseline_other_version"] and "another version of Leyline" not in (ch / "leyline.md").read_text()
+    snap = sqlite3.connect(work / ".leyline" / "snapshots" / "spec-report-queued.db")
+    with snap:
+        snap.execute("DELETE FROM meta WHERE key = 'made_by'")   # as every release before this one left it
+    snap.close()
+    v = loop.check(db, ch)
+    assert v["baseline_other_version"] and "another version of Leyline" in (ch / "leyline.md").read_text()

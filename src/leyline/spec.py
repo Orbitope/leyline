@@ -1511,6 +1511,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings),
                       "kinds": reviews(con, cid), "all": all_findings},
            "baseline": review.get("baseline"),
+           "baseline_other_version": review.get("baseline_other_version", False),
            "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results),
                            "skipped": sum(r["status"] == "skip" for r in results.values())} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
@@ -1569,6 +1570,9 @@ def verify_text(v: dict) -> str:
          " and each scenario from the test results.", "",
          "**Yes.** " + _yes(v) if v["done_as_agreed"]
          else "**Not yet:** " + "; ".join(v["why_not"]) + ".", "",
+         *(["*The baseline was taken by another version of Leyline (or one that did not record its version), which may"
+            " have read the same code differently: a change below that the diff does not show comes from that, not from"
+            " the edit.*", ""] if v.get("baseline_other_version") else []),
          "| Task | Result | Verdict | Missing |", "| --- | --- | --- | --- |"]
     for t in v["tasks"]:
         L.append(f"| {t['key']} {_clip(t['text'], 70).replace('|', '/')} | {t['state']} | {t.get('verdict', '')} | {', '.join(t['missing'])} |")
