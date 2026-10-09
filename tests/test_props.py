@@ -278,6 +278,17 @@ def test_rename_needs_the_old_name_gone_the_new_there_and_its_callers_moved(tmp_
     assert (t["verdict"], t["verdict_why"]) == ("contradicted", "`Engine.child` is gone, but `Engine.copy` is not on the map")
 
 
+def test_a_removal_written_with_its_file_is_judged_by_what_is_left(tmp_path):
+    """`path/to/file.py: name` was read as a file's path, so the removal went unjudged and an edit counted as done."""
+    work, ch, db, _ = _change(tmp_path, "- [ ] 1.1 Remove `py/src/pkg/core.py: make_engine`\n", "")
+    edit(work / "py/src/pkg/core.py", 'return Engine("made")', 'return Engine("built")')   # edited, not removed
+    t = _verify(work, db, ch, [{"name": n, "status": "pass"} for n in ("test_start", "test_chain")])["tasks"][0]
+    assert t["verdict"] == "contradicted" and "still exists" in t["verdict_why"], t
+    edit(work / "py/src/pkg/core.py", 'def make_engine():\n    return Engine("built")\n', "")   # gone; a test still calls it
+    t = _verify(work, db, ch, [{"name": n, "status": "pass"} for n in ("test_start", "test_chain")])["tasks"][0]
+    assert t["verdict"] == "partial" and "test_made" in t["verdict_why"], t
+
+
 @pytest.mark.parametrize("task, gone", [("Remove the class `core.Journal`", "core.Journal"),
                                         ("Delete `py/web/client.py`", "py/web/client.py")])
 def test_what_a_removal_takes_with_it_is_not_an_edit_outside_the_spec(tmp_path, task, gone):
