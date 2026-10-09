@@ -249,3 +249,18 @@ def test_waits_for_another_run_writing_the_cache(tmp_path):
     finally:
         done.join()
         other.close()
+
+
+def test_tour_goes_when_a_repository_has_no_modules_left(tmp_path):
+    """A repository whose last source file goes has no modules and no tour: the tour of the earlier map, which names
+    a module that is gone, must not be left behind."""
+    root = tmp_path / "e"
+    root.mkdir()
+    (root / "a.py").write_text("def a():\n    return 1\n")
+    db = tmp_path / "e.db"
+    index(root, db, "e")
+    (root / "a.py").unlink()
+    index(root, db, "e")
+    full = tmp_path / "full.db"
+    index(root, full, "e", full=True)
+    assert differences(db, full) == {}

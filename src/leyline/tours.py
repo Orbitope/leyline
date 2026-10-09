@@ -67,6 +67,9 @@ def generate(con, repo_id: str) -> dict:
     # tie between modules must be settled as a full run would settle it.
     mods = {r["id"]: r for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY id", repo_id)}
     if not mods:
+        with con:   # nothing to tour: the tour of an earlier map, which names modules that are gone, goes too
+            con.execute("DELETE FROM tour_stops WHERE tour_id = ?", (f"tour:orientation:{repo_id}",))
+            con.execute("DELETE FROM tours WHERE id = ?", (f"tour:orientation:{repo_id}",))
         return {"stops": 0}
     # The few module ids and kinds are one string each: every row read gives its own copy, and on a large
     # repository the copies were hundreds of MB.
