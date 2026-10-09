@@ -292,6 +292,38 @@ def test_a_typescript_override_with_other_parameters_still_overrides(tmp_path):
     assert got == {"t:typescript:repo.Same.fetch", "t:typescript:repo.More.fetch"}
 
 
+def test_a_function_defined_twice_in_one_file_is_one_node_over_both(tmp_path):
+    """`if ...: def load()` / `else: def load()` (or try/except) defines one name twice; which runs is not known from
+    the text. It is one node whose span covers both definitions and lists each, whose text hash reads both bodies,
+    and whose calls come from both."""
+    root = tmp_path / "d"
+    root.mkdir()
+    src = ("import sys\n\n"
+           "if sys.platform == 'win32':\n"
+           "    def load(s):\n"
+           "        return first(s)\n"
+           "else:\n"
+           "    def load(s):\n"
+           "        return second(s)\n\n\n"
+           "def first(s):\n    return 1\n\n\n"
+           "def second(s):\n    return 2\n")
+    (root / "m.py").write_text(src)
+    db = tmp_path / "d.db"
+    index(root, db, "d")
+    c = store.connect(db)
+    rows = c.execute("SELECT span_start, span_end, content_hash, attrs FROM nodes WHERE id = 'd:python:m.load'").fetchall()
+    assert len(rows) == 1
+    start, end, before, attrs = rows[0]
+    assert (start, end) == (4, 8) and json.loads(attrs)["definitions"] == [[4, 5], [7, 8]]
+    assert calls(c, "d:python:m.load") == {"d:python:m.first", "d:python:m.second"}
+    c.close()
+    (root / "m.py").write_text(src.replace("return second(s)", "return second(s) + 1"))
+    index(root, db, "d")
+    c = store.connect(db)
+    assert c.execute("SELECT content_hash FROM nodes WHERE id = 'd:python:m.load'").fetchone()[0] != before
+    c.close()
+
+
 def test_change_assessment_and_saved_views(tmp_path):
     import shutil
 

@@ -1198,6 +1198,11 @@ Node ids are stable across file moves within a project:
   the ids of the files after it.
 - Files and modules: `repo:file:path` and `repo:module:path`
 
+A name defined twice in one file (`def load()` in both branches of an `if` or a `try`, a property's getter and
+setter) is one node: which definition runs is not known from the text. Its span runs from the first definition
+to the last, its `definitions` attribute lists each one's lines, its text hash reads every body, and its calls
+come from all of them.
+
 ## Tests
 
 ```bash

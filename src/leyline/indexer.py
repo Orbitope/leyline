@@ -1057,6 +1057,16 @@ class Indexer:
             first = self.nodes[n.id]
             if n.kind == "type" and n.path != first.path:
                 first.attrs.setdefault("also_in", []).append(n.path)
+            elif n.path == first.path and n.span_start and first.span_start and n.kind not in ("file", "module", "repo"):
+                # One name defined twice in a file (if/else or try/except, a property's getter and setter): which one
+                # runs is not known from the text, so it is one node over both, listing each, its text hash reading
+                # every body.
+                spans = first.attrs.setdefault("definitions", [[first.span_start, first.span_end or first.span_start]])
+                spans.append([n.span_start, n.span_end or n.span_start])
+                first.span_start = min(first.span_start, n.span_start)
+                first.span_end = max(first.span_end or first.span_start, n.span_end or n.span_start)
+                if first.content_hash and n.content_hash:
+                    first.content_hash = hashlib.sha1(f"{first.content_hash}|{n.content_hash}".encode()).hexdigest()[:16]
             return
         self.nodes[n.id] = n
 
