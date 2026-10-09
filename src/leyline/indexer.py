@@ -1244,6 +1244,7 @@ class Indexer:
                     if isinstance(data, dict) and data.get("name"):
                         self.packages[data["name"]] = {"dir": f.rpartition("/")[0], "exports": data.get("exports"), "repo": repo,
                                                        "main": data.get("source") or data.get("module") or data.get("main") or data.get("types")}
+        self._go_modules()
         seen = set()
         stdlib = getattr(sys, "stdlib_module_names", frozenset())
         self.py_local: dict[tuple, tuple] = {}   # (function, name) -> what an import inside that function binds
@@ -1384,7 +1385,52 @@ class Indexer:
                             if self._opened is not None:
                                 self._opened[2] = True   # packed again when it is let go
 
+    def _go_modules(self) -> None:
+        """Go modules of the workspace: each go.mod's `module` path, at the go.mod's directory (a repository may
+        hold several, a go.work tying them), and its `replace` directives that point at a local directory."""
+        self.go_mods: dict[str, tuple] = {}   # module path -> (repo, directory in that repo)
+        replaces = []
+        for repo, files in self.files_of.items():
+            for f in files:
+                if f.rsplit("/", 1)[-1] != "go.mod":
+                    continue
+                try:
+                    text = (self.repos[repo] / f).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                here = f.rpartition("/")[0]
+                text = re.sub(r"//[^\n]*", "", text)
+                m = re.search(r"^\s*module\s+\"?([^\s\"]+)", text, re.M)
+                if m:
+                    self.go_mods.setdefault(m.group(1), (repo, here))
+                # replace example.com/shared => ../shared, alone or in a replace ( ... ) block
+                for r in re.finditer(r"^\s*(?:replace\s+)?([^\s(]+)(?:\s+v[^\s]+)?\s+=>\s+(\.{1,2}/[^\s]*|\.{1,2})\s*$",
+                                     text, re.M):
+                    local = posixpath.normpath(posixpath.join(here, r.group(2)))
+                    if not local.startswith(".."):
+                        replaces.append((r.group(1), (repo, "" if local == "." else local)))
+        for path, at in replaces:
+            self.go_mods.setdefault(path, at)
+
+    def _go_import(self, fid: str, target: str) -> Optional[list]:
+        """The files of the package a Go import names, when it is under a module of the workspace: example.com/app/store
+        with `module example.com/app` is the directory store/ beside that go.mod. None for a path under no module."""
+        t = target.strip().strip('"`')
+        mod = max((m for m in getattr(self, "go_mods", {}) if t == m or t.startswith(m + "/")), key=len, default=None)
+        if mod is None:
+            return None
+        repo, base = self.go_mods[mod]
+        d = posixpath.join(base, t[len(mod):].lstrip("/")).strip("/") if t != mod else base
+        return sorted(f for f in self.results if _repo_of(f) == repo and self.file_lang[f] == "go"
+                      and self.nodes[f].path.rpartition("/")[0] == d)
+
     def _find_module(self, fid: str, target: str) -> Optional[str]:
+        if self.file_lang[fid] == "go":
+            hits = self._go_import(fid, target)
+            if hits is not None:
+                for h in hits[1:]:
+                    self.import_targets[fid].add(h)
+                return hits[0] if hits else None
         if getattr(BY_LANGUAGE.get(self.file_lang[fid]), "GENERIC", False):
             hits = self._generic_import(fid, target)
             for h in hits[1:]:
@@ -2591,6 +2637,11 @@ class Indexer:
             owned = [c for t in self.types_by_name.get((lang, r), []) for c in self.members.get(t, {}).get(name, [])]
             if owned:
                 return by_args(owned)
+            # Go's store.New(): the package the file imports under that name, before any other directory called store
+            pkg = [c for c in self._in_files(ix["free_file"], self.import_targets.get(fid, ()))
+                   if (self.nodes[self.file_of[c.id]].path or "").rpartition("/")[0].rsplit("/", 1)[-1] == r]
+            if pkg and len({self.file_of[c.id].rpartition("/")[0] for c in pkg}) == 1:
+                return by_args(pkg)
             if r in ix["free_dir_base"]:
                 return [ix["free_dir_base"][r]]
             # module.f() reaches the module's own functions before any method of that name in it

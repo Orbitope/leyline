@@ -201,6 +201,45 @@ def test_an_outside_import_in_go_or_java_is_labelled_by_its_own_language_not_npm
     assert not any(x.startswith("npm:") for x in ext)
 
 
+def test_go_an_import_under_a_go_mod_module_path_is_the_local_package(tmp_path):
+    con = _map(tmp_path, {
+        "go.work": "go 1.22\n\nuse (\n\t./services/api\n\t./shared\n)\n",
+        "go.mod": "module example.com/app\n\ngo 1.22\n",
+        "store/store.go": "package store\n\nfunc New() int { return 1 }\n",
+        "other/store/store.go": "package store\n\nfunc New() int { return 2 }\n",
+        "main.go": (
+            "package main\n\n"
+            "import (\n\t\"fmt\"\n\t\"example.com/app/store\"\n)\n\n"
+            "func main() { fmt.Println(store.New()) }\n"),
+        "services/api/go.mod": (
+            "module example.com/api\n\ngo 1.22\n\n"
+            "require example.com/shared v0.0.0\n\n"
+            "replace example.com/shared => ../../shared\n"),
+        "services/api/handler/h.go": (
+            "package handler\n\n"
+            "import \"example.com/shared/util\"\n\n"
+            "func Handle() int { return util.Twice(2) }\n"),
+        "services/api/main.go": (
+            "package main\n\n"
+            "import \"example.com/api/handler\"\n\n"
+            "func main() { handler.Handle() }\n"),
+        "shared/go.mod": "module example.com/shared\n",
+        "shared/util/util.go": "package util\n\nfunc Twice(x int) int { return 2 * x }\n",
+    })
+    imports = {(short(r[0]), r[1].split(":ext:")[-1] if ":ext:" in r[1] else short(r[1])) for r in con.execute(
+        "SELECT src_id, dst_id FROM edges WHERE kind = 'imports'")}
+    assert ("main.go", "store/store.go") in imports
+    assert ("services/api/main.go", "services/api/handler/h.go") in imports
+    assert ("services/api/handler/h.go", "shared/util/util.go") in imports
+    assert ("main.go", "go:fmt") in imports
+    ext = {r[0].split(":ext:", 1)[1] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external'")}
+    assert not {x for x in ext if x.startswith("go:example.com")}
+    got = calls(con)
+    assert got[("main.main", "store.store.New")] == "heuristic"
+    assert ("services.api.main.main", "services.api.handler.h.Handle") in got
+    assert ("services.api.handler.h.Handle", "shared.util.util.Twice") in got
+
+
 def test_java_a_field_initialiser_runs_in_the_constructor_not_a_module_body(tmp_path):
     con = _map(tmp_path, {
         "src/app/Formatter.java": (
