@@ -118,13 +118,29 @@ def cache_path(db_path) -> Path:
 class _Cache:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._open(path)
+        except sqlite3.DatabaseError as e:
+            # Damaged (a disk error, a copy cut off): it only saves work, so it is started again and the run is a full
+            # one. A cache another run holds is busy, not damaged, and is waited for (see Run._take).
+            if isinstance(e, sqlite3.OperationalError) or not ("not a database" in str(e) or "malformed" in str(e)):
+                raise
+            for p in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+                p.unlink(missing_ok=True)
+            self._open(path)
+
+    def _open(self, path: Path) -> None:
         self.con = sqlite3.connect(str(path), timeout=store.BUSY_SECONDS)   # another run may be writing it: wait
-        self.con.execute("PRAGMA journal_mode=WAL")
-        self.con.executescript("""
-            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB);
-            CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, sha TEXT, module TEXT, loc INTEGER, blob BLOB,
-                                              err TEXT, toks BLOB);
-            CREATE TABLE IF NOT EXISTS resolved (id TEXT PRIMARY KEY, outside BLOB, out BLOB);""")
+        try:
+            self.con.execute("PRAGMA journal_mode=WAL")
+            self.con.executescript("""
+                CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB);
+                CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, sha TEXT, module TEXT, loc INTEGER, blob BLOB,
+                                                  err TEXT, toks BLOB);
+                CREATE TABLE IF NOT EXISTS resolved (id TEXT PRIMARY KEY, outside BLOB, out BLOB);""")
+        except BaseException:
+            self.con.close()
+            raise
 
     def get(self, key: str):
         row = self.con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()

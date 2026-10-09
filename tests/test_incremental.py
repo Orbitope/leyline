@@ -370,3 +370,19 @@ def test_a_map_that_dies_after_writing_facts_is_mapped_again(tmp_path, monkeypat
     full = tmp_path / "full.db"
     index(root, full, "f2", "auto", full=True)   # as refresh maps a store `map` did not note the mode of
     assert differences(db, full) == {}
+
+
+def test_a_damaged_cache_makes_a_full_run_not_a_failed_one(tmp_path):
+    """The cache only saves work: deleting it makes the next run a full one. A damaged one (a disk error, a copy cut
+    off) stopped every index with "the store is damaged ... delete it", which would lose the annotations, findings
+    and test runs kept in a store that was fine."""
+    root = copy(tmp_path, "fixture2")
+    db = tmp_path / "s.db"
+    index(root, db, "f2")
+    cache = cache_path(db)
+    for p in (Path(str(cache) + "-wal"), Path(str(cache) + "-shm")):
+        p.unlink(missing_ok=True)
+    cache.write_bytes(b"this is not a database, it was cut off" * 10)
+    stats = index(root, db, "f2")
+    assert stats["incremental"]["mode"] == "full"
+    assert index(root, db, "f2")["incremental"]["mode"] == "incremental"   # and the cache is good again

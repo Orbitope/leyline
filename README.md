@@ -239,7 +239,8 @@ the WSGI app a test client calls.
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
 read and write it, and none of them runs unless you start it. Beside it, `leyline.cache.db` holds what the
 next index needs to do again only what an edit changed: each file's parse output under its content hash,
-and fingerprints of the last run. Deleting it only makes the next index a full one.
+and fingerprints of the last run. Deleting it only makes the next index a full one, and so does damage to it: a
+cache that is not a database is started again.
 
 | Piece | Started by | Reads | Writes |
 | --- | --- | --- | --- |
