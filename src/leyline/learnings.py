@@ -161,6 +161,14 @@ def scope_of(con, ids: list[str]) -> dict:
     return {k: sorted(v) for k, v in s.items()}
 
 
+def _in_repo(con, ids: list[str], repo: Optional[str]) -> list[str]:
+    """The ids of nodes in one repository. A learnings file's ids leave the repository's id out, so in a workspace
+    another repository can hold a node of the same id: a learning is compared only with code in its own."""
+    if repo is None:
+        return list(ids)
+    return [i for i in ids if (con.execute("SELECT repo_id FROM nodes WHERE id = ?", (i,)).fetchone() or [None])[0] == repo]
+
+
 def _nested(a: str, b: str) -> bool:
     return a == b or a.startswith(b + ".") or b.startswith(a + ".")
 
@@ -401,9 +409,10 @@ def _recount(l: dict) -> None:
 def best_match(con, reviewer: str, claim: str, evidence: list[str]) -> Optional[tuple]:
     """The active learning a new finding repeats: the same kind of review, close code, and a claim saying much the
     same thing. (file, learning, level, similarity), or None."""
-    here = scope_of(con, evidence)
+    repos = _repos(con)
     best = None
     for path, items in _all(con).items():
+        here = scope_of(con, _in_repo(con, evidence, repos.get(path)))
         for l in items:
             if l.get("status", "active") != "active" or l.get("reviewer") != reviewer:
                 continue
@@ -535,9 +544,10 @@ def _marks(con, change_id: str) -> list[str]:
 def applying(con, change_id: str, nodes: Optional[list[str]] = None, limit: int = 20) -> list[dict]:
     """Active learnings about code the change touches or reaches, closest first: what reviewers read before filing."""
     try:
-        here = scope_of(con, list(dict.fromkeys([*(nodes or []), *_marks(con, change_id)])))
+        ids = list(dict.fromkeys([*(nodes or []), *_marks(con, change_id)]))
         found, repos = [], _repos(con)
         for path, items in _all(con).items():
+            here = scope_of(con, _in_repo(con, ids, repos.get(path)))
             for l in items:
                 if l.get("status", "active") != "active":
                     continue
