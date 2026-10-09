@@ -55,6 +55,32 @@ def test_a_checkout_with_autocrlf_reviews_only_the_files_it_edited(tmp_path, mon
     assert "tests/test_core.py" not in out
 
 
+def _repo(root: Path, text: str = CORE) -> Path:
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/core.py").write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "pkg")
+    git(root, "commit", "-qm", "base")
+    return root
+
+
+def test_map_with_no_path_in_a_workspaces_folder_maps_the_workspace_again(tmp_path, monkeypatch):
+    """`leyline map a b` from a folder, then `leyline map` there: the two members, not the folder as a third."""
+    from leyline import store
+    _repo(tmp_path / "alpha")
+    _repo(tmp_path / "beta", CORE.replace("helper", "bhelper"))
+    monkeypatch.chdir(tmp_path)
+    assert run("map", "alpha", "beta")[0] == 0
+    code, out = run("map")
+    assert code == 0, out
+    assert "2 repositories (alpha, beta)" in out, out
+    con = store.connect(tmp_path / ".leyline/leyline.db")
+    try:
+        assert sorted(store.roots(con)) == ["alpha", "beta"]
+    finally:
+        con.close()
+
+
 def _graph(db) -> tuple[set, set]:
     from leyline import store
     con = store.connect(db)
