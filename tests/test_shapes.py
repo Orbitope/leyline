@@ -145,6 +145,26 @@ def test_pr_says_plainly_why_it_has_no_base(tmp_path, monkeypatch, capsys):
     assert "shallow" in err and "--unshallow" in err, err
 
 
+def test_a_read_only_repository_says_to_keep_the_store_elsewhere_and_can_then_be_mapped(tmp_path, monkeypatch, capsys):
+    import os
+    import stat
+    import pytest
+    if os.geteuid() == 0:
+        pytest.skip("root writes anywhere")
+    root = _repo(tmp_path / "ro")
+    monkeypatch.chdir(root)
+    mode = root.stat().st_mode
+    root.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    try:
+        capsys.readouterr()
+        code, _ = run("map")
+        err = capsys.readouterr().err
+        assert code == 2 and "--db" in err and "Traceback" not in err, err
+        assert run("--db", str(tmp_path / "elsewhere/leyline.db"), "map")[0] == 0
+    finally:
+        root.chmod(mode)
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,

@@ -476,6 +476,15 @@ def main(argv=None) -> int:
     except sqlite3.DatabaseError as e:
         print(f"leyline: {_store_problem(e)}", file=sys.stderr)
         return 2
+    except OSError as e:
+        import errno
+        if e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        # a repository that cannot be written to (read-only, or someone else's) can still be mapped and reported on
+        print(f"leyline: cannot write {e.filename or 'the store'} ({e.strerror}). To map a folder you cannot write to,"
+              " keep the store elsewhere: `leyline --db <writable folder>/leyline.db ...`, or set LEYLINE_DB.",
+              file=sys.stderr)
+        return 2
     except MemoryError:
         print("leyline: ran out of memory. A repository this large needs more than this machine has free: close other"
               " programs, or map one part of it (a subdirectory) at a time.", file=sys.stderr)
