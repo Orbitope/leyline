@@ -674,8 +674,9 @@ the type that declares them: the mutable state with no single owner.
 - An assignment is `x.f = v`, `x.f += v`, `x.f++`, `out`/`ref x.f` and `x.f[i] = v`. A value set
   while creating an object (`new Foo { f = 1 }`) is recorded as construction and left out of the
   shared-state ranking, as are constructors, subclasses and test code.
-- A change made by calling a method on the field (`list.Add(x)`) is a read of the field, not an
-  assignment: the map cannot tell a mutating method from a query.
+- A call on the field to a method that changes a collection in place (`list.Add(x)`, `items.append(x)`,
+  `queue.push(x)`) is a read and a write. The methods are named in a short list per language (`MUTATORS` in
+  each adapter); any other method call on a field is a read, since the map cannot tell what it does.
 - Properties count as fields. Enum members and events do not. In Python, reading an attribute that a
   getter computes (`@property`, or a decorator that is a descriptor class, such as Werkzeug's
   `cached_property`) is also a call to the getter; on `self`, so is a subclass's getter of that name.
