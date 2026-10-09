@@ -59,3 +59,18 @@ def test_a_write_of_leyline_md_that_fails_leaves_the_page_as_it_was(repo, monkey
         loop.check(db, ch, results=[{"name": n.split(" ", 1)[1], "status": "pass"} for n in BEFORE.splitlines()])
     assert page.read_bytes() == before
     assert sorted(p.name for p in ch.iterdir()) == ["leyline.md", "proposal.md", "specs", "tasks.md"]   # no temp file left
+
+
+def test_a_plan_whose_baseline_cannot_be_kept_says_so(repo, monkeypatch):
+    """The baseline is what `check` compares with. When it could not be written (a full disk, a read-only folder),
+    the plan said nothing and the check afterwards blamed a forgotten or archived change."""
+    from leyline import diff
+    work, ch, db = repo
+
+    def fails(con, name):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(diff, "snapshot", fails)
+    b = loop.plan(db, ch)
+    st = spec.brief_status(b)
+    assert not st["ready"] and any("No space left on device" in x and "baseline" in x for x in st["blocking"])
+    assert "No space left on device" in (ch / "leyline.md").read_text(encoding="utf-8")

@@ -519,6 +519,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
         # A task that names no code (docs, a mutant list in a file the map does not read) is for the person to check.
         l["by_you"] = not (l["nodes"] or l["new"] or l["into"] or l["scenarios"])
     gaps += [f"must be edited but no task covers it: {m['name']} ({m.get('note', '')})" for m in uncovered]
+    if report.get("snapshot_error"):
+        gaps.append(f"the baseline of the code as it is now could not be kept ({report['snapshot_error']}), so `check`"
+                    " would have nothing to compare the change with: fix that, then plan again before changing the code")
     gaps += [f"scenario \"{s['name']}\" has no test of that name, and no task says it will add one"
              for s in scenarios if not s["test_exists"] and s["key"] not in planned]
     result = {"change_id": cid, "title": parsed["title"], "why": parsed["why"], "what": parsed["what"], "dir": parsed["dir"],
