@@ -408,7 +408,8 @@ def _loop(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, or one PASS or FAIL line per test"
+        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, go test -v, jest --verbose, or one"
+              " PASS or FAIL line per test"
               " (`pytest -rA` prints them); other formats can go through the record_test_run MCP tool.", file=sys.stderr)
         return 2
     name = args.change
@@ -423,6 +424,8 @@ def _loop(args) -> int:
     r = loop.check(db, change, results, args.coverage)
     if "error" in r:
         print(f"leyline: {r['error']}", file=sys.stderr)
+        for line in r.get("next") or []:
+            print(line, file=sys.stderr)
         return 1
     print(loop.check_text(r, name))
     return 0 if r["done_as_agreed"] else 1

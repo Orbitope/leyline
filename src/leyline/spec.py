@@ -33,7 +33,9 @@ from . import change, diff, rules, store
 from . import verdicts
 
 # A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
-TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
+TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
+# A scenario's step: `- **WHEN** ...`, also with the colon inside or after the bold (`**WHEN:**`, `**WHEN**:`).
+STEP = re.compile(r"^\s*[-*+]\s*\*\*(WHEN|GIVEN|AND|THEN)\s*:?\*\*:?\s*(.*)$")
 CODE = re.compile(r"`([^`\n]+)`")
 VERBS = (("add", ("add ", "create ", "introduce ", "new ", "implement ")), ("remove", ("remove ", "delete ", "drop ")),
          ("rename", ("rename ",)), ("signature", ("change the signature", "change signature", "add a parameter", "add parameter",
@@ -74,6 +76,25 @@ def reviews(con, change_id: str) -> list[str]:
 
 
 # -- reading the folder ------------------------------------------------------------------------
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def unfenced(text: str) -> list[str]:
+    """The lines of Markdown outside fenced code (``` or ~~~): an example task or scenario in a fence is not one.
+    A fence closes on a line of the same character, at least as long, with nothing after it."""
+    out, fence = [], None
+    for line in text.splitlines():
+        m = FENCE.match(line)
+        if fence is None and m:
+            fence = m.group(1)
+        elif fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line.strip().strip(fence[0]):
+                fence = None
+        else:
+            out.append(line)
+    return out
+
+
 def parse(change_dir: str | Path) -> dict:
     """Read an OpenSpec change folder into its title, tasks, requirements and scenarios."""
     d = Path(change_dir)
@@ -97,7 +118,7 @@ def parse(change_dir: str | Path) -> dict:
     keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
     if tasks.is_file():
         n = 0
-        for line in tasks.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        for line in unfenced(tasks.read_text(encoding="utf-8-sig", errors="replace")):
             m = TASK.match(line)
             if not m:
                 continue
@@ -115,7 +136,7 @@ def parse(change_dir: str | Path) -> dict:
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
-        for line in spec.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        for line in unfenced(spec.read_text(encoding="utf-8-sig", errors="replace")):
             if line.startswith("## "):
                 section = (line[3:].split() or [""])[0].upper() or None   # `## ` alone names no section
             elif line.startswith("### Requirement:"):
@@ -132,8 +153,8 @@ def parse(change_dir: str | Path) -> dict:
                 cur = {"key": key, "name": name,
                        "requirement": req, "capability": capability, "kind": section or "ADDED", "when": [], "then": []}
                 out["scenarios"].append(cur)
-            elif cur is not None and re.match(r"^\s*[-*]\s*\*\*(WHEN|GIVEN|AND|THEN)\*\*", line):
-                word = re.match(r"^\s*[-*]\s*\*\*(\w+)\*\*\s*(.*)$", line)
+            elif cur is not None and STEP.match(line):
+                word = STEP.match(line)
                 (cur["then"] if word.group(1) == "THEN" or (word.group(1) == "AND" and cur["then"]) else cur["when"]).append(word.group(2))
             elif re.match(r"^###\s+Scenario", line):
                 out["problems"].append(f"{spec.relative_to(d)}: a scenario heading needs four #, found three: {line.strip()}")
@@ -447,8 +468,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     intent = parsed["what"] or parsed["why"] or parsed["title"]
     self_tests = _self_tests(con, [run_label(cid, "before"), run_label(cid, "after")])
     report = change.propose(con, intent, targets, parsed["title"], source="spec", change_id=cid,
-                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) if targets else {
-        "error": "no task names code that is on the map. Put code names in backticks in tasks.md."}
+                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) \
+        if targets or parsed["tasks"] else {"error": "tasks.md has no tasks (`- [ ] 1.1 ...`)."}
+    # Tasks that name no code (docs, say) are for a person to check; the baseline still shows what else changed.
     tests = _tests(con)
     test_names = diff.TestNames(con)
     ran = _results_index(con.execute("SELECT name, status, message FROM test_results WHERE run = ?",
@@ -969,7 +991,10 @@ def brief_status(b: dict) -> dict:
     elif missing := [r for r in REVIEWERS if r not in done]:
         notes.append(f"No {' or '.join(missing)} review has run.")
     mine = [t["key"] for t in b["tasks"] if t.get("by_you")]
-    if mine:
+    if mine and len(mine) == len(b["tasks"]):
+        notes.append("No task names code that is on the map, so only you can check the tasks; `check` still says what"
+                     " else changed. Put code names in backticks in tasks.md if the change is to code.")
+    elif mine:
         notes.append(f"{'Task' if len(mine) == 1 else 'Tasks'} {', '.join(mine)} {'names' if len(mine) == 1 else 'name'} no code,"
                      " so you check {} yourself after the change; {} not hold up the verdict.".format(
                          "it" if len(mine) == 1 else "them", "it does" if len(mine) == 1 else "they do"))
@@ -1281,7 +1306,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     cid = "spec-" + parsed["id"]
     review = diff.review(con, cid, before_run, after_run)
     if "error" in review:
-        return {"error": review["error"] + (" Run `leyline plan` on the change before it is implemented."
+        if review["error"].startswith("No change"):   # never planned, or the plan stopped at an error
+            return {"error": f"{parsed['id']} has not been planned, so there is nothing to compare the code with.",
+                    "next": [f"Next: run `leyline plan {parsed['id']}` (the `plan` tool) on the code as it was before the"
+                             " change (undo the edits, or start from the commit before them), then check it again."]}
+        return {"error": review["error"] + (f" Run `leyline plan {parsed['id']}` on the change before it is implemented."
                                             if review["error"].startswith("No snapshot") else "")}
     names = _Names(con)
     g = review["graph"]["nodes"]
