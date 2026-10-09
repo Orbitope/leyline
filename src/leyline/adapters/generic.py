@@ -392,7 +392,12 @@ class Generic:
             body = node.child_by_field_name("body")
             head = src[node.start_byte:body.start_byte if body is not None else node.end_byte].decode("utf8", "replace")
             head = re.sub(r"\s+", " ", head.split("\n\n")[0]).strip()[:240]
-            before = src[max(0, node.start_byte - 160):node.start_byte].decode("utf8", "replace")
+            # What is written before the definition and belongs to it: its attributes and annotations (Rust's #[test]
+            # sits beside the function, not in it), not the end of the definition above (another's @Test).
+            start, prev = node.start_byte, node.prev_named_sibling
+            while prev is not None and re.search(r"attribute|annotation|decorator|comment|pragma", prev.type):
+                start, prev = prev.start_byte, prev.prev_named_sibling
+            before = src[start:node.start_byte].decode("utf8", "replace")
             is_method = kind == "callable" and (native == "method" or bool(owner_name) or (outer is not None and outer[3] == "type"))
             anonymous = kind == "callable" and not owner_name and outer is not None and _in_anonymous(node, outer[0])
             if anonymous:
@@ -407,7 +412,7 @@ class Generic:
                 # body is then never a call on the receiver.
                 explicit_self = recv is not None or bool(plist and ("self" in plist[0].type or
                                                                     re.fullmatch(r"&?(mut )?(self|cls)", _text(plist[0]).strip())))
-                is_test = (test_file and re.match(r"(?i)test", name) is not None) or bool(TEST_MARK.search(before[-90:] + head[:40]))
+                is_test = (test_file and re.match(r"(?i)test", name) is not None) or bool(TEST_MARK.search(before + " " + head[:40]))
                 attrs.update({"argc_min": 0, "argc_max": 99, "is_static": not is_method, "is_virtual": is_method,
                               "type_id": type_id, "owner_name": owner_name, "is_test": is_test or None,
                               "framework": "by convention" if is_test else None,

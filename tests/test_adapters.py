@@ -227,6 +227,25 @@ def test_java_a_field_initialiser_runs_in_the_constructor_not_a_module_body(tmp_
     assert ("src.app.Plain.Plain", "src.app.Formatter.Formatter.create") in got
 
 
+def test_generic_a_test_marker_belongs_to_its_own_function_not_the_next(tmp_path):
+    con = _map(tmp_path, {
+        "src/app/Checks.java": (
+            "package app;\n"
+            "public class Checks {\n"
+            "    @Test void a() {}\n"
+            "    void helper() {}\n"
+            "    public static void main(String[] args) {}\n"
+            "}\n"),
+        "src/lib.rs": (
+            "#[test]\n"
+            "fn checks() {}\n"
+            "fn helper() {}\n"),
+    })
+    marked = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE json_extract(attrs, '$.is_test')")}
+    assert marked == {"src.app.Checks.Checks.a", "src.lib.checks"}
+    assert con.execute("SELECT 1 FROM nodes WHERE kind = 'entry_point' AND id LIKE '%Checks.main#entry'").fetchone()
+
+
 def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,
