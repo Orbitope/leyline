@@ -609,6 +609,32 @@ def test_scip_index_confirms_and_adds_python_links(tmp_path):
     assert stats["exact:scip"]["status"] == "ok" and stats["exact:scip"]["calls_confirmed"] == 1
 
 
+def test_scip_columns_after_characters_outside_ascii(tmp_path):
+    """A SCIP index counts columns in the code units its document says (UTF-16 for scip-python and scip-typescript,
+    UTF-8 for others). A call after an emoji, or after an accented letter in UTF-8, is still read as a call."""
+    pb = pytest.importorskip("leyline.scip_pb2")
+    from leyline import exact
+
+    src = 'def run():\n    return 1\n\n\ndef main():\n    print("\U0001F389 café"); return run()\n'
+    (tmp_path / "m.py").write_text(src, encoding="utf-8")
+    line = src.split("\n")[5]
+    sym = "scip-python python m 0 `m`/run()."
+    for encoding, units in ((2, lambda s: len(s.encode("utf-16-le")) // 2), (1, lambda s: len(s.encode("utf-8")))):
+        idx = pb.Index()
+        doc = idx.documents.add()
+        doc.relative_path, doc.position_encoding = "m.py", encoding
+        d = doc.occurrences.add()
+        d.symbol, d.symbol_roles = sym, 1
+        d.range.extend([0, 4, 7])
+        use = doc.occurrences.add()
+        use.symbol, use.symbol_roles = sym, 8
+        at = line.rindex("run")
+        use.range.extend([5, units(line[:at]), units(line[:at + 3])])
+        path = tmp_path / f"i{encoding}.scip"
+        path.write_bytes(idx.SerializeToString())
+        assert [r["k"] for r in exact.scip(path, tmp_path) if r["k"] != "file"] == ["call"], encoding
+
+
 def test_grade_reads_typed_ranges_impl_methods_and_macros(tmp_path):
     """What rust-analyzer and scip-java write: typed single_line_range fields, `impl#[Type]method` symbols,
     an associated `new` called as Type::new(), and a macro called with its bang."""

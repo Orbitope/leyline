@@ -171,6 +171,7 @@ def scip(path: str | Path, root: Optional[str | Path] = None) -> list[dict]:
                     # SCIP marks a mention, not a call. Keep it when the name is followed by "(", is used as a
                     # decorator, or is read like an attribute (a property); drop imports and methods passed as values.
                     text = lines[row]
+                    col, end = _chars(text, col, doc.position_encoding), _chars(text, end, doc.position_encoding)
                     after = text[end:].lstrip()
                     before = text[:col].strip()
                     called = after.startswith("(") or before.endswith("@") or before == "@"
@@ -203,6 +204,16 @@ def occ_range(occ) -> tuple:
         x = occ.multi_line_range
         return (x.start_line, x.start_character, x.end_character)
     return None
+
+
+def _chars(text: str, col: int, encoding: int) -> int:
+    """A SCIP column as an index into the line's characters. The document says what it counts: UTF-8 bytes (1) or
+    UTF-16 code units (2, what scip-python and scip-typescript write); otherwise characters."""
+    if encoding == 1:
+        return len(text.encode("utf-8", "surrogatepass")[:col].decode("utf-8", "ignore"))
+    if encoding == 2:
+        return len(text.encode("utf-16-le", "surrogatepass")[:2 * col].decode("utf-16-le", "ignore"))
+    return col
 
 
 def scip_root(path: str | Path) -> Optional[Path]:
