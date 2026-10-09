@@ -72,3 +72,21 @@ def test_impact_counts_every_direct_caller_and_lists_as_many_flows_as_asked(busy
     assert len(pkg["direct"]) == 5 and pkg["direct_more"] == 15     # 20 callers in all
     assert "direct_total" not in pkg
     assert r["flows_through"]["total"] == 45 and len(r["flows_through"]["items"]) == 45
+
+
+def test_an_answer_of_many_middling_strings_or_short_lists_is_still_cut_to_fit():
+    """Strings just over 1,000 characters, or lists of 3 big items, used to be cut to their floor and picked again
+    until the tries ran out, and the answer came back many thousands of characters over the limit."""
+    pytest.importorskip("mcp")
+    from leyline import server
+
+    strings = {f"k{i}": "x" * 1100 for i in range(40)}           # 44,000 characters, and no list to cut
+    text = server._fit(strings, {})
+    out = json.loads(text)
+    assert len(text) <= server.LIMIT + 300, len(text)
+    assert out["cut"]["k0"].endswith("of 1,100 characters")      # the whole length, not the length after a cut
+    assert "1,100 characters in all" in out["k0"]
+    three = ["y" * 5000] * 3
+    nested = {"a": [[three] * 3] * 3}                               # 135,000 characters in lists of 3
+    text = server._fit(nested, {})
+    assert len(text) <= server.LIMIT + 300, len(text)
