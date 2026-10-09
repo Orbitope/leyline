@@ -60,7 +60,8 @@ def git_root(path: Path) -> Path:
 def github_pr(root: Path, number: str) -> dict:
     """Base branch, title, description and head commit of a GitHub pull request, through the gh command."""
     try:
-        out = subprocess.run(["gh", "pr", "view", str(number), "--json", "baseRefName,title,body,headRefOid,number,url"],
+        # after --: a number that starts with - (`--web`, `--repo=...`, passed by an agent) is not one of gh's options
+        out = subprocess.run(["gh", "pr", "view", "--json", "baseRefName,title,body,headRefOid,number,url", "--", str(number)],
                              cwd=root, capture_output=True, check=False)
     except FileNotFoundError:
         raise GitError("--github needs the gh command (https://cli.github.com), signed in")
@@ -77,8 +78,9 @@ def change_id(root: Path, given: Optional[str] = None, number: Optional[str] = N
     """pr-<given>, pr-<number>, or pr-<branch name>; on a detached checkout, pr-<commit>."""
     if given:
         return "pr-" + slug(given.removeprefix("pr-"))
-    if number:
-        return f"pr-{number}"
+    if number:   # 123, #123 or a pull request's URL; the id names files under .leyline/, so it is a slug
+        m = re.fullmatch(r"#?(\d+)|https?://\S+/pull/(\d+)/?", str(number).strip())
+        return "pr-" + (m.group(1) or m.group(2) if m else slug(str(number)))
     try:
         branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
     except GitError:

@@ -236,6 +236,19 @@ def test_test_output_with_long_runs_of_spaces_parses_in_linear_time():
         {"name": "a.test.js > (3 ms)", "status": "pass", "message": None}]
 
 
+def test_a_pull_request_number_names_a_review_inside_the_store_and_is_not_an_option(repo, monkeypatch):
+    """`review_pr` takes `github` from the agent: it names the review (pr-<number>), whose page and baseline are
+    written under .leyline/, and it is passed to gh."""
+    from leyline import pr
+    cid = pr.change_id(repo, None, "https://github.com/o/r/pull/1/../../../../../../../../tmp/evil")
+    assert "/" not in cid and "\\" not in cid and cid.startswith("pr-")
+    ran = []
+    monkeypatch.setattr(pr.subprocess, "run", lambda args, **kw: ran.append(args) or subprocess.CompletedProcess(args, 1, b"", b"no"))
+    with pytest.raises(pr.GitError):
+        pr.github_pr(repo, "--web")
+    assert not any("--web" in a and a.index("--web") < (a.index("--") if "--" in a else len(a)) for a in ran)
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)
