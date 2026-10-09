@@ -100,7 +100,7 @@ that prints one PASS or FAIL line per test):
 **State: ready to implement.** It has not been reviewed.
 
 Names are hard to read in logs. The plan has 3 tasks: it changes Engine.start and adds Engine.shout.
-Nothing else must be edited with it; 4 places in 2 modules run into the changed code and may behave
+Nothing else must be edited with it; 4 places in 1 module run into the changed code and may behave
 differently; 3 existing tests already run through it. It is done when 2 scenarios pass: 1 already has a
 test, 1 needs a test written.
 ...

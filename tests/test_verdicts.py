@@ -282,6 +282,15 @@ def test_task_verdicts(loud):
     assert "not Engine.child" in t["1.5"]["verdict_why"]
 
 
+def test_the_plan_counts_the_modules_of_the_code_that_runs_into_the_change(loud):
+    """Engine.start is in pkg; the 4 places that run into it are all in tests."""
+    _, ch, db = loud
+    c = store.connect(db)
+    text = spec._plain_summary(spec.brief(c, ch))
+    c.close()
+    assert "4 places in 1 module run into the changed code" in text, text
+
+
 def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tmp_path):
     """A byte-order mark hid the first task and the title; `## ` alone crashed; `2FA login` was task 2, "FA login"."""
     ch = tmp_path / "c"

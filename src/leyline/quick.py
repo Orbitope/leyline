@@ -281,7 +281,9 @@ def start(db: str | Path, about: str, written: Optional[list[str]] = None, resul
                "must_edit": report["must_edit"], "reached": report["summary"]["reached"],
                "callers": [spec._label(names, m["id"]) for m in report["marks"] if m["role"] == "direct"],
                "reached_across": _across(names, report["channels"]),
-               "modules": report["summary"]["modules"], "channels": crossings, "must_agree": agree,
+               # the modules the code that runs into it is in
+               "modules": sum(1 for g in report["by_module"] if g["reached"]) or report["summary"]["modules"],
+               "channels": crossings, "must_agree": agree,
                "tests_to_run": [{**t, "name": spec._label(names, t["id"]) if t["id"] in names.by_id else t["name"]}
                                 for t in report["tests_to_run"]],
                "untested": report["untested"], "risks": report["risks"],

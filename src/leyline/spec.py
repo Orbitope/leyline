@@ -1025,7 +1025,9 @@ def _plain_summary(b: dict) -> str:
     if not imp.get("error"):
         s = imp["summary"]
         must = f"{_n(s['must_edit'], 'other place')} must be edited along with it" if s["must_edit"] else "Nothing else must be edited with it"
-        reach = (f"{_n(s['reached'], 'place')} in {_n(s['modules'], 'module')} {'runs' if s['reached'] == 1 else 'run'} into the "
+        # the modules the places that run into it are in, not every module the change touches
+        mods = sum(1 for g in imp.get("by_module") or [] if g.get("reached")) or s["modules"]
+        reach = (f"{_n(s['reached'], 'place')} in {_n(mods, 'module')} {'runs' if s['reached'] == 1 else 'run'} into the "
                  "changed code and may behave differently") if s["reached"] else "no other code runs into it"
         tests = (f"{_n(s['tests_to_run'], 'existing test')} already {'runs' if s['tests_to_run'] == 1 else 'run'} through it"
                  if s["tests_to_run"] else "no existing test runs through it")

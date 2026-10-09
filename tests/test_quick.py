@@ -89,6 +89,13 @@ def test_a_constant_and_its_caller(repo):
     assert "`test_get` passed" in page and "grown past" not in page
 
 
+def test_the_places_that_run_into_it_are_counted_in_their_own_modules(repo):
+    """count is in app; the one place that runs into it, test_count, is in tests: one module, not two."""
+    code, page = run("quick", "count lines", "--about", "app.use.count", "--tests", "-", stdin=PASSING)
+    assert code == 0, page
+    assert "Runs into it: 1 place in 1 module;" in page, page
+
+
 def test_an_edit_outside_the_named_code_is_partial_until_named(repo):
     run("quick", "make the retry count 3", "--about", "RETRIES", "--tests", "-", stdin=PASSING)
     edit(repo, "app/net.py", "RETRIES = 5", "RETRIES = 3")
