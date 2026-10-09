@@ -229,6 +229,40 @@ def test_python_a_call_on_an_object_made_in_place_is_on_its_class(tmp_path):
     assert ("pkg.shapes.main", "pkg.shapes.Box.w") in edges(con, "reads")
 
 
+def test_typescript_a_request_on_a_client_named_api_is_not_a_route(tmp_path):
+    con = _map(tmp_path, {
+        "web/src/api.ts": (
+            "import axios from 'axios';\n"
+            "export const api = axios.create({ baseURL: '/' });\n"
+            "\n"
+            "export async function login(credentials: { user: string }) {\n"
+            "  return api.post('/api/login', credentials);\n"
+            "}\n"
+            "\n"
+            "export async function items(params: object) {\n"
+            "  return api.get('/api/items', params);\n"
+            "}\n"),
+        "server/src/main.ts": (
+            "import Fastify from 'fastify';\n"
+            "const server = Fastify();\n"
+            "\n"
+            "server.post('/api/login', async (req) => {\n"
+            "  return { ok: true };\n"
+            "});\n"
+            "\n"
+            "server.get('/api/items', listItems);\n"
+            "\n"
+            "async function listItems() {\n"
+            "  return [];\n"
+            "}\n"
+            "\n"
+            "server.listen({ port: 3000 });\n"),
+    })
+    got = http(con)
+    assert got["web.src.api.login"] == ("server.src.main.<module>/route:POST /api/login", "POST /api/login")
+    assert got["web.src.api.items"] == ("server.src.main.listItems", "GET /api/items")
+
+
 def test_typescript_an_overloaded_method_spans_its_implementation(tmp_path):
     con = _map(tmp_path, {
         "src/shape.ts": (

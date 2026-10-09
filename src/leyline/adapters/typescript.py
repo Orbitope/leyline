@@ -1260,7 +1260,11 @@ class _Walker:
             return
         if fn.type == "member_expression" and name in HTTP_VERBS | {"all"} and addr and addr.startswith("/"):
             recv = _text(fn.child_by_field_name("object"))
-            handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier") for a in arg_nodes[1:])
+            # On a name that is a client's as well as a server's (api), a name passed after the path is a handler only
+            # when it names a function: api.post("/api/login", credentials) sends credentials.
+            named = (lambda a: _text(a) in self.fn_names or _text(a) in self.imported) if CLIENTS.search(recv) else (lambda a: True)
+            handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier" and named(_unwrap(a)))
+                          for a in arg_nodes[1:])
             method = None if name == "all" else name.upper()
             last = _unwrap(arg_nodes[-1]) if len(arg_nodes) > 1 else None
             if SERVERS.search(recv) and (handler or (last is not None and last.type == "object" and self._handler_member(last))):
