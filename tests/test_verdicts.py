@@ -353,6 +353,26 @@ def test_a_change_whose_tasks_name_no_code_can_be_planned_and_checked(tmp_path):
     assert not v["done_as_agreed"] and any("outside the spec" in w for w in v["why_not"])
 
 
+def test_check_before_any_plan_says_to_plan_first(tmp_path, capsys, monkeypatch):
+    """With no plan (none run, or it stopped at an error) check said only "No change 'spec-c'."."""
+    from leyline import loop
+    from leyline.cli import main
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE2, work)
+    ch = work / "openspec" / "changes" / "c"
+    ch.mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: C\n")
+    (ch / "tasks.md").write_text(TASKS)
+    monkeypatch.chdir(work)
+    assert main(["map", ".", "--exact", "off"]) == 0
+    capsys.readouterr()
+    v = loop.check(work / ".leyline" / "leyline.db", ch, BEFORE)
+    assert "has not been planned" in v["error"] and "`leyline plan c`" in v["next"][0], v
+    (work / "t.txt").write_text("PASS test_start\n")
+    assert main(["check", "c", "--tests", str(work / "t.txt")]) == 1
+    assert "`leyline plan c`" in capsys.readouterr().err
+
+
 def test_a_test_name_with_test_inside_a_word_finds_its_scenario(loud):
     """`test_` was cut wherever it appeared, so `test_shortest_path` read as "shorpath" and never proved "Shortest path"."""
     assert spec._norm("test_shortest_path") == spec._norm("Shortest path") == "shortest path"

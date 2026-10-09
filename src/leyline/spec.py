@@ -1306,7 +1306,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     cid = "spec-" + parsed["id"]
     review = diff.review(con, cid, before_run, after_run)
     if "error" in review:
-        return {"error": review["error"] + (" Run `leyline plan` on the change before it is implemented."
+        if review["error"].startswith("No change"):   # never planned, or the plan stopped at an error
+            return {"error": f"{parsed['id']} has not been planned, so there is nothing to compare the code with.",
+                    "next": [f"Next: run `leyline plan {parsed['id']}` (the `plan` tool) on the code as it was before the"
+                             " change (undo the edits, or start from the commit before them), then check it again."]}
+        return {"error": review["error"] + (f" Run `leyline plan {parsed['id']}` on the change before it is implemented."
                                             if review["error"].startswith("No snapshot") else "")}
     names = _Names(con)
     g = review["graph"]["nodes"]

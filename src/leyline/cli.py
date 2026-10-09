@@ -424,6 +424,8 @@ def _loop(args) -> int:
     r = loop.check(db, change, results, args.coverage)
     if "error" in r:
         print(f"leyline: {r['error']}", file=sys.stderr)
+        for line in r.get("next") or []:
+            print(line, file=sys.stderr)
         return 1
     print(loop.check_text(r, name))
     return 0 if r["done_as_agreed"] else 1
