@@ -192,9 +192,8 @@ def _keep_source(con, cid: str, files: set) -> dict:
         if data is not None and len(data) < 2_000_000:
             texts[f"{repo}:{path}"] = data.decode("utf-8", errors="replace")
     out = {"texts": texts, "repos": repos}
-    p = _src_path(con, cid)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(out), encoding="utf-8")
+    from . import atomic   # whole or not at all: `--done` reads it back
+    atomic.write_text(_src_path(con, cid), json.dumps(out))
     return out
 
 
