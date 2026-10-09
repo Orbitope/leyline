@@ -612,8 +612,10 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
     parent = {r[0]: (r[1], share(r[2], r[2])) for r in con.execute("SELECT id, parent_id, kind FROM nodes")}
     module = {r[0]: share(r[1], r[1]) for r in con.execute("SELECT node_id, module_id FROM ancestry")}
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
-    tests = {r[0] for r in con.execute("SELECT entry_id FROM flows WHERE json_extract(attrs, '$.kind') = 'test'")}
-    test_mods = {module.get(t) for t in tests}
+    # Test code: a file that holds tests, or a test project. A test kept beside the code it tests (grocery.test.ts
+    # next to grocery.ts) does not make that code test code.
+    test_files, test_mods = store.test_places(con)
+    path = {r[0]: r[1] for r in con.execute("SELECT id, path FROM nodes WHERE kind IN ('callable', 'test')")}
 
     def owner(i):
         cur = parent.get(i, (None, None))[0]
@@ -640,7 +642,7 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
         if scope and not (f.startswith(scope) or module.get(f) == scope):
             continue
         own = owner(f)
-        product = {w for w in ws if module.get(w) not in test_mods}
+        product = {w for w in ws if module.get(w) not in test_mods and path.get(w) not in test_files}
         outside_types = sorted(t for t in {owner(w) or w for w in product} if not is_a(t, own))
         if not outside_types:
             continue

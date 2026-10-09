@@ -423,3 +423,16 @@ def test_the_tour_reads_code_with_its_tests_beside_it_as_code(tmp_path):
     tested = next(s["narrative"] for s in stops if s["title"] == "How it is tested")
     assert "2 of the 4 functions outside test code" in tested, tested
 
+
+def test_state_counts_writers_in_code_with_its_tests_beside_it(tmp_path):
+    from leyline import query
+    con = _map(tmp_path, {
+        "src/lib/types.ts": "export interface Ingredient {\n  name: string;\n  grams: number;\n}\n",
+        "src/screens/Edit.ts": 'import { Ingredient } from "../lib/types";\n\n'
+                               "export function save(i: Ingredient, g: number) {\n  i.grams = g;\n}\n",
+        "src/screens/Edit.test.ts": 'import { it } from "vitest";\nimport { save } from "./Edit";\n\n'
+                                    'it("saves", () => {\n  const i = { name: "a", grams: 0 };\n  save(i, 2);\n'
+                                    '  i.name = "b";\n});\n',
+    })
+    got = query.shared_state(con)
+    assert [f["name"] for f in got.get("fields", [])] == ["Ingredient.grams"], got
