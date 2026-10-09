@@ -191,6 +191,33 @@ def test_view_serves_the_map_to_this_machine_by_name_only(repo):
     assert get(f"localhost:{port}")[0] == 200
 
 
+def test_a_go_test_command_quotes_the_package_directory(repo):
+    """The command `affected-tests` prints is pasted into a shell: a directory named `$(touch pwned)` in the
+    repository must reach go as one argument, not run."""
+    import shlex
+    from leyline import affected
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db, page=False)
+    con = store.connect(db)
+    try:
+        rid = next(iter(store.roots(con)))
+        out = affected.commands(con, [{"repo": rid, "path": "pkg/$(touch pwned); x/a_test.go", "name": "TestA"}])
+    finally:
+        con.close()
+    words = shlex.split(out[0]["command"])
+    assert words[:3] == ["go", "test", "./pkg/$(touch pwned); x"], words
+    (repo / "package.json").write_text('{"devDependencies": {"jest": "1"}}')
+    con = store.connect(db)
+    try:
+        out = affected.commands(con, [{"repo": rid, "path": "--config=evil/a.test.js", "name": "a"},
+                                      {"repo": rid, "path": "-p/test_a.py", "name": "test_a"}])
+    finally:
+        con.close()
+    for c in out:
+        assert not any(w.startswith("-") and "/" in w for w in shlex.split(c["command"])), c["command"]
+    assert [c["runner"] for c in out] == ["jest", "pytest"]
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)

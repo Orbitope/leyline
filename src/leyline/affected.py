@@ -412,7 +412,8 @@ def commands(con, tests: list[dict]) -> list[dict]:
             other.append(f"{t['name']} ({path})")
     out = []
     for (runner, cwd), items in sorted(groups.items()):
-        items = list(dict.fromkeys(items))
+        # a path that starts with - (a folder named --config=x) is a file to the runner, not an option
+        items = list(dict.fromkeys(i if not isinstance(i, str) or not i.startswith("-") else "./" + i for i in items))
         if runner == "pytest":
             if len(items) > 200:   # too long for one command line: run their files
                 items = list(dict.fromkeys(i.split("::", 1)[0] for i in items))
@@ -426,7 +427,8 @@ def commands(con, tests: list[dict]) -> list[dict]:
             by_dir = defaultdict(list)
             for d, name in items:
                 by_dir[d].append(name)
-            cmd = " && ".join(f"go test ./{d if d != '.' else ''} -run " + shlex.quote("^(" + "|".join(sorted(set(ns))) + ")$")
+            cmd = " && ".join("go test " + shlex.quote("./" + (d if d != "." else "")) + " -run "
+                              + shlex.quote("^(" + "|".join(sorted(set(ns))) + ")$")
                               for d, ns in sorted(by_dir.items()))
         out.append({"runner": runner, "cwd": cwd, "command": cmd, "tests": len(items)})
     if other:
