@@ -938,13 +938,15 @@ def _patterns_touched(con, tasked: set) -> list[dict]:
 
 
 def _write(path: Path, body: str) -> None:
-    """Replace the generated block of a file, keeping anything a person wrote around it."""
+    """Replace the generated block of a file, keeping anything a person wrote around it. Written whole or not at
+    all."""
+    from . import atomic
     block = f"{BEGIN}\n{body.rstrip()}\n{END}\n"
     old = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
     if BEGIN in old and END in old:
-        path.write_text(old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"), encoding="utf-8")
+        atomic.write_text(path, old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"))
     else:
-        path.write_text(block, encoding="utf-8")
+        atomic.write_text(path, block)
 
 
 def _some(xs: list[str], n: int = 4) -> str:

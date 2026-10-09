@@ -29,13 +29,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Optional
 
-from . import store
+from . import atomic, store
 
 FILE_IN_OPENSPEC = "openspec/leyline-learnings.json"
 FILE_AT_ROOT = ".leyline-learnings.json"
@@ -96,16 +94,7 @@ def _write(path: Path, items: list[dict]) -> None:
     items = sorted(({k: v for k, v in x.items() if not k.startswith("_")} for x in items),
                    key=lambda x: (x.get("created", ""), x["id"]))
     body = json.dumps({"about": ABOUT, "learnings": items}, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(body)
-        os.chmod(tmp, path.stat().st_mode & 0o777 if path.exists() else 0o644)   # a temp file is private; this is not
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    atomic.write_text(path, body)
 
 
 def _roots(con) -> dict:

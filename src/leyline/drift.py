@@ -228,7 +228,8 @@ def _write_file(openspec: Path, anchors: dict) -> Path:
             "anchors": anchors, "version": 1}
     text = json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
     if not f.is_file() or f.read_text(encoding="utf-8", errors="replace") != text:
-        f.write_text(text, encoding="utf-8")
+        from . import atomic
+        atomic.write_text(f, text)
     return f
 
 
