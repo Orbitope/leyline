@@ -92,9 +92,10 @@ class Git:
                 continue
             if not _word(new).search(head):
                 return True
-            log = _git(root, "log", "--follow", "-M", "-S", new, "--format=@%H", "--name-status", "HEAD", "--",
+            # Each commit opens with a NUL, which no path has (a scoped package's path has `@`).
+            log = _git(root, "log", "--follow", "-M", "-S", new, "--format=%x00%H", "--name-status", "HEAD", "--",
                        f"{prefix}{path}") or ""
-            blocks = [b.strip().splitlines() for b in log.split("@") if b.strip()]
+            blocks = [b.strip().splitlines() for b in log.split("\0") if b.strip()]
             if not blocks:
                 return None
             first = blocks[-1]                    # the oldest commit that changed how often it is written

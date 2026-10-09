@@ -308,3 +308,23 @@ def test_what_a_removal_takes_with_it_is_not_an_edit_outside_the_spec(tmp_path, 
         core.write_text(core.read_text().split("class Journal")[0])
     v = _verify(work, db, ch, [{"name": n, "status": "pass"} for n in ("test_start", "test_made", "test_chain")])
     assert v["tasks"][0]["verdict"] == "proven" and v["drift"] == [] and v["done_as_agreed"], v["why_not"]
+
+
+@pytest.mark.parametrize("path", ["src/engine.py", "packages/@scope/engine.py"])
+def test_git_says_when_a_name_came_in_for_a_path_with_an_at_sign(tmp_path, path):
+    """git's log was split on `@`, which a scoped package's path has too, so git could not say a name was new there."""
+    from leyline import renames
+
+    def git(*args):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=tmp_path, check=True,
+                       capture_output=True)
+    f = tmp_path / path
+    f.parent.mkdir(parents=True)
+    f.write_text("def start():\n    return 1\n\n\ndef other():\n    return 2\n")
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("commit", "-qm", "one")
+    f.write_text("def begin():\n    return 1\n\n\ndef other():\n    return 2\n")
+    git("commit", "-qam", "rename start to begin")
+    g = renames.Git([tmp_path])
+    assert g.was_new(path, "start", "begin") is True       # begin came in while start was there
