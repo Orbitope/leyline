@@ -269,6 +269,14 @@ def prune_baselines(con) -> list[str]:
     return gone
 
 
+def unmapped(con) -> Optional[dict]:
+    """An error when the store holds no repository (a first map stopped before it wrote anything, or a store a reader
+    created): planned against it, every name would read as new code and the baseline would be of nothing."""
+    if con.execute("SELECT 1 FROM nodes WHERE kind = 'repo' LIMIT 1").fetchone() is None:
+        return {"error": f"nothing is mapped in the store at {_show(diff.store_path(con))} yet: run `leyline map <repo>` first"}
+    return None
+
+
 # -- plan -----------------------------------------------------------------------------------------
 def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None, new_baseline: bool = False) -> dict:
     """Bring the map up to date, write the brief, and record the tests as they pass before the change."""
@@ -278,6 +286,8 @@ def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] =
         parsed = spec.parse(change_dir)
         if "error" in parsed:
             return parsed
+        if bad := unmapped(con):
+            return bad
         cid = "spec-" + parsed["id"]
         prune_baselines(con)
         # Results passed in are the start only while the code is as it was when first planned (or a new baseline is
@@ -382,6 +392,8 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         parsed = spec.parse(change_dir)
         if "error" in parsed:
             return parsed
+        if bad := unmapped(con):
+            return bad
         cid = "spec-" + parsed["id"]
         before, after = spec.run_label(cid, "before"), spec.run_label(cid, "after")
         if coverage_file is not None:

@@ -74,3 +74,19 @@ def test_a_plan_whose_baseline_cannot_be_kept_says_so(repo, monkeypatch):
     st = spec.brief_status(b)
     assert not st["ready"] and any("No space left on device" in x and "baseline" in x for x in st["blocking"])
     assert "No space left on device" in (ch / "leyline.md").read_text(encoding="utf-8")
+
+
+def test_plan_and_check_on_a_store_with_nothing_mapped_say_so(repo):
+    """A store with no repository in it (a first map stopped before it wrote anything, or one a reader created) is not
+    a map of code where every name is new: plan said "ready to implement", wrote over leyline.md and kept a baseline
+    of nothing."""
+    from leyline import store
+    work, ch, db = repo
+    loop.plan(db, ch)
+    page = (ch / "leyline.md").read_text(encoding="utf-8")
+    empty = work / "empty" / "leyline.db"
+    store.connect(empty).close()
+    for r in (loop.plan(db=empty, change_dir=ch), loop.check(db=empty, change_dir=ch)):
+        assert "nothing is mapped" in r.get("error", "")
+    assert (ch / "leyline.md").read_text(encoding="utf-8") == page
+    assert not (empty.parent / "snapshots").exists()
