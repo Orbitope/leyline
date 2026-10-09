@@ -76,3 +76,19 @@ def test_a_latin1_python_file_with_a_coding_declaration_keeps_its_names(tmp_path
     ids, calls = _graph(tmp_path / "l.db")
     assert "r:python:latin.caf\xe9" in ids, sorted(ids)
     assert ("r:python:latin.after", "r:python:latin.caf\xe9") in calls
+
+
+def test_a_namespace_package_in_a_src_layout_is_imported_by_its_own_name(tmp_path):
+    """src/corp/tools/strings.py with no __init__.py anywhere (PEP 420) is imported as corp.tools.strings."""
+    from leyline.indexer import index
+    root = tmp_path / "repo"
+    for f, text in {"pyproject.toml": "[project]\nname = 'corp'\n",
+                    "src/corp/tools/strings.py": "def shout(s):\n    return s.upper()\n",
+                    "src/corp/app/main.py": "from corp.tools.strings import shout\n\n\ndef run():\n    return shout('a')\n",
+                    "tests/test_main.py": "from corp.app.main import run\n\n\ndef test_run():\n    assert run()\n"}.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    index(root, tmp_path / "l.db", "r")
+    _, calls = _graph(tmp_path / "l.db")
+    assert ("r:python:src.corp.app.main.run", "r:python:src.corp.tools.strings.shout") in calls
+    assert ("r:python:tests.test_main.test_run", "r:python:src.corp.app.main.run") in calls

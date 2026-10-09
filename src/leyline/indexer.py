@@ -1239,6 +1239,9 @@ class Indexer:
                 start = len(parts) - 1
                 while start > 0 and "/".join(parts[:start]) in dirs_with_init:
                     start -= 1
+                if start == len(parts) - 1 and "src" in parts[:-1]:
+                    # a namespace package (PEP 420, no __init__.py) in a src layout: src/corp/tools/x.py is corp.tools.x
+                    start = len(parts) - 1 - parts[:-1][::-1].index("src")
                 if 0 < start < len(parts) - 1:
                     self.py_modules[repo].setdefault(module_path("/".join(parts[start:])), fid)
                 if len(self.repos) > 1 and start < len(parts) - 1:
