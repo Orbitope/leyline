@@ -460,6 +460,12 @@ class Generic:
 
         top_used = False
         seen_calls = set()
+        kinds_of = {n.id: n.attrs.get("native_kind") for n in res.nodes}
+        parents = {n.id: n.parent_id for n in res.nodes}
+        ctors: dict = {}   # type id -> its first constructor's entry
+        for m in made:
+            if m[3] == "callable" and kinds_of.get(m[2]) == "constructor":
+                ctors.setdefault(parents.get(m[2]), m)
         sites, site_at = [], {}
         for name_node, node in calls:
             name = _text(name_node).strip()
@@ -476,9 +482,13 @@ class Generic:
                     home = max(outer, key=lambda m: m[0]) if outer else None
                 else:
                     continue
+            owner = inside(name_node.start_byte, ("type",))
+            if home is None and owner is not None and _in_field(node, owner[0]):
+                # A field initialiser (private Formatter fmt = Formatter.create()) runs when the object is made: in
+                # the type's constructor, or the type itself when it declares none.
+                home = ctors.get(owner[2]) or owner
             src_id = home[2] if home else top_id
             top_used = top_used or home is None
-            owner = inside(name_node.start_byte, ("type",))
             enclosing_type = owner[2] if owner else None
             if home is not None:
                 n = next((x for x in res.nodes if x.id == home[2]), None) if False else None
@@ -606,6 +616,17 @@ def _type_names(text: str) -> list:
     """The names in a written type, outer first, without package qualifiers: `*pkg.Command` -> [Command]."""
     text = re.sub(r"\b[a-z_]\w*\s*(::|\.)\s*", "", text)
     return [w for w in re.findall(r"[A-Za-z_]\w*", text) if w not in ("mut", "dyn", "impl", "const", "final", "ref", "in", "out")]
+
+
+def _in_field(node, type_start: int) -> bool:
+    """A node sits in a field's declaration (its initialiser) below the type that declares the field. Other code
+    in a type's body (Ruby's has_many, a Python class body) runs when the type is defined, not made."""
+    p = node
+    while p is not None and p.start_byte >= type_start:
+        if _FIELD.match(p.type):
+            return True
+        p = p.parent
+    return False
 
 
 def _in_anonymous(node, outer_start: int) -> bool:

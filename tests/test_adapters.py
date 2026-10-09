@@ -201,6 +201,32 @@ def test_an_outside_import_in_go_or_java_is_labelled_by_its_own_language_not_npm
     assert not any(x.startswith("npm:") for x in ext)
 
 
+def test_java_a_field_initialiser_runs_in_the_constructor_not_a_module_body(tmp_path):
+    con = _map(tmp_path, {
+        "src/app/Formatter.java": (
+            "package app;\n"
+            "public class Formatter {\n"
+            "    public static Formatter create() { return new Formatter(); }\n"
+            "}\n"),
+        "src/app/Greeter.java": (
+            "package app;\n"
+            "public class Greeter {\n"
+            "    private final Formatter fmt = Formatter.create();\n"
+            "    public Greeter() { }\n"
+            "}\n"),
+        "src/app/Plain.java": (
+            "package app;\n"
+            "public class Plain {\n"
+            "    private final Formatter fmt = Formatter.create();\n"
+            "}\n"),
+    })
+    nodes = {short(r[0]) for r in con.execute("SELECT id FROM nodes")}
+    assert not any(n.endswith("<module>") for n in nodes)
+    got = calls(con)
+    assert ("src.app.Greeter.Greeter.Greeter", "src.app.Formatter.Formatter.create") in got
+    assert ("src.app.Plain.Plain", "src.app.Formatter.Formatter.create") in got
+
+
 def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,
