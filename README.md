@@ -68,9 +68,9 @@ cp -r tests/fixture2 /tmp/engine-repo && cd /tmp/engine-repo
 leyline map .
 ```
 ```
-Mapped engine-repo in 1.2 s: 13 files, 323 lines, 4 modules.
-Found 31 types, 64 functions, 5 tests and 1 entry point (where a program starts).
-Modules: cs/Mod (7 files), py/src/pkg (2 files), py/tests (2 files), py/web (2 files)
+Mapped engine-repo in 0.8 s: 14 files, 354 lines, 4 modules.
+Found 34 types, 73 functions, 5 tests and 1 entry point (where a program starts).
+Modules: cs/Mod (8 files), py/src/pkg (2 files), py/tests (2 files), py/web (2 files)
 Design patterns found: builder, composite, decorator, factory 2, singleton, strategy, template method
 Store: .leyline/leyline.db
 Map page: .leyline/map.html (open it in a browser)
@@ -100,7 +100,7 @@ that prints one PASS or FAIL line per test):
 **State: ready to implement.** It has not been reviewed.
 
 Names are hard to read in logs. The plan has 3 tasks: it changes Engine.start and adds Engine.shout.
-Nothing else must be edited with it; 3 places in 2 modules run into the changed code and may behave
+Nothing else must be edited with it; 4 places in 2 modules run into the changed code and may behave
 differently; 3 existing tests already run through it. It is done when 2 scenarios pass: 1 already has a
 test, 1 needs a test written.
 ...
@@ -108,7 +108,7 @@ test, 1 needs a test written.
 leave alone or a missing task:
 - Engine.name (used by Engine.start) is also used by Engine.child
 ...
-Next: have the plan reviewed before code is written (ask your agent to run the
+Next: have the plan reviewed (logic and performance) before code is written (ask your agent to run the
 leyline-adversarial-review skill), then run `leyline plan loud-engine` again. Or, if you accept the plan
 as it is, implement it.
 ```
