@@ -105,6 +105,46 @@ def test_coupling_says_why_there_is_no_history(tmp_path, monkeypatch, capsys):
     assert "not under git" not in err and "where it was mapped" in err, err
 
 
+def test_pr_says_plainly_why_it_has_no_base(tmp_path, monkeypatch, capsys):
+    """No commits yet; a default branch named trunk with no origin; a shallow clone missing the fork point."""
+    def pr_error(where, *argv):
+        monkeypatch.chdir(where)
+        capsys.readouterr()
+        code, _ = run("pr", *argv)
+        assert code != 0
+        return capsys.readouterr().err
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    git(fresh, "init", "-q")
+    assert "no commits yet" in pr_error(fresh)
+
+    trunk = tmp_path / "trunk"
+    trunk.mkdir()
+    (trunk / "a.py").write_text("def f():\n    return 1\n")
+    git(trunk, "init", "-q", "-b", "trunk")
+    git(trunk, "add", "a.py")
+    git(trunk, "commit", "-qm", "one")
+    err = pr_error(trunk)
+    assert "leyline pr <branch or commit>" in err, err
+
+    # a shallow clone of main, then a feature branch fetched shallow too: no commit they share is in the clone
+    src = _origin(tmp_path)
+    git(src, "switch", "-q", "-c", "feature")
+    for i in range(3):
+        (src / "pkg/core.py").write_text(CORE + f"\n\ndef more{i}():\n    return {i}\n")
+        git(src, "commit", "-qam", f"f{i}")
+    git(src, "switch", "-q", "main")
+    (src / "pkg/__init__.py").write_text("X = 1\n")
+    git(src, "commit", "-qam", "main moves on")
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "-q", "--depth", "1", "--branch", "main", "file://" + str(src), str(shallow))
+    git(shallow, "fetch", "-q", "--depth", "1", "origin", "feature:feature")
+    git(shallow, "switch", "-q", "feature")
+    err = pr_error(shallow, "main")
+    assert "shallow" in err and "--unshallow" in err, err
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,

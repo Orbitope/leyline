@@ -581,6 +581,11 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         if gh.get("headRefOid") and gh["headRefOid"] != head:
             return {"error": f"the checkout is at {head[:7]}, not at pull request {github}'s head"
                              f" ({gh['headRefOid'][:7]}): run `gh pr checkout {github}` first"}
+    try:
+        _git(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+    except GitError:
+        return {"error": f"the repository at {root} has no commits yet: commit the base first, then branch from it"}
+    named = bool(base)
     if not base:
         base = _default_base(root)
     # A branch this clone has only as origin's; for a GitHub pull request origin's first, as GitHub compares with it
@@ -593,8 +598,17 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         except GitError:
             continue
     else:
+        if not named:   # main by default: a repository whose default branch has another name says nothing of it
+            return {"error": f"no main or master branch in {root}, and origin's default branch is not known: name the"
+                             " base, `leyline pr <branch or commit>`"}
         return {"error": f"no commit or branch {base!r} in {root}"}
-    base_sha = _git(root, "merge-base", base, "HEAD")
+    try:
+        base_sha = _git(root, "merge-base", base, "HEAD")
+    except GitError:
+        if _git(root, "rev-parse", "--is-shallow-repository") == "true":
+            return {"error": f"this clone is shallow and holds no commit both {base} and HEAD come from: fetch more"
+                             " history (`git fetch --unshallow`, or --deepen), then run it again"}
+        return {"error": f"{base} and HEAD share no history: name a base the branch was made from"}
     head_sha = _git(root, "rev-parse", "HEAD")
     dirty = bool(_git(root, "status", "--porcelain"))   # a new file not yet added is mapped, so it counts too
     given = about.strip() or None   # said by the person (or the pull request); a description made here is not kept
