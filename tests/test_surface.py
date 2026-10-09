@@ -138,3 +138,12 @@ def test_the_server_reads_the_store_its_path_names_now(repo, busy, monkeypatch):
     monkeypatch.setenv("LEYLINE_DB", str(busy))
     ids = [r["id"] for r in json.loads(server.search(text="target", kind="callable"))["results"]]
     assert ids and all(i.startswith("busy:") for i in ids), ids
+
+
+def test_grade_with_no_such_index_says_so_before_indexing(repo, capsys, monkeypatch):
+    """A missing .scip file was found only after the whole repository was indexed, and then as a traceback."""
+    from leyline import grade
+    monkeypatch.setattr(grade, "Indexer", lambda *a, **k: pytest.fail("indexed before checking the index file"))
+    assert main(["grade", str(repo), str(repo / "missing.scip")]) == 2
+    err = capsys.readouterr().err
+    assert "missing.scip" in err and "Traceback" not in err and len(err.strip().splitlines()) == 1

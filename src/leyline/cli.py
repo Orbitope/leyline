@@ -740,6 +740,9 @@ def _main(argv=None) -> int:
         return 0
     if args.cmd == "grade":
         from . import grade
+        if args.compiler != "roslyn" and not Path(args.compiler).is_file():   # before indexing the whole repository
+            print(f"leyline: no SCIP index at {args.compiler}: give a .scip file, or roslyn for C#.", file=sys.stderr)
+            return 2
         g = grade.grade(args.root, args.compiler, args.prefix, db=str(Path(args.db).with_suffix(".grade.db")))
         g.pop("_samples", None)
         _print(g)
