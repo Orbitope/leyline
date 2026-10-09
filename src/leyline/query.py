@@ -539,7 +539,7 @@ def source(con, node_id: str, max_lines: int = 200) -> dict:
         return {"error": f"{row['kind']} nodes have no source span."}
     root = store.roots(con).get(row["repo_id"])
     path = root / row["path"] if root else None
-    if path is None or not path.is_file():
+    if path is None or not path.is_file() or not store.inside(path, root):   # a link out, checked out since the map
         return {"error": f"Source file not found for {row['path']}."}
     from .indexer import source_lines
     try:

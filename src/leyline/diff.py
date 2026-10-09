@@ -105,6 +105,9 @@ def source(con, repo: str, path: str, root_of: Optional[dict] = None) -> Optiona
     root = (root_of if root_of is not None else roots(con)).get(repo)
     if root is None:
         return None
+    from . import store
+    if not store.inside(root / path, root):   # a link out of the repository, checked out since it was mapped
+        return None
     try:
         return (root / path).read_bytes()
     except OSError:

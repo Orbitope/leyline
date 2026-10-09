@@ -140,6 +140,26 @@ def test_a_change_folder_does_not_read_files_linked_from_outside(tmp_path):
     assert "AKIAEXAMPLE" not in str(spec.parse(d))
 
 
+def test_source_and_the_page_do_not_read_a_mapped_file_that_became_a_link_outside(repo, tmp_path):
+    """Mapped on one branch, then a pull request checked out whose app.py is a link to a private key: `source` and the
+    page read the working tree, and must not read through the link before the next map skips it."""
+    from leyline import export, query
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db, page=False)
+    secret = tmp_path / "outside" / "id_rsa"
+    secret.parent.mkdir(exist_ok=True)
+    secret.write_text("PRIVATEKEYLINE1\nPRIVATEKEYLINE2\nPRIVATEKEYLINE3\n")
+    (repo / "app.py").unlink()
+    (repo / "app.py").symlink_to(secret)
+    con = store.connect(db)
+    try:
+        fid = next(r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'callable'"))
+        assert "PRIVATEKEY" not in str(query.source(con, fid))
+        assert "PRIVATEKEY" not in export.page(con)
+    finally:
+        con.close()
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)

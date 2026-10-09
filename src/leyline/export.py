@@ -202,7 +202,7 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 try:
                     # numbered as the parsers number lines, so a span points at the same text in the page
-                    text = "\n".join(source_lines(p)) if p.is_file() else None
+                    text = "\n".join(source_lines(p)) if p.is_file() and store.inside(p, roots[r["repo_id"]]) else None
                 except OSError:
                     text = None
                 if text is not None:
