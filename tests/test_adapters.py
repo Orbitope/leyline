@@ -676,3 +676,33 @@ def test_typescript_an_anonymous_default_class_is_a_class_with_its_methods(tmp_p
     got = calls(con)
     assert ("src.widget.default.render", "src.widget.default.label") in got
     assert ("src.page.show", "src.widget.default.render") in got
+
+
+def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/core.py": (
+            "class Engine:\n"
+            "    def start(self):\n"
+            "        return 1\n"
+            "\n"
+            "class Field:\n"
+            "    def strip(self):\n"
+            "        return 2\n"),
+        "pkg/tool.py": (
+            "from typing import Annotated, Literal\n"
+            "from pkg.core import Engine, Field\n"
+            "\n"
+            "def search(text: Annotated[str, Field(description='such as `Engine start`')],\n"
+            "           mode: Literal['Engine', 'Other'] = 'Engine'):\n"
+            "    return text.strip()\n"
+            "\n"
+            "def run(e: Annotated[Engine, 'the Field to use']):\n"
+            "    return e.start()\n"),
+    })
+    used = edges(con, "uses_type")
+    assert ("pkg.tool.search", "pkg.core.Engine") not in used
+    assert ("pkg.tool.search", "pkg.core.Field") not in used
+    assert calls(con).get(("pkg.tool.search", "pkg.core.Field.strip")) != "heuristic"   # text is a str
+    assert ("pkg.tool.run", "pkg.core.Engine") in used
+    assert ("pkg.tool.run", "pkg.core.Field") not in used
+    assert ("pkg.tool.run", "pkg.core.Engine.start") in calls(con)

@@ -87,15 +87,19 @@ WRAPPERS = {"Optional", "Union", "Iterator", "Iterable", "Generator", "AsyncIter
 
 def _annotation_types(text: str) -> list[str]:
     """Class names in an annotation, without the typing wrappers around them: Iterator[Flask] -> [Flask].
-    What `Callable[..., Flask]` or `type[Flask]` holds is not an instance of Flask, so those are left out."""
-    m = re.search(r"\b(Callable|type|Type)\[", text)
+    What `Callable[..., Flask]` or `type[Flask]` holds is not an instance of Flask, so those are left out, and so
+    are the values of a `Literal[...]` and the metadata after the type in `Annotated[Flask, Field("...")]`."""
+    m = re.search(r"\b(Callable|type|Type|Literal|Annotated)\[", text)
     while m:
-        depth, i = 1, m.end()
+        depth, i, comma = 1, m.end(), None
         while i < len(text) and depth:
-            depth += {"[": 1, "]": -1}.get(text[i], 0)
+            depth += {"[": 1, "]": -1, "(": 1, ")": -1}.get(text[i], 0)
+            if text[i] == "," and depth == 1 and comma is None:
+                comma = i
             i += 1
-        text = text[:m.start()] + text[i:]
-        m = re.search(r"\b(Callable|type|Type)\[", text)
+        keep = text[m.end():comma] if m.group(1) == "Annotated" and comma is not None else ""
+        text = text[:m.start()] + keep + text[i:]
+        m = re.search(r"\b(Callable|type|Type|Literal|Annotated)\[", text)
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)
     return [x for x in names if x.lstrip("_")[:1].isupper() and x not in WRAPPERS]   # _Private classes too
 
