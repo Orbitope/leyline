@@ -80,3 +80,38 @@ def test_csharp_a_named_arguments_label_and_an_anonymous_objects_member_are_not_
     assert ("App.A.Labels()", "App.A.count") not in reads
     assert ("App.A.Labels()", "App.A.Name") not in reads
     assert ("App.A.Reads()", "App.A.count") in reads and ("App.A.Reads()", "App.A.Name") in reads
+
+
+def test_csharp_action_routes_from_a_verb_with_a_route_and_from_a_shared_attribute_list(tmp_path):
+    con = _map(tmp_path, {
+        "Api/Api.csproj": CSPROJ,
+        "Api/ItemsController.cs": (
+            "namespace Api;\n"
+            "[ApiController]\n"
+            "[Route(\"api/[controller]\")]\n"
+            "public class ItemsController : ControllerBase {\n"
+            "    [HttpGet]\n"
+            "    public string List() => \"\";\n"
+            "    [HttpGet]\n"
+            "    [Route(\"{id}\")]\n"
+            "    public string Get(int id) => \"\";\n"
+            "    [Authorize, HttpPost(\"bulk\")]\n"
+            "    public void Bulk() { }\n"
+            "}\n"),
+        "Client/Client.csproj": CSPROJ,
+        "Client/Calls.cs": (
+            "using System.Net.Http;\n"
+            "namespace Client;\n"
+            "public class Calls {\n"
+            "    private readonly HttpClient _http = new HttpClient();\n"
+            "    public async Task ListAll() { await _http.GetAsync(\"/api/Items\"); }\n"
+            "    public async Task GetOne() { await _http.GetAsync(\"/api/Items/3\"); }\n"
+            "    public async Task PostBulk() { await _http.PostAsync(\"/api/Items/bulk\", null); }\n"
+            "}\n"),
+    })
+    got = http(con)
+    # [HttpGet] [Route("{id}")] is GET api/Items/{id} only, so a GET of api/Items is List's alone.
+    assert got["Client.Calls.ListAll()"] == ("Api.ItemsController.List()", "GET /api/Items")
+    assert got["Client.Calls.GetOne()"] == ("Api.ItemsController.Get(int)", "GET /api/Items/{id}")
+    # [Authorize, HttpPost("bulk")] is read: the post goes to Bulk, not to a route of any verb at {id}.
+    assert got["Client.Calls.PostBulk()"] == ("Api.ItemsController.Bulk()", "POST /api/Items/bulk")

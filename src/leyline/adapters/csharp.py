@@ -47,7 +47,9 @@ HTTP_CLIENT = {"GetAsync": "GET", "GetStringAsync": "GET", "GetFromJsonAsync": "
                "GetByteArrayAsync": "GET", "PostAsync": "POST", "PostAsJsonAsync": "POST", "PutAsync": "PUT",
                "PutAsJsonAsync": "PUT", "DeleteAsync": "DELETE", "PatchAsync": "PATCH"}
 HTTP_MAP = {"MapGet": "GET", "MapPost": "POST", "MapPut": "PUT", "MapDelete": "DELETE", "MapPatch": "PATCH"}
-HTTP_ATTR = re.compile(r"\[\s*(Http(Get|Post|Put|Delete|Patch)|Route)\s*\(\s*\"([^\"]*)\"")
+# An attribute with a template, first in its list or after another: [HttpGet("x")], [Authorize, HttpPost("x")].
+HTTP_ATTR = re.compile(r"[\[,]\s*(Http(Get|Post|Put|Delete|Patch)|Route)\s*\(\s*\"([^\"]*)\"")
+HTTP_BARE = re.compile(r"\[\s*(?:[^\]]*,\s*)?Http(Get|Post|Put|Delete|Patch)\s*(?:\(\s*\)\s*)?[\],]")
 FILE_CALL = re.compile(r"(?:^|\.)(File|Directory|FileAccess)\.(\w+)$")
 
 
@@ -553,17 +555,22 @@ class _Walker:
                 self.res.type_refs.append(TypeRef(cid, names, "return", ret.start_point[0] + 1))
         attrs_text = " ".join(_text(a) for a in node.children if a.type == "attribute_list")
         prefix = _controller_prefix(node, name)
+        # [HttpGet] with no template: the verb of the action's own [Route("...")], else of the controller's route.
+        bare = [m.group(1).upper() for m in HTTP_BARE.finditer(attrs_text)]
+        routed = False
         for m in HTTP_ATTR.finditer(attrs_text):
             path = m.group(3)
             if prefix is not None and not path.startswith(("/", "~")):   # [Route("api/[controller]")] on the class
                 path = f"{prefix}/{path}" if path else prefix
             path = path.lstrip("~")
-            self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + path.lstrip("/"), node.start_point[0] + 1,
-                                               m.group(2).upper() if m.group(2) else None))
-        if prefix is not None:   # [HttpGet] with no template: the action answers at the controller's own route
-            for m in re.finditer(r"\[\s*(?:[^\]]*,\s*)?Http(Get|Post|Put|Delete|Patch)\s*(?:\(\s*\)\s*)?[\],]", attrs_text):
+            routed = routed or not m.group(2)
+            for method in [m.group(2).upper()] if m.group(2) else bare or [None]:
+                self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + path.lstrip("/"), node.start_point[0] + 1,
+                                                   method))
+        if prefix is not None and not routed:   # the action answers at the controller's own route
+            for method in bare:
                 self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + prefix.lstrip("/"), node.start_point[0] + 1,
-                                                   m.group(1).upper()))
+                                                   method))
         found = set(re.findall(r"[A-Za-z_]+", attrs_text)) & TEST_ATTRIBUTES
         if found:
             self.res.nodes[-1].attrs["is_test"] = True
