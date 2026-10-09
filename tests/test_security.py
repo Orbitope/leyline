@@ -218,6 +218,24 @@ def test_a_go_test_command_quotes_the_package_directory(repo):
     assert [c["runner"] for c in out] == ["jest", "pytest"]
 
 
+def test_test_output_with_long_runs_of_spaces_parses_in_linear_time():
+    """A test in the repository prints what it likes, and its output reaches `check`, `quick` and record-tests: a
+    line with a long run of spaces inside a name made the parsers' regular expressions try every split of it."""
+    import time
+    from leyline import diff, props
+    gap = " " * 200_000
+    text = "\n".join([f"PASS a{gap}b", f"ok 1 - a{gap}b", f"# Subtest: a{gap}b", " PASS  a.test.js", f"  ✓ a{gap}b",
+                      f"  ● a{gap}b", " PASS " + "a.js" * 20_000 + gap + "b", "Property failed after 3 tests",
+                      f"Counterexample: a{gap}b"] + ["ok 1 - x"] * 50_000)
+    began = time.perf_counter()
+    diff.parse_test_output(text)
+    props.counterexamples(text)
+    assert time.perf_counter() - began < 5
+    assert diff.parse_test_output(" PASS  a.test.js\n  ✓ adds (2 ms)\n  ✓ (3 ms)\n") == [
+        {"name": "a.test.js > adds", "status": "pass", "message": None},
+        {"name": "a.test.js > (3 ms)", "status": "pass", "message": None}]
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)

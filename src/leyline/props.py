@@ -84,7 +84,7 @@ def cell(s: dict) -> str:
 
 # -- check: the counterexample a failing property test prints ------------------------------------------
 _HYPOTHESIS = re.compile(r"(?:Falsifying(?: explicit)? example|Failing test case):\s*([A-Za-z_]\w*)\(")
-_FASTCHECK = re.compile(r"Counterexample:\s*(.+?)\s*$")
+_FASTCHECK = re.compile(r"Counterexample:\s*(.*\S)")   # greedy: a lazy one before \s*$ is quadratic in a run of spaces
 _FC_RUNS = re.compile(r"Property failed after (\d+) tests?")
 _FSCHECK = re.compile(r"Falsifiable, after (\d+) tests? \((\d+) shrinks?\)")
 _PREFIX = re.compile(r"^(?:E\s{1,8}|\s*[|>]\s?)")         # pytest's `E   ` before an assertion's lines
