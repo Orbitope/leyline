@@ -389,16 +389,22 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
             imported = measured.import_file(con, coverage_file, run=after)
             if "error" in imported:
                 return {"error": f"cannot import the coverage file: {imported['error']}"}
+        code = diff._fingerprint(con)
         recorded = _record(con, after, results) if results is not None else None
+        if results is not None:
+            with con:   # the code these results ran against
+                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", ("tested:" + after, code))
         has = lambda run: con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1", (run,)).fetchone() is not None
         prune_baselines(con)
-        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) else None)
+        # Results recorded earlier describe code that has since changed: they prove nothing about it.
+        tested = con.execute("SELECT value FROM meta WHERE key = ?", ("tested:" + after,)).fetchone()
+        old = results is None and has(after) and (tested[0] != code if tested else bool(reindexed))
+        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None)
         if "error" in v:
             return v
         v["reindexed"] = bool(reindexed)
         v["tests_recorded"] = recorded
-        # Results recorded earlier describe code that has since changed.
-        v["tests_old"] = bool(reindexed) and results is None and has(after)
+        v["tests_old"] = old
         v["tests_missing"] = not has(after)
         page = write_page(con, db, v["change_id"])
         if page:

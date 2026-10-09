@@ -280,3 +280,96 @@ def test_task_verdicts(loud):
     t = {t["key"]: t for t in v["tasks"]}
     assert t["1.1"]["verdict"] == "proven" and t["1.5"]["state"] == "partly" and t["1.5"]["verdict"] == "partial"
     assert "not Engine.child" in t["1.5"]["verdict_why"]
+
+
+def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tmp_path):
+    """A byte-order mark hid the first task and the title; `## ` alone crashed; `2FA login` was task 2, "FA login"."""
+    ch = tmp_path / "c"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("﻿# Change: Loud engine\n", encoding="utf-8")
+    (ch / "tasks.md").write_text("﻿- [ ] 1.1 Change `Engine.start`\n- [ ] 2FA login uses `Engine.child`\n"
+                                 "- [ ] 1.3: Add `Engine.shout`\n", encoding="utf-8")
+    (ch / "specs" / "engine" / "spec.md").write_text("﻿## \n" + SPEC, encoding="utf-8")
+    p = spec.parse(ch)
+    assert p["title"] == "Loud engine"
+    assert [(t["key"], t["text"]) for t in p["tasks"]] == [
+        ("1.1", "Change `Engine.start`"), ("2", "2FA login uses `Engine.child`"), ("1.3", "Add `Engine.shout`")]
+    assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"] and not p["problems"]
+
+
+def test_a_test_name_with_test_inside_a_word_finds_its_scenario(loud):
+    """`test_` was cut wherever it appeared, so `test_shortest_path` read as "shorpath" and never proved "Shortest path"."""
+    assert spec._norm("test_shortest_path") == spec._norm("Shortest path") == "shortest path"
+    assert spec._result_keys("tests/test_g.py::test_latest_value[a]")[0] >= {"latest value a"}
+    work, ch, db = loud
+    (ch / "specs" / "engine" / "spec.md").write_text(SPEC.replace("Scenario: Shout", "Scenario: Fastest shout"))
+    (ch / "tasks.md").write_text(TASKS.replace('"Shout"', '"Fastest shout"'))
+    c = store.connect(db)
+    spec.brief(c, ch)
+    c.close()
+    _implement(work)
+    v = _check(work, db, ch, AFTER + [{"name": "py/tests/test_engine.py::test_fastest_shout", "status": "pass"}])
+    assert {s["name"]: s["state"] for s in v["scenarios"]}["Fastest shout"] == "passes"
+
+
+def test_adding_or_removing_a_parameter_is_a_change_of_signature(loud):
+    """"Add a parameter to `X`" was read as an add (so X's callers were not listed as must change) and "Remove a
+    parameter from `X`" as a removal of X, though VERBS lists both phrases under signature."""
+    work, ch, db = loud
+    (ch / "tasks.md").write_text("- [ ] 1.1 Add a parameter `loud` to `Engine.child`\n"
+                                 "- [ ] 1.2 Remove a parameter from `Engine.start`\n- [ ] 1.3 Add `Engine.shout`\n")
+    assert [t["action"] for t in spec.parse(ch)["tasks"]] == ["signature", "signature", "add"]
+    c = store.connect(db)
+    b = spec.brief(c, ch, write=False)
+    c.close()
+    assert {m["id"].rsplit(".", 1)[-1] for m in b["must_edit_uncovered"]} >= {"poke", "test_chain"}
+
+
+def test_results_from_before_the_code_last_changed_do_not_prove_it(loud):
+    """`check` with no new test output, after the code changed again, judged the new code by the old run and said
+    done as agreed."""
+    from leyline import loop
+    work, ch, db = loud
+    _implement(work)
+    assert loop.check(db, ch, AFTER)["done_as_agreed"]
+    core = work / "py/src/pkg/core.py"   # an edit after the run: what the tests would say now is not known
+    core.write_text(core.read_text().replace("return self.name.upper()\n", "return self.name.upper() + \"?\"\n", 1))
+    v = loop.check(db, ch)
+    assert v["tests_old"] and not v["done_as_agreed"]
+    assert {s["name"]: s["verdict"] for s in v["scenarios"]}["Start"] == "inconclusive"
+    assert "the test results on record are from before the code last changed" in loop.next_after_check(v, "loud-engine")[0]
+    v = loop.check(db, ch)   # the map is up to date now, and the results are still older than the code
+    assert v["tests_old"] and not v["done_as_agreed"]
+    assert loop.check(db, ch, AFTER)["done_as_agreed"]   # a fresh run is evidence again
+    assert loop.check(db, ch)["done_as_agreed"]          # and stays so while the code is as it ran
+
+
+def test_task_numbers_that_restart_in_each_section(loud):
+    """Numbering that restarts under each heading (`1.` twice) crashed the plan on a duplicate key; each task is judged."""
+    work, ch, db = loud
+    (ch / "tasks.md").write_text("## Engine\n- [ ] 1. Change `Engine.start` to return the name in upper case\n"
+                                 "- [ ] 2. Add `Engine.shout`, the name with an exclamation mark\n"
+                                 "## Tests\n- [ ] 1. Add the test \"Shout\"\n")
+    c = store.connect(db)
+    b = spec.brief(c, ch)
+    c.close()
+    assert [t["key"] for t in b["tasks"]] == ["1", "2", "1 (2)"]
+    _implement(work)
+    v = _check(work, db, ch, AFTER)
+    assert {t["key"]: t["verdict"] for t in v["tasks"]} == {"1": "proven", "2": "proven", "1 (2)": "proven"}
+    assert v["done_as_agreed"], v["why_not"]
+
+
+def test_two_scenarios_with_one_name(loud):
+    """Two requirements each with a scenario named "Start" crashed the plan on a duplicate key; it is a gap instead."""
+    work, ch, db = loud
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        SPEC + "\n### Requirement: Quiet names\nThe engine SHALL start.\n\n"
+               "#### Scenario: Start\n- **WHEN** an engine starts\n- **THEN** it returns\n")
+    c = store.connect(db)
+    b = spec.brief(c, ch)
+    c.close()
+    assert any('two scenarios are named "Start"' in g for g in b["gaps"]) and not b["ready"]
+    _implement(work)
+    v = _check(work, db, ch, AFTER)
+    assert [s["verdict"] for s in v["scenarios"] if s["name"] == "Start"] == ["proven", "proven"]

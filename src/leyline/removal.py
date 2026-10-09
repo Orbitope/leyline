@@ -36,9 +36,16 @@ def _is_path(written: str) -> bool:
     return "/" in written or bool(spec.FILE_NAME.fullmatch(written))
 
 
+def _in_file(written: str) -> Optional[str]:
+    """`path/to/file.py: name` (or `file.py::name`): the name, without the file it is in."""
+    from . import spec
+    m = re.fullmatch(r"(?:" + spec.FILE_NAME.pattern + r")\s*::?\s*([A-Za-z_$][\w$.]*)(?:\(.*\))?", written.strip())
+    return m.group(1) if m else None
+
+
 def _leaf(written: str) -> str:
     """The name a node of this written name has: `Engine.start` -> start; a file's path stays whole."""
-    w = re.sub(r"\(.*\)$", "", written.strip())
+    w = re.sub(r"\(.*\)$", "", _in_file(written) or written.strip())
     return w if _is_path(w) else w.split(".")[-1]
 
 
@@ -136,7 +143,7 @@ def _callers(con, names, base: _Baseline, i: str, leaf: str, removed: set, cache
 def _present(con, names, x_row, y: str) -> list[str]:
     """The new name of a rename on the map, beside where the old one was: the node ids that answer to it."""
     from . import spec
-    w = re.sub(r"\(.*\)$", "", y.strip())
+    w = re.sub(r"\(.*\)$", "", _in_file(y) or y.strip())
     if "/" in w or spec.FILE_NAME.fullmatch(w) and x_row["kind"] == "file":
         return [f["id"] for f in names.file(w)]
     parts = w.split(".")

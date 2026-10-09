@@ -172,6 +172,18 @@ def test_archived_changes_are_read_and_what_they_removed_is_not_missed(done, cap
     assert "`Engine.start` has changed signature" in out.split("## openspec/specs/engine/spec.md")[1]
 
 
+def test_a_removal_task_still_names_the_code_it_updates(tmp_path):
+    """"Remove `X` and update `Y`": only X is meant to be gone; Y was left out of drift as if it were removed too."""
+    ch = tmp_path / "c"
+    ch.mkdir()
+    (ch / "tasks.md").write_text("- [x] 1.1 Remove `Engine.whisper` and update `Journal.forget` to match\n"
+                                 "- [x] 1.2 Rename `Engine.child` to `Engine.copy`\n"
+                                 "- [x] 1.3 Remove the call to `poke` from `Engine.stop`\n")
+    got = drift._change_names(ch)
+    assert "Engine.whisper" not in got and "Engine.child" not in got
+    assert {"Journal.forget", "Engine.copy", "poke", "Engine.stop"} <= set(got)
+
+
 def test_plan_names_drifted_specs_the_change_touches(done, capsys):
     edit(done / "py/src/pkg/core.py", "    def start(self):", "    def start(self, loud):")
     ch = done / "openspec/changes/quiet-engine"

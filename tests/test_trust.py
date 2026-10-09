@@ -210,6 +210,45 @@ not ok 2 - setup fails
     assert {r["name"]: r["status"] for r in diff.parse_test_output(tap14)} == {"group > inner one": "pass", "group > inner two": "skip"}
 
 
+def test_pytest_names_end_where_the_message_starts():
+    """A parameter id with ` - ` in it was cut there, and XFAIL and XPASS kept their reason in the test's name."""
+    out = {r["name"]: r for r in diff.parse_test_output(
+        "PASSED t.py::test_p[a - b]\nFAILED t.py::test_f[p - q] - AssertionError: bad - thing\n"
+        "XFAIL t.py::TestK::test_xf - known - bug\nXPASS t.py::TestK::test_xp - flaky\nFAILED t.py::test_g[c: d]\n")}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "t.py::test_p[a - b]": "pass", "t.py::test_f[p - q]": "fail", "t.py::TestK::test_xf": "skip",
+        "t.py::TestK::test_xp": "pass", "t.py::test_g[c: d]": "fail"}
+    assert out["t.py::test_f[p - q]"]["message"] == "AssertionError: bad - thing"
+    assert spec._result_keys("t.py::TestK::test_xp")[0] >= {"xp"}
+
+
+def test_a_suite_named_for_a_method_is_not_a_file(tmp_path):
+    """node:test prints no file, so `Engine.start > returns upper case` read `Engine.start` as the test's file and
+    tied the result to no test."""
+    work = tmp_path / "js"
+    (work / "src").mkdir(parents=True)
+    (work / "test").mkdir()
+    (work / "src/engine.js").write_text("export class Engine {\n  start() { return 'X'; }\n}\n")
+    (work / "test/engine.test.js").write_text(
+        "import { describe, it } from 'vitest';\nimport { Engine } from '../src/engine.js';\n"
+        "describe('Engine.start', () => {\n  it('returns upper case', () => { new Engine().start(); });\n});\n")
+    index(work, tmp_path / "s.db", "r")
+    names = diff.TestNames(store.connect(tmp_path / "s.db"))
+    assert diff.result_parts("Engine.start > returns upper case")["file"] is None
+    want = names.node("test/engine.test.js > Engine.start > returns upper case")
+    assert want and names.node("Engine.start > returns upper case") == want
+
+
+def test_node_test_names_and_messages_as_printed():
+    """node:test escapes `#` in a `# Subtest:` line too, and prints a failure's message as `error:`."""
+    text = ("TAP version 13\n# Subtest: Engine \\#start\n    # Subtest: fails\n    not ok 1 - fails\n      ---\n"
+            "      error: '1 == 2'\n      stack: |-\n        at x\n      ...\n    1..1\nnot ok 1 - Engine \\#start\n"
+            "# Subtest: block\nnot ok 2 - block\n  ---\n  error: |-\n    multi\n  ...\n1..2\n")
+    out = {r["name"]: r for r in diff.parse_test_output(text)}
+    assert set(out) == {"Engine #start > fails", "block"}
+    assert out["Engine #start > fails"]["message"] == "1 == 2" and not out["block"]["message"]
+
+
 def test_pytest_parameters_are_separate_results():
     """Finding 2: `test_x[a]` was stored as `test_x`, so a failing parameter hid behind a passing one."""
     out = {r["name"]: r["status"] for r in diff.parse_test_output(pytest_out(["a", "zero"], fail="zero"))}

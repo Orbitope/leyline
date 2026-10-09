@@ -87,12 +87,16 @@ def _code_names(text: str) -> list[str]:
 
 def _change_names(folder: Path) -> dict[str, list[str]]:
     """written name -> where in a change folder it is named: tasks.md, or specs/<capability>/spec.md. A task that
-    removes or renames code names something meant to be gone, so the code right after its verb is left out."""
+    removes or renames code names something meant to be gone, so the code right after its verb is left out (only that:
+    "Remove `X` and update `Y`" keeps `Y`)."""
+    from . import removal
     out: dict[str, list[str]] = defaultdict(list)
     parsed = spec.parse(folder)
     for t in parsed.get("tasks", []):
+        found = removal._targets(t["text"]) if t["action"] in ("remove", "rename") else None
+        gone = set(found[1]) if found else set()
         for w, role in spec._roles(t["text"]):
-            if not (role == "lead" and t["action"] in ("remove", "rename")) and "tasks.md" not in out[w.strip()]:
+            if not (role == "lead" and w in gone) and "tasks.md" not in out[w.strip()]:
                 out[w.strip()].append("tasks.md")
     specs = folder / "specs"
     for f in sorted(specs.rglob("spec.md")) if specs.is_dir() else []:

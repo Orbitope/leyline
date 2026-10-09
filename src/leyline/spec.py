@@ -25,20 +25,30 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
 from . import change, diff, rules, store
 from . import verdicts
 
-TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(\d+(?:\.\d+)*)?\.?\s*(.+?)\s*$")
+# A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
+TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
 CODE = re.compile(r"`([^`\n]+)`")
 VERBS = (("add", ("add ", "create ", "introduce ", "new ", "implement ")), ("remove", ("remove ", "delete ", "drop ")),
          ("rename", ("rename ",)), ("signature", ("change the signature", "change signature", "add a parameter", "add parameter",
                                                   "remove a parameter", "change the return", "change return")))
 BEGIN, END = "<!-- leyline:begin -->", "<!-- leyline:end -->"
 REVIEWERS = ("logic", "performance")
+
+
+def action_of(lower: str) -> str:
+    """What a task (lower-cased) does to the code it names. "Add a parameter to `X`" changes X's signature: the longer
+    phrase wins over the "add " it starts with."""
+    if lower.startswith(dict(VERBS)["signature"]):
+        return "signature"
+    return next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)),
+                "behavior")
 
 
 def run_label(change_id: str, when: str) -> str:
@@ -73,7 +83,7 @@ def parse(change_dir: str | Path) -> dict:
            "requirements": [], "problems": []}
     proposal = d / "proposal.md"
     if proposal.is_file():
-        text = proposal.read_text(encoding="utf-8", errors="replace")
+        text = proposal.read_text(encoding="utf-8-sig", errors="replace")
         m = re.search(r"^#\s+(.+)$", text, re.M)
         if m:
             out["title"] = re.sub(r"^(change|proposal)\s*:\s*", "", m.group(1).strip(), flags=re.I)
@@ -84,32 +94,42 @@ def parse(change_dir: str | Path) -> dict:
     else:
         out["problems"].append("proposal.md is missing")
     tasks = d / "tasks.md"
+    keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
     if tasks.is_file():
         n = 0
-        for line in tasks.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in tasks.read_text(encoding="utf-8-sig", errors="replace").splitlines():
             m = TASK.match(line)
             if not m:
                 continue
             n += 1
             text = m.group(3)
             lower = text.lower().lstrip("`* ")
-            action = next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)), "behavior")
-            out["tasks"].append({"key": m.group(2) or str(n), "text": text, "done": m.group(1).strip().lower() == "x",
-                                 "action": action, "names": CODE.findall(text)})
+            action = action_of(lower)
+            key = m.group(2) or str(n)
+            keys[key] += 1
+            out["tasks"].append({"key": key if keys[key] == 1 else f"{key} ({keys[key]})", "text": text,
+                                 "done": m.group(1).strip().lower() == "x", "action": action, "names": CODE.findall(text)})
     else:
         out["problems"].append("tasks.md is missing")
     for spec in sorted((d / "specs").rglob("spec.md")) if (d / "specs").is_dir() else []:
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
-        for line in spec.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in spec.read_text(encoding="utf-8-sig", errors="replace").splitlines():
             if line.startswith("## "):
-                section = line[3:].strip().split()[0].upper()
+                section = (line[3:].split() or [""])[0].upper() or None   # `## ` alone names no section
             elif line.startswith("### Requirement:"):
                 req = line.split(":", 1)[1].strip()
                 out["requirements"].append({"capability": capability, "name": req, "kind": section or "ADDED"})
             elif line.startswith("#### Scenario:"):
-                cur = {"key": f"{capability}/{line.split(':', 1)[1].strip()}", "name": line.split(":", 1)[1].strip(),
+                name = line.split(":", 1)[1].strip()
+                key = f"{capability}/{name}"
+                keys[key] += 1
+                if keys[key] > 1:   # one test of that name would prove both
+                    out["problems"].append(f"{spec.relative_to(d)}: two scenarios are named \"{name}\"; a scenario is"
+                                           " proven by the test of its name, so give each its own")
+                    key += f" ({keys[key]})"
+                cur = {"key": key, "name": name,
                        "requirement": req, "capability": capability, "kind": section or "ADDED", "when": [], "then": []}
                 out["scenarios"].append(cur)
             elif cur is not None and re.match(r"^\s*[-*]\s*\*\*(WHEN|GIVEN|AND|THEN)\*\*", line):
@@ -370,7 +390,8 @@ def _tests(con) -> dict:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower().replace("test_", "")).strip()
+    # `test_` only where a name starts: `test_shortest_path` is "shortest path", not "shorpath"
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"(?<![a-z0-9])test_", "", s.lower())).strip()
 
 
 def _result_keys(name: str) -> tuple[set, set]:
@@ -1280,6 +1301,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     own_checks = _self_tests(con, [r for r in (before_run, after_run) if r])
 
     scenarios, scenario_ran = [], {}
+    scenario_name = {s["key"]: s["name"] for s in parsed["scenarios"]}
     for s in parsed["scenarios"]:
         tid = tests.get(_norm(s["name"]))
         gen = None if tid else _generated(test_names, s["name"])
@@ -1333,10 +1355,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         unproven = []
         for key in extra.get("scenarios", []):       # a task to write a scenario's test is done when that test exists or ran
             want += 1
-            there = _norm(key.split("/", 1)[-1]) in tests or scenario_ran.get(key, False)
+            title = scenario_name.get(key, key.split("/", 1)[-1])
+            there = _norm(title) in tests or scenario_ran.get(key, False)
             got += there
             if not there:
-                unproven.append(f"a result for the test \"{key.split('/', 1)[-1]}\"")
+                unproven.append(f"a result for the test \"{title}\"")
         if not want and extra.get("into"):           # "add something to `Foo`": done when something inside Foo is new or edited
             want = 1
             files = {r[0] for i in extra["into"] for r in con.execute("SELECT node_id FROM ancestry WHERE file_id = ? OR module_id = ?", (i, i))}
@@ -1369,6 +1392,18 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     # New code a task named (`build_cases.case_x`, `func` in `file.py`) is the task's, found the way the plan found it.
     drift = [n for n in review["not_predicted"] if n not in tests_touched and not in_container(n["id"])
              and n["id"] not in declared and n["id"] not in named]
+    # Named code that is gone took what was inside it along (a class's members, a file's functions): not edits of their own.
+    gone_named = sorted(i for i in named if i not in names.by_id)
+    if gone_named and drift:
+        was = diff._open(diff.snapshot_path(con, cid))
+        try:
+            marks = ",".join("?" * len(gone_named))
+            went = {r[0] for r in was.execute(f"SELECT node_id FROM ancestry WHERE file_id IN ({marks}) OR module_id IN ({marks})",
+                                              gone_named + gone_named)}
+        finally:
+            was.close()
+        drift = [n for n in drift if not (n["id"] in removed and (n["id"] in went or any(
+            n["id"].startswith((i + ".", i + "/", i + "(")) for i in gone_named)))]
     # A new function that only code named in the spec calls is how a task got done, not a change of its own.
     in_spec = {t for t in touched if t not in {n["id"] for n in drift}} | named
     helpers = []
