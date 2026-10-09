@@ -112,3 +112,34 @@ def test_a_module_imported_from_a_namespace_package_is_local_not_an_outside_pack
         con.close()
     assert externals == []
     assert ("r:python:corp.app.main.run", "r:python:corp.tools.strings.shout", "heuristic") in calls, calls
+
+
+def test_a_typescript_path_alias_from_tsconfig_is_the_local_file(tmp_path):
+    """compilerOptions.paths (`@ui/*` -> `src/*`, with comments and a trailing comma as tsconfig allows) names files
+    of the repository, not npm packages."""
+    from leyline import store
+    from leyline.indexer import index
+    root = tmp_path / "repo"
+    for f, text in {
+        "packages/ui/tsconfig.json": '{\n  // aliases\n  "compilerOptions": {"baseUrl": ".", "paths": {\n'
+                                     '    "@ui/*": ["src/*"], "~lib": ["src/lib/index.ts"],\n  }},\n}\n',
+        "packages/ui/src/lib/format.ts": "export function fmt(x: number): string { return String(x); }\n",
+        "packages/ui/src/lib/index.ts": "export * from './format';\n",
+        "packages/ui/src/lib/pad.ts": "export function pad(s: string) { return ' ' + s; }\n",
+        "packages/ui/src/button.ts": "import { fmt } from '@ui/lib';\nimport { pad } from '@ui/lib/pad';\n"
+                                     "export function label(n: number) {\n  return pad(fmt(n));\n}\n",
+        "packages/ui/src/menu.ts": "import { fmt } from '~lib';\nexport function item(n: number) {\n  return fmt(n);\n}\n",
+    }.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    index(root, tmp_path / "l.db", "r")
+    con = store.connect(tmp_path / "l.db")
+    try:
+        externals = [r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external'")]
+        calls = {(r[0], r[1]) for r in con.execute("SELECT src_id, dst_id FROM calls")}
+    finally:
+        con.close()
+    assert externals == []
+    ts = "r:typescript:packages.ui.src."
+    assert {(ts + "button.label", ts + "lib.format.fmt"), (ts + "button.label", ts + "lib.pad.pad"),
+            (ts + "menu.item", ts + "lib.format.fmt")} <= calls, calls

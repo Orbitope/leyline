@@ -322,7 +322,8 @@ class Run:
             marks = []
             for f in files:
                 base = f.rsplit("/", 1)[-1]
-                if base in ("package.json", "pyproject.toml", "setup.py") or base.endswith(".csproj"):
+                if base in ("package.json", "pyproject.toml", "setup.py", "tsconfig.json", "jsconfig.json") \
+                        or base.endswith(".csproj"):
                     try:
                         marks.append((f, hashlib.sha1((root / f).read_bytes()).hexdigest()))
                     except OSError:
