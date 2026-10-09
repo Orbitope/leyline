@@ -349,3 +349,24 @@ def test_a_run_that_waits_too_long_says_who_holds_the_map(tmp_path, monkeypatch)
         holder.abandon()
         con.close()
     assert index(root, db, "w")["incremental"]["mode"] in ("full", "incremental")
+
+
+def test_a_map_that_dies_after_writing_facts_is_mapped_again(tmp_path, monkeypatch):
+    """A run killed after its facts are written but before the tour, patterns and stale marks are: the next `plan` or
+    `check` must not take the store as up to date because no file changed since."""
+    from leyline import loop, tours
+    root = copy(tmp_path, "fixture2")
+    db = tmp_path / "s.db"
+    index(root, db, "f2")
+    edit(root / "py/src/pkg/core.py", "    def start(self):\n", "    def start(self):\n        make_engine()\n")
+
+    def dies(*a, **k):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(tours, "generate", dies)
+        with pytest.raises(KeyboardInterrupt):
+            index(root, db, "f2")
+    assert loop.refresh(db) is not None   # mapped again
+    full = tmp_path / "full.db"
+    index(root, full, "f2", "auto", full=True)   # as refresh maps a store `map` did not note the mode of
+    assert differences(db, full) == {}

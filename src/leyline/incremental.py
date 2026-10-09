@@ -212,6 +212,8 @@ class Run:
         self.why_full = None if not self.full else ("asked" if full else "no usable cache from an earlier run")
         with con:   # until finish() writes a new token, the store matches no cache: a run that fails half way is not built on
             con.execute("DELETE FROM meta WHERE key = 'generation'")
+            # nor taken as up to date (loop.refresh): index() notes who made the map once all of it is written
+            con.execute("DELETE FROM meta WHERE key = 'made_by'")
         self.rows: dict = {}
         # Parse output depends only on a file's content and module, not on where the checkout is or on the rest of
         # the store: a full run that was not asked for (a moved checkout, a store copied to map another commit)
