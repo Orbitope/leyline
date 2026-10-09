@@ -209,6 +209,41 @@ def test_bad_starting_points_are_errors_with_candidates(notes):
     assert explain._resolve(con, "PUT /api/notes/:id")["id"].endswith("route:PUT /api/notes/:id")
 
 
+ITEMS = {
+    "web/app.py": (
+        "class App:\n"
+        "    def route(self, path):\n"
+        "        return lambda f: f\n\n\n"
+        "app = App()\n\n\n"
+        "@app.route(\n"
+        '    "/items/<int:item_id>",\n'
+        ")\n"
+        "def show(item_id):\n"
+        "    return load(item_id)\n\n\n"
+        "def load(item_id):\n"
+        "    return item_id\n"),
+    "web/client.py": (
+        "def fetch(session):\n"
+        '    return session.get("/items/3")\n'),
+}
+
+
+@pytest.fixture(scope="module")
+def items(tmp_path_factory):
+    root = tmp_path_factory.mktemp("items")
+    write(root, ITEMS)
+    db = root / ".leyline" / "leyline.db"
+    index(root, db, "items")
+    con = store.connect(db)
+    yield con
+    con.close()
+
+
+def test_a_step_declares_the_function_not_its_decorator(items):
+    r = explain.explain_path(items, "show")
+    assert r["steps"][0]["declaration"] == "def show(item_id):", r["steps"][0]
+
+
 def test_diagram_of_any_ids(notes):
     _, _, con = notes
     d = explain.diagram(con, ["storeNote", "nosuchthing"])

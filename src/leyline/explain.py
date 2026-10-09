@@ -146,6 +146,21 @@ class _Lines:
         text = " ".join(lines[n - 1].split())
         return text if len(text) <= 160 else text[:157] + "..."
 
+    def declaration(self, node_id: str, path: Optional[str], n: Optional[int]) -> Optional[str]:
+        """The line that declares a node whose span starts at line n: past its decorators or attributes
+        (`@app.route(...)`, `[HttpGet]`), which may run over several lines."""
+        lines = self.get(node_id, path)
+        if not n or not (0 < n <= len(lines)):
+            return None
+        k, depth = n, 0
+        while k <= min(len(lines), n + 30):
+            s = lines[k - 1].strip()
+            if not (depth > 0 or s.startswith(("@", "["))):
+                return self.line(node_id, path, k)
+            depth = max(0, depth + s.count("(") + s.count("[") - s.count(")") - s.count("]"))
+            k += 1
+        return self.line(node_id, path, n)
+
 
 COMMENT = re.compile(r"^\s*(//+|#+|/\*+|\*+/?|<!--|--)\s?")
 
@@ -753,7 +768,7 @@ def explain_path(con, frm: str, to: Optional[str] = None, through: Optional[str]
                 step["call_line"] = f"{pn.get('path')}:{line}"
             if call:
                 step["call"] = call
-        decl = lines.line(s["id"], n["path"], n["span_start"]) if n.get("name") not in TOP else None
+        decl = lines.declaration(s["id"], n["path"], n["span_start"]) if n.get("name") not in TOP else None
         if decl:
             step["declaration"] = decl
         if s["via"] in ELSEWHERE:
