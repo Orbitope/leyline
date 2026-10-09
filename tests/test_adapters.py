@@ -229,6 +229,31 @@ def test_python_a_call_on_an_object_made_in_place_is_on_its_class(tmp_path):
     assert ("pkg.shapes.main", "pkg.shapes.Box.w") in edges(con, "reads")
 
 
+def test_python_an_app_factory_declares_its_routes_and_requests_none(tmp_path):
+    con = _map(tmp_path, {
+        "app/factory.py": (
+            "from fastapi import FastAPI\n"
+            "\n"
+            "def create_app():\n"
+            "    app = FastAPI()\n"
+            "\n"
+            "    @app.get('/items')\n"
+            "    def items():\n"
+            "        return []\n"
+            "\n"
+            "    return app\n"),
+        "tests/test_items.py": (
+            "from app.factory import create_app\n"
+            "\n"
+            "def test_items():\n"
+            "    client = TestClient(create_app())\n"
+            "    client.get('/items')\n"),
+    })
+    got = http(con)
+    assert "app.factory.create_app" not in got
+    assert got["tests.test_items.test_items"] == ("app.factory.create_app.items", "GET /items")
+
+
 def test_typescript_a_request_on_a_client_named_api_is_not_a_route(tmp_path):
     con = _map(tmp_path, {
         "web/src/api.ts": (

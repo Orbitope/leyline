@@ -672,9 +672,11 @@ class _Walker:
         """Is this call one end of an HTTP or file channel?"""
         full = _text(fn)
         last = full.rsplit(".", 1)[-1]
-        if node.parent is not None and node.parent.type == "decorator" and cid not in self.fn_nodes:
-            # @app.post("/x") at the top of a module declares a route and requests nothing. Inside a test it is kept:
-            # the test declares the route to call it, often as client.get() with the path left out.
+        if node.parent is not None and node.parent.type == "decorator" and not (cid in self.fn_nodes and (
+                self.is_test_file or self.fn_nodes[cid].attrs.get("is_test") or self.fn_nodes[cid].attrs.get("is_fixture"))):
+            # @app.post("/x") at the top of a module, or in an app factory, declares a route and requests nothing.
+            # Inside a test it is kept: the test declares the route to call it, often as client.get() with the path
+            # left out.
             return
         first = args.named_children[0] if args is not None and args.named_children else None
         if fn.type == "attribute" and last in HTTP_VERBS | {"open"} and first is not None and first.type == "string":
