@@ -538,6 +538,15 @@ def record_tests(con, run: str, results: list[dict]) -> dict:
 _PLAIN = re.compile(r"^\s*(PASS(?:ED)?|FAIL(?:ED)?|ERROR|SKIP(?:PED)?|XFAIL|XPASS)\b[\s:]*(.+?)\s*$")
 _POINT = re.compile(r"^(\s*)(not ok|ok)\b(?:\s+\d+)?(?:\s*-(?=\s|$))?\s*(.*?)\s*$")
 _SUBTEST = re.compile(r"^(\s*)# Subtest:\s*(.*?)\s*$")
+# go test: `--- PASS: TestX/sub (0.00s)`, `=== RUN   TestX`, and a package's line `ok  \tpkg\t0.3s`, `FAIL\tpkg\t0.1s`,
+# `?   \tpkg\t[no test files]` or `FAIL\tpkg [build failed]`.
+# jest's default reporter: ` PASS  src/a.test.js (5.1 s)`, and with --verbose `✓ name (2 ms)`, `✕`, `○ skipped`, `✎ todo`
+# (√ and × on Windows).
+_JEST_FILE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)(?:\s+\([\d.]+\s*m?s\))?\s*$")
+_JEST_TEST = re.compile(r"^(\s*)(✓|✕|○|✎|√|×)\s+(.*?)(?:\s+\([\d.]+\s*m?s\))?\s*$")
+_GO_RESULT = re.compile(r"^(\s*)--- (PASS|FAIL|SKIP): (\S+) \([\d.]+m?s\)\s*$")
+_GO_RUN = re.compile(r"^=== (?:RUN|CONT|PAUSE|NAME)\s+(\S+)\s*$")
+_GO_PACKAGE = re.compile(r"^(ok|FAIL|\?)\s+(\S+)(?:\t.*| \[(build failed|setup failed)\])$")
 
 
 def _tap_point(rest: str) -> tuple[str, str, bool]:
@@ -570,13 +579,20 @@ def _outside_brackets(text: str, sep: str) -> int:
 def parse_test_output(text: str) -> list[dict]:
     """Read test results from runner output. Understood: TAP 13 and 14 as vitest, node:test and tap print it, where
     nested subtests (indented, or opened with `{`) give names like `file > suite > test` and a suite is not a test of
-    its own; pytest -rA summaries (`PASSED path::test[param]`), kept whole so each parameter is one result; and any
+    its own; pytest -rA summaries (`PASSED path::test[param]`), kept whole so each parameter is one result; go test
+    (`--- PASS: TestX/sub`, read as `TestX > sub`; only -v prints the tests that pass); jest's default reporter (` PASS  file`,
+    the `✓`/`✕` tree that --verbose adds, and a `●` section per failure), named `file > describe > test`; and any
     runner that prints one `PASS name` or `FAIL name: message` line per test. Other formats: pass results to
     record_tests directly."""
     out: dict[str, dict] = {}
     stack: list[dict] = []        # open suites: {indent, name, kind: header|brace, status, children, failed}
     last: Optional[dict] = None   # the result a YAML block that follows belongs to
     in_yaml = False
+    go_run: Optional[str] = None  # go -v: the test whose log lines follow (`=== RUN   TestX`)
+    go_after: Optional[int] = None   # go: the indent of the last `--- FAIL:`, whose log lines follow it
+    go_logs: dict[str, str] = {}  # go -v: a test's first log line, its message if it fails
+    go_tests: list[str] = []      # go: every result, to drop a parent that its subtests account for
+    jest: Optional[dict] = None   # jest: the file whose tests follow, its open describe blocks, a failure awaiting its message
 
     def emit(chain: list[str], status: str, message: Optional[str] = None) -> dict:
         for f in stack:
@@ -618,6 +634,68 @@ def parse_test_output(text: str) -> list[dict]:
         if re.match(r"^\s*---\s*$", line):
             in_yaml = True
             continue
+        m = _GO_PACKAGE.match(line)
+        if m:   # go: one line per package after its tests, `ok  <pkg>\t0.1s`; not a test, unless it did not build
+            if m.group(3):
+                emit([m.group(2)], "fail", m.group(3))
+            go_run = None
+            continue
+        m = _GO_RUN.match(line)
+        if m:
+            go_run = m.group(1)
+            continue
+        m = _GO_RESULT.match(line)
+        if m:   # go: `--- FAIL: TestX/sub (0.00s)`; a subtest's name is its parent's, then its own
+            indent, word, name = len(m.group(1).expandtabs()), m.group(2), m.group(3)
+            status = {"PASS": "pass", "FAIL": "fail", "SKIP": "skip"}[word]
+            last = emit(name.split("/"), status, go_logs.get(name) if status == "fail" else None)
+            go_tests.append(last["name"])
+            go_after, go_run = indent, None
+            continue
+        if go_run is not None or go_after is not None:   # a test's log line: before its result (-v) or after it
+            m = re.match(r"^(\s+)(\S.*)$", line)
+            if m and go_run is not None:
+                go_logs.setdefault(go_run, m.group(2).strip())
+                continue
+            if m and len(m.group(1).expandtabs()) > go_after and last is not None and last["status"] == "fail":
+                last["message"] = last["message"] or m.group(2).strip()
+                continue
+            go_after = None
+        m = _JEST_FILE.match(line)
+        if m:   # jest: ` PASS  src/a.test.js`, then (with --verbose) its tests as a tree, then a `●` section per failure
+            jest = {"file": m.group(1), "tree": [], "in_tree": True, "wait": None}
+            continue
+        if jest is not None:
+            if line.startswith("Test Suites:"):
+                jest = None
+                continue
+            m = re.match(r"^\s*●\s+(.*?)\s*$", line)
+            if m:
+                jest["in_tree"] = False
+                title = m.group(1)
+                chain = [] if title == "Test suite failed to run" else title.split(" › ")
+                jest["wait"] = last = emit([jest["file"]] + chain, "fail")
+                continue
+            if not line.strip():
+                continue
+            if jest["wait"] is not None:   # the first line of a failure's section says what failed
+                jest["wait"]["message"] = jest["wait"]["message"] or line.strip()
+                jest["wait"] = None
+                continue
+            m = _JEST_TEST.match(line)
+            if jest["in_tree"] and (m or line[:1].isspace()):
+                indent = len((m.group(1) if m else re.match(r"^\s*", line).group(0)).expandtabs())
+                while jest["tree"] and jest["tree"][-1][0] >= indent:
+                    jest["tree"].pop()
+                if not m:   # a describe block's name
+                    jest["tree"].append((indent, line.strip()))
+                    continue
+                status = {"✓": "pass", "√": "pass", "✕": "fail", "×": "fail"}.get(m.group(2), "skip")
+                name = re.sub(r"^(?:skipped|todo)\s+", "", m.group(3)) if status == "skip" else m.group(3)
+                last = emit([jest["file"]] + [n for _, n in jest["tree"]] + [name], status)
+                continue
+            if not jest["in_tree"]:
+                continue
         m = _SUBTEST.match(line)
         if m:
             indent = len(m.group(1).expandtabs())
@@ -669,6 +747,10 @@ def parse_test_output(text: str) -> list[dict]:
                     name, message = rest.split(sep, 1)
                     break
         last = emit([name.strip()], status, message)
+    for parent in dict.fromkeys(go_tests):   # go: a test with subtests passes or fails with them, as a TAP suite does,
+        kids = [out[n] for n in go_tests if n.startswith(parent + " > ") and n in out]   # unless it failed on its own
+        if kids and parent in out and (out[parent]["status"] != "fail" or any(k["status"] == "fail" for k in kids)):
+            del out[parent]
     from . import props   # a failing property test's counterexample, from wherever in the text it was printed
     return props.annotate(list(out.values()), text)
 

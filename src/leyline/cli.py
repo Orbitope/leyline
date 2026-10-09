@@ -408,7 +408,8 @@ def _loop(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, or one PASS or FAIL line per test"
+        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, go test -v, jest --verbose, or one"
+              " PASS or FAIL line per test"
               " (`pytest -rA` prints them); other formats can go through the record_test_run MCP tool.", file=sys.stderr)
         return 2
     name = args.change

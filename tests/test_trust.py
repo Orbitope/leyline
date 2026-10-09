@@ -235,6 +235,128 @@ def test_a_pytest_collection_error_is_recorded_under_its_file():
     assert out["tests/sub/test_worse.py"]["message"] == "ImportError: cannot import name 'a' - b"
 
 
+# `go test -v ./...` and `go test ./...` on a package with a passing, a failing, a table and a skipped test, and a
+# second package that passes, as go 1.2x prints them.
+GO_V = """=== RUN   TestStart
+--- PASS: TestStart (0.00s)
+=== RUN   TestShout
+    engine_test.go:8: want "X!", got "X"
+--- FAIL: TestShout (0.00s)
+=== RUN   TestTable
+=== RUN   TestTable/upper_case
+=== RUN   TestTable/empty
+    engine_test.go:15: empty name
+--- FAIL: TestTable (0.00s)
+    --- PASS: TestTable/upper_case (0.00s)
+    --- FAIL: TestTable/empty (0.00s)
+=== RUN   TestSkipped
+    engine_test.go:21: later
+--- SKIP: TestSkipped (0.00s)
+FAIL
+FAIL\texample.com/engine\t0.252s
+=== RUN   TestFine
+--- PASS: TestFine (0.00s)
+PASS
+ok  \texample.com/engine/ok\t0.377s
+?   \texample.com/engine/cmd\t[no test files]
+FAIL
+"""
+GO_PLAIN = """--- FAIL: TestShout (0.00s)
+    engine_test.go:8: want "X!", got "X"
+--- FAIL: TestTable (0.00s)
+    --- FAIL: TestTable/empty (0.00s)
+        engine_test.go:15: empty name
+FAIL
+FAIL\texample.com/engine\t0.136s
+ok  \texample.com/engine/ok\t0.263s
+FAIL\texample.com/engine/broken [build failed]
+FAIL
+"""
+
+
+def test_go_test_output_is_read_test_by_test():
+    """`--- PASS: TestX` lines were not read, and the package lines `ok  <pkg>` and `FAIL <pkg>` were read as tests."""
+    out = {r["name"]: r for r in diff.parse_test_output(GO_V)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "TestStart": "pass", "TestShout": "fail", "TestTable > upper_case": "pass", "TestTable > empty": "fail",
+        "TestSkipped": "skip", "TestFine": "pass"}
+    assert out["TestShout"]["message"] == 'engine_test.go:8: want "X!", got "X"'
+    assert out["TestTable > empty"]["message"] == "engine_test.go:15: empty name"
+    out = {r["name"]: r for r in diff.parse_test_output(GO_PLAIN)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "TestShout": "fail", "TestTable > empty": "fail", "example.com/engine/broken": "fail"}
+    assert out["TestShout"]["message"] == 'engine_test.go:8: want "X!", got "X"'
+    assert out["TestTable > empty"]["message"] == "engine_test.go:15: empty name"
+    assert out["example.com/engine/broken"]["message"] == "build failed"
+    assert spec._result_keys("TestTable > upper_case")[0] >= {"upper case"}
+
+
+# Jest's default reporter, as `jest --verbose` prints it for two files (one failing) and a file that cannot load;
+# without --verbose only the file lines and the `●` sections are printed.
+JEST = """ PASS  src/engine.test.js
+  Engine
+    start
+      ✓ returns upper case (2 ms)
+      ○ skipped is quiet
+      ✎ todo whispers
+ FAIL  src/shout.test.js (5.123 s)
+  Engine
+    shout
+      ✓ is loud (1 ms)
+      ✕ adds a bang (3 ms)
+  ✓ top level (1 ms)
+
+  ● Engine › shout › adds a bang
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: "X!"
+    Received: "X"
+
+      3 | describe("Engine", () => {
+    > 5 |   expect(shout("x")).toBe("X!");
+
+      at Object.<anonymous> (src/shout.test.js:5:20)
+
+ FAIL  src/broken.test.js
+  ● Test suite failed to run
+
+    Cannot find module './nope' from 'src/broken.test.js'
+
+Test Suites: 2 failed, 1 passed, 3 total
+Tests:       1 failed, 1 skipped, 1 todo, 3 passed, 6 total
+Snapshots:   0 total
+Time:        6.2 s
+Ran all test suites.
+"""
+JEST_SHORT = """ PASS  src/engine.test.js
+ FAIL  src/shout.test.js
+  ● Engine › shout › adds a bang
+
+    expect(received).toBe(expected) // Object.is equality
+
+Test Suites: 1 failed, 1 passed, 2 total
+"""
+
+
+def test_jest_output_is_read_test_by_test():
+    """Jest's ` PASS  file` lines were read as tests named for the file, and its ✓ and ✕ lines not at all."""
+    out = {r["name"]: r for r in diff.parse_test_output(JEST)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "src/engine.test.js > Engine > start > returns upper case": "pass",
+        "src/engine.test.js > Engine > start > is quiet": "skip",
+        "src/engine.test.js > Engine > start > whispers": "skip",
+        "src/shout.test.js > Engine > shout > is loud": "pass",
+        "src/shout.test.js > Engine > shout > adds a bang": "fail",
+        "src/shout.test.js > top level": "pass",
+        "src/broken.test.js": "fail"}
+    assert out["src/shout.test.js > Engine > shout > adds a bang"]["message"] == \
+        "expect(received).toBe(expected) // Object.is equality"
+    assert out["src/broken.test.js"]["message"] == "Cannot find module './nope' from 'src/broken.test.js'"
+    out = {r["name"]: r["status"] for r in diff.parse_test_output(JEST_SHORT)}
+    assert out == {"src/shout.test.js > Engine > shout > adds a bang": "fail"}
+
+
 def test_a_suite_named_for_a_method_is_not_a_file(tmp_path):
     """node:test prints no file, so `Engine.start > returns upper case` read `Engine.start` as the test's file and
     tied the result to no test."""
