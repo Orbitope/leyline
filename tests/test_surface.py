@@ -126,3 +126,15 @@ def test_an_answer_of_many_middling_strings_or_short_lists_is_still_cut_to_fit()
     nested = {"a": [[three] * 3] * 3}                               # 135,000 characters in lists of 3
     text = server._fit(nested, {})
     assert len(text) <= server.LIMIT + 300, len(text)
+
+
+def test_the_server_reads_the_store_its_path_names_now(repo, busy, monkeypatch):
+    """The server kept one connection per thread whatever store LEYLINE_DB named: after the path changed, every
+    tool still read the first store."""
+    pytest.importorskip("mcp")
+    from leyline import server
+    monkeypatch.setenv("LEYLINE_DB", str(repo / ".leyline/leyline.db"))
+    assert json.loads(server.search(text="Engine"))["results"]
+    monkeypatch.setenv("LEYLINE_DB", str(busy))
+    ids = [r["id"] for r in json.loads(server.search(text="target", kind="callable"))["results"]]
+    assert ids and all(i.startswith("busy:") for i in ids), ids

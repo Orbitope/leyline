@@ -68,11 +68,14 @@ def _path() -> str:
 
 def _db() -> sqlite3.Connection:
     # The server may run each tool call on a different worker thread, and a SQLite connection
-    # belongs to the thread that opened it. Keep one per thread.
+    # belongs to the thread that opened it. Keep one per thread, for the store the path names now.
     con = getattr(_local, "con", None)
-    if con is None or getattr(_local, "gen", None) != _generation[0]:
+    where = str(Path(_path()).resolve())
+    if con is None or getattr(_local, "gen", None) != _generation[0] or getattr(_local, "where", None) != where:
+        if con is not None:
+            con.close()
         con = _local.con = store.connect(_path())
-        _local.gen = _generation[0]
+        _local.gen, _local.where = _generation[0], where
     return con
 
 
