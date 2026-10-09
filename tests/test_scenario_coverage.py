@@ -235,6 +235,25 @@ def test_a_coverage_file_in_a_folder_named_like_a_url_is_read(tmp_path):
     assert r["format"] == "coverage.py" and r["tests_matched_to_the_map"] == 3, r
 
 
+def test_a_jest_command_runs_each_test_file_by_its_path(tmp_path):
+    """`jest <args>` reads each argument as a regular expression matched against test paths (testPathPattern), so
+    `app/[id]/page.test.tsx` (a Next.js route) is a character class and matches nothing of that name, and `.` and `+`
+    match more than they say. `--runTestsByPath` takes each argument as the exact path."""
+    import re
+    import shlex
+    root = tmp_path / "web"
+    write(root, {"package.json": '{"devDependencies": {"jest": "29.7.0"}}'})
+    con = store.connect(tmp_path / "s.db")
+    with con:
+        con.execute("INSERT INTO meta (key, value) VALUES ('root:w', ?)", (str(root),))
+    paths = ["app/[id]/page.test.tsx", "app/(auth)/a+b.test.ts"]
+    [cmd] = affected.commands(con, [{"name": "t", "repo": "w", "path": p} for p in paths])
+    args = shlex.split(cmd["command"])
+    assert args[:3] == ["npx", "jest", "--runTestsByPath"] and args[3:] == paths, cmd
+    # what the arguments would have meant as patterns: neither file's own path matches its pattern
+    assert not any(re.search(p, str(root / p), re.I) for p in paths)
+
+
 def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     root = tmp_path / "js"
     ops = ("export function add(a: number, b: number): number {\n  return a + b;\n}\n\n"

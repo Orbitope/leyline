@@ -869,7 +869,7 @@ def coverage(node_id: Annotated[Optional[str], Field(description="A function: th
 def affected_tests(change: Annotated[str, Field(description="The change: its folder or id (a planned spec), or a review"
                                                             " id such as pr-123.")]) -> dict:
     """The tests to run for a change, each with why, and `commands` that run them (pytest node ids,
-    `npx vitest run <files>`, `npx jest <files>`, `go test -run`). With per-test coverage imported, the tests
+    `npx vitest run <files>`, `npx jest --runTestsByPath <files>`, `go test -run`). With per-test coverage imported, the tests
     measured running the changed or must-edit code; otherwise, and for changed code no measured test ran, the tests
     whose path on the map passes through it. Run these, then pass their output to `check`."""
     from . import affected
