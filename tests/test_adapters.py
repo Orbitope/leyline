@@ -115,3 +115,19 @@ def test_csharp_action_routes_from_a_verb_with_a_route_and_from_a_shared_attribu
     assert got["Client.Calls.GetOne()"] == ("Api.ItemsController.Get(int)", "GET /api/Items/{id}")
     # [Authorize, HttpPost("bulk")] is read: the post goes to Bulk, not to a route of any verb at {id}.
     assert got["Client.Calls.PostBulk()"] == ("Api.ItemsController.Bulk()", "POST /api/Items/bulk")
+
+
+def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/Item.cs": (
+            "namespace App;\n"
+            "public record Item(int Id, string Name);\n"
+            "public record Tagged(string Tag) { public int Size => 1; }\n"
+            "public class Use {\n"
+            "    public string Of(Item it, Tagged t) { return it.Name + t.Tag; }\n"
+            "}\n"),
+    })
+    fields = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE kind = 'field'")}
+    assert {"App.Item.Id", "App.Item.Name", "App.Tagged.Tag"} <= fields
+    assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")

@@ -416,15 +416,15 @@ class _Walker:
         self.field_types.setdefault(tid, {})
         if native == "delegate":
             return
-        if body is None:
-            return
-        # Record primary-constructor parameters as fields (records).
+        # Record primary-constructor parameters as fields (records), with a body or without: record Item(int Id);
         plist = _child(node, "parameter_list")
         if plist is not None:
             for p in plist.children:
                 if p.type == "parameter":
                     self._field_node(tid, _text(p.child_by_field_name("name")), p.child_by_field_name("type"),
                                      p, ["public"], "property")
+        if body is None:
+            return
         for m in body.children:
             mt = m.type
             if mt in TYPE_DECLS:
