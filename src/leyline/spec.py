@@ -582,8 +582,31 @@ def folder_gone(con, cid: str) -> bool:
     attrs = json.loads(row[0] or "{}") if row else {}
     if attrs.get("dir_repo"):
         root = store.roots(con).get(attrs["dir_repo"])
-        return root is not None and root.is_dir() and not (root / attrs["dir_rel"]).is_dir()
+        if root is None or not root.is_dir() or (root / attrs["dir_rel"]).is_dir():
+            return False
+        folder = root / attrs["dir_rel"]
+        archived = folder.parent / "archive"
+        if archived.is_dir() and any(f.is_dir() and f.name.endswith("-" + folder.name) for f in archived.iterdir()):
+            return True
+        # A folder committed on a branch that is not checked out is out of the working tree only until it is again.
+        return not _on_a_branch(root, attrs["dir_rel"])
     return bool(attrs.get("dir")) and not Path(attrs["dir"]).is_dir()
+
+
+def _on_a_branch(root: Path, rel: str) -> bool:
+    """True when the head of some local branch of the repository at `root` holds the folder `rel` (relative to root)."""
+    import subprocess
+    try:
+        git = lambda *a, **k: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=True,
+                                             **k).stdout
+        heads = git("for-each-ref", "--format=%(refname)", "refs/heads").split()
+        if not heads:
+            return False
+        path = git("rev-parse", "--show-prefix").strip() + rel   # as the commit names it: from the top of the repository
+        out = git("cat-file", "--batch-check", input="".join(f"{h}:{path}\n" for h in heads))
+    except (OSError, subprocess.CalledProcessError):   # not a git repository, or no git
+        return False
+    return any(line.split()[1:2] == ["tree"] for line in out.splitlines())   # "<oid> tree <size>", or "<name> missing"
 
 
 # -- channels and tests the map does not see as such -------------------------------------------------

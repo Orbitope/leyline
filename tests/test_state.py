@@ -90,3 +90,66 @@ def test_plan_and_check_on_a_store_with_nothing_mapped_say_so(repo):
         assert "nothing is mapped" in r.get("error", "")
     assert (ch / "leyline.md").read_text(encoding="utf-8") == page
     assert not (empty.parent / "snapshots").exists()
+
+
+def git(root, *args):
+    import subprocess
+    return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=root, check=True,
+                          capture_output=True, text=True).stdout
+
+
+def test_a_baseline_stays_while_its_change_folder_is_on_another_branch(tmp_path, monkeypatch):
+    """A change folder committed on a feature branch is missing from the working tree while another branch is checked
+    out. A map run there took the folder as removed and deleted the baseline, so back on the branch `check` had
+    nothing to compare with."""
+    from test_signalfix import FILES, implement
+    work = tmp_path / "repo"
+    for path, text in FILES.items():
+        (work / path).parent.mkdir(parents=True, exist_ok=True)
+        (work / path).write_text(text)
+    git(work, "init", "-q", "-b", "main")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "base")
+    git(work, "switch", "-q", "-c", "feat")
+    ch = make(work)
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "spec")
+    monkeypatch.chdir(work)
+    db = work / ".leyline" / "leyline.db"
+    loop.map_repos([str(work)], db, "p", exact="off", page=False)
+    loop.plan(db, ch)
+    git(work, "add", "openspec")   # leyline.md is committed with the change
+    git(work, "commit", "-qm", "plan")
+    git(work, "switch", "-q", "main")
+    assert not ch.exists()
+    loop.map_repos(None, db, page=False)
+    git(work, "switch", "-q", "feat")
+    implement(work)
+    v = loop.check(db, ch)
+    assert "error" not in v, v
+    assert {t["key"]: t["state"] for t in v["tasks"]}["1.1"] == "done"
+
+
+def test_a_baseline_goes_when_its_change_folder_is_archived(tmp_path, monkeypatch):
+    """What the README promises stays: an archived change's baseline is deleted on the next map."""
+    from leyline import diff, store
+    work = tmp_path / "repo"
+    work.mkdir()
+    ch = make(work)
+    git(work, "init", "-q", "-b", "main")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "base")
+    monkeypatch.chdir(work)
+    db = work / ".leyline" / "leyline.db"
+    loop.map_repos([str(work)], db, "p", exact="off", page=False)
+    loop.plan(db, ch)
+    archived = ch.parent / "archive" / ("2026-01-01-" + ch.name)
+    archived.parent.mkdir()
+    git(work, "mv", str(ch), str(archived))
+    git(work, "commit", "-qm", "archive")
+    loop.map_repos(None, db, page=False)
+    con = store.connect(db)
+    try:
+        assert not diff.snapshot_path(con, "spec-report-queued").exists()
+    finally:
+        con.close()
