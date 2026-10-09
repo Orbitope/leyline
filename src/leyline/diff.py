@@ -508,7 +508,9 @@ class TestNames:
         """The id of the test node a result ran, or None when there is none or it could be more than one."""
         p = result_parts(name)
         leaf = p["func"] or p["leaf"]
-        cands = self._narrow(self.by_name.get(leaf, []), p)
+        # The map keeps a name as written in the source: a tab in the result is `\t` there.
+        written = leaf.translate({ord(c): "\\" + e for e, c in _TAP_CONTROL.items()})
+        cands = self._narrow(self.by_name.get(leaf, []) or self.by_name.get(written, []), p)
         if not cands:
             hits = [(size, t) for pattern, size, t in self.templates if pattern.match(leaf)]
             hits = [(size, t) for size, t in hits if t in self._narrow([t for _, t in hits], p)]
@@ -538,6 +540,7 @@ def record_tests(con, run: str, results: list[dict]) -> dict:
 _PLAIN = re.compile(r"^\s*(PASS(?:ED)?|FAIL(?:ED)?|ERROR|SKIP(?:PED)?|XFAIL|XPASS)\b[\s:]*(.+?)\s*$")
 _POINT = re.compile(r"^(\s*)(not ok|ok)\b(?:\s+\d+)?(?:\s*-(?=\s|$))?\s*(.*?)\s*$")
 _SUBTEST = re.compile(r"^(\s*)# Subtest:\s*(.*?)\s*$")
+_YAML_START = re.compile(r"^\s*---\s*$")
 # go test: `--- PASS: TestX/sub (0.00s)`, `=== RUN   TestX`, and a package's line `ok  \tpkg\t0.3s`, `FAIL\tpkg\t0.1s`,
 # `?   \tpkg\t[no test files]` or `FAIL\tpkg [build failed]`.
 # jest's default reporter: ` PASS  src/a.test.js (5.1 s)`, and with --verbose `✓ name (2 ms)`, `✕`, `○ skipped`, `✎ todo`
@@ -549,15 +552,26 @@ _GO_RUN = re.compile(r"^=== (?:RUN|CONT|PAUSE|NAME)\s+(\S+)\s*$")
 _GO_PACKAGE = re.compile(r"^(ok|FAIL|\?)\s+(\S+)(?:\t.*| \[(build failed|setup failed)\])$")
 
 
-def _tap_point(rest: str) -> tuple[str, str, bool]:
-    """A TAP test line after `ok N -`: (description, directive, opens a block of subtests)."""
-    opens = rest.endswith("{")
+_TAP_CONTROL = {"t": "\t", "n": "\n", "r": "\r", "b": "\b", "f": "\f", "v": "\v"}
+
+
+def _tap_unescape(text: str) -> str:
+    r"""A TAP name as the runner meant it: `\#` is `#`, `\\` a backslash, and (as node:test writes them) `\\t` and `\\n`
+    a tab and a newline."""
+    return re.sub(r"\\#|\\\\([tnrbfv])?",
+                  lambda m: "#" if m.group(0) == "\\#" else _TAP_CONTROL.get(m.group(1) or "", "\\"), text)
+
+
+def _tap_point(rest: str, can_open: bool = True) -> tuple[str, str, bool]:
+    """A TAP test line after `ok N -`: (description, directive, opens a block of subtests). A ` {` at the end opens a
+    block (vitest) only when `can_open`, the lines after it being the block's; else it is part of the name."""
+    opens = can_open and rest.endswith("{")
     if opens:
         rest = rest[:-1].rstrip()
     m = re.search(r"(?<!\\)\s#\s*(.*)$", rest)
     desc = rest[:m.start()] if m else rest
     directive = m.group(1).strip() if m else ""
-    return desc.strip().replace("\\#", "#").replace("\\\\", "\\"), directive, opens
+    return _tap_unescape(desc.strip()), directive, opens
 
 
 _COLLECTED = re.compile(r"^(\S+\.py) - (.+)$")
@@ -613,7 +627,8 @@ def parse_test_output(text: str) -> list[dict]:
             return None
         return emit([f["name"] for f in stack] + [frame["name"]], frame["status"])
 
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for k, line in enumerate(lines):
         if in_yaml:
             if re.match(r"^\s*\.\.\.\s*$", line):
                 in_yaml = False
@@ -631,7 +646,7 @@ def parse_test_output(text: str) -> list[dict]:
                         msg = msg[1:-1].replace("''", "'")
                     last["message"] = msg
             continue
-        if re.match(r"^\s*---\s*$", line):
+        if _YAML_START.match(line):
             in_yaml = True
             continue
         m = _GO_PACKAGE.match(line)
@@ -701,7 +716,7 @@ def parse_test_output(text: str) -> list[dict]:
             indent = len(m.group(1).expandtabs())
             while stack and stack[-1]["kind"] == "header" and stack[-1]["indent"] >= indent:
                 stack.pop()
-            name = m.group(2).replace("\\#", "#").replace("\\\\", "\\")   # escaped as on a test line
+            name = _tap_unescape(m.group(2))   # escaped as on a test line
             stack.append({"indent": indent, "name": name, "kind": "header", "status": "pass", "children": 0, "failed": False})
             continue
         if re.match(r"^\s*\}\s*$", line) and stack and stack[-1]["kind"] == "brace":
@@ -711,7 +726,9 @@ def parse_test_output(text: str) -> list[dict]:
         m = _POINT.match(line)
         if m:
             indent = len(m.group(1).expandtabs())
-            desc, directive, opens = _tap_point(m.group(3))
+            after = next((ln for ln in lines[k + 1:] if ln.strip()), "")   # a block opened with ` {` is indented
+            deeper = len(after.expandtabs()) - len(after.expandtabs().lstrip()) > indent and not _YAML_START.match(after)
+            desc, directive, opens = _tap_point(m.group(3), can_open=deeper)
             word = directive.split()[0].upper() if directive else ""
             status = "skip" if word in ("SKIP", "TODO") else "fail" if m.group(2) == "not ok" else "pass"
             while stack and stack[-1]["kind"] == "header" and stack[-1]["indent"] > indent:

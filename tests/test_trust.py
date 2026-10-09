@@ -357,6 +357,49 @@ def test_jest_output_is_read_test_by_test():
     assert out == {"src/shout.test.js > Engine > shout > adds a bang": "fail"}
 
 
+# node --test --test-reporter=tap (node 26) on test("tab\there"), test("back\\slash t"), test("new\nline"),
+# test("parses {"), describe("suite {", () => test("inside")) and test("hash # here").
+NODE_ESCAPED = """TAP version 13
+# Subtest: tab\\\\there
+ok 1 - tab\\\\there
+  ---
+  duration_ms: 0.4
+  ...
+# Subtest: back\\\\slash t
+ok 2 - back\\\\slash t
+# Subtest: new\\\\nline
+ok 3 - new\\\\nline
+# Subtest: parses {
+ok 4 - parses {
+  ---
+  duration_ms: 0.1
+  ...
+# Subtest: suite {
+    # Subtest: inside
+    ok 1 - inside
+    1..1
+ok 5 - suite {
+# Subtest: hash \\# here
+ok 6 - hash \\# here
+1..6
+"""
+
+
+def test_node_test_names_are_read_as_the_runner_meant(tmp_path):
+    """node:test prints a tab as `\\\\t` and a newline as `\\\\n`, kept as a backslash and a letter; and a name ending in
+    ` {` lost it, read as vitest's brace that opens a block."""
+    got = [r["name"] for r in diff.parse_test_output(NODE_ESCAPED)]
+    assert got == ["tab\there", "back\\slash t", "new\nline", "parses {", "suite { > inside", "hash # here"]
+    # The map keeps a test's name as written in the source (`"tab\\there"`): the result still finds it.
+    work = tmp_path / "js"
+    (work / "test").mkdir(parents=True)
+    (work / "test/a.test.mjs").write_text('import { test } from "node:test";\ntest("tab\\there", () => {});\n'
+                                          'test("parses {", () => {});\n')
+    index(work, tmp_path / "s.db", "r")
+    names = diff.TestNames(store.connect(tmp_path / "s.db"))
+    assert names.node("tab\there") and names.node("parses {")
+
+
 def test_a_suite_named_for_a_method_is_not_a_file(tmp_path):
     """node:test prints no file, so `Engine.start > returns upper case` read `Engine.start` as the test's file and
     tied the result to no test."""
