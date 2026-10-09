@@ -133,6 +133,25 @@ def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")
 
 
+def test_csharp_fields_assigned_by_deconstruction_are_written(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/P.cs": (
+            "namespace App;\n"
+            "public class P {\n"
+            "    private string _name; private int _age;\n"
+            "    public P(string name, int age) { (_name, _age) = (name, age); }\n"
+            "    public void Swap() { (this._age, this._name) = (1, \"x\"); }\n"
+            "    public (string, int) Get() { return (_name, _age); }\n"
+            "}\n"),
+    })
+    writes, reads = edges(con, "writes"), edges(con, "reads")
+    for fn in ("App.P..ctor(string,int)", "App.P.Swap()"):
+        assert (fn, "App.P._name") in writes and (fn, "App.P._age") in writes
+        assert (fn, "App.P._name") not in reads
+    assert ("App.P.Get()", "App.P._name") in reads and ("App.P.Get()", "App.P._name") not in writes
+
+
 def test_csharp_signatures_in_a_file_that_starts_with_a_byte_order_mark(tmp_path):
     root = tmp_path / "repo"
     (root / "App").mkdir(parents=True)

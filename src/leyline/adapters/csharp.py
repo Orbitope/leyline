@@ -750,7 +750,9 @@ class _Walker:
                 return
         # Read or write: look at what the expression sits in.
         cur, up = node, parent
-        while up is not None and up.type == "parenthesized_expression":
+        # Through parentheses, and out of a tuple: (_name, _age) = (name, age) assigns both.
+        while up is not None and (up.type in ("parenthesized_expression", "tuple_expression") or up.type == "argument"
+                                  and up.parent is not None and up.parent.type == "tuple_expression"):
             cur, up = up, up.parent
         access = "r"
         if up is not None:
