@@ -179,6 +179,18 @@ def _arity(arg) -> Optional[int]:
     return len([p for p in params.named_children if p.type != "comment"]) if params is not None else 1
 
 
+def _walk_nodes(node, types, stop=()):
+    """Nodes of these types under a node, not looking inside the `stop` ones."""
+    out, stack = [], list(node.named_children) if node is not None else []
+    while stack:
+        n = stack.pop()
+        if n.type in types:
+            out.append(n)
+        if n.type not in stop:
+            stack.extend(n.named_children)
+    return out
+
+
 def _same(a, b) -> bool:
     return a is not None and b is not None and a.start_byte == b.start_byte and a.end_byte == b.end_byte
 
@@ -213,6 +225,7 @@ class _Walker:
         self.fn_names: set[str] = set()
         self.fn_nodes: dict = {}       # name -> the function's node, for a program path a helper of the file builds
         self.imported: set[str] = set()
+        self.ns_members: dict[str, set] = {}   # namespace id -> names of the functions declared in it
         self.made_fns: set[str] = set()   # const h = withAuth(async (req) => ...): a function a call wraps
         self._prescan(self.tree.root_node)
 
@@ -412,6 +425,10 @@ class _Walker:
             for d in node.named_children:
                 if d.type == "variable_declarator":
                     self._declarator(d, node, cid, class_id, scope, qual, top, exported)
+            return
+        if t in ("internal_module", "module") and node.child_by_field_name("name") is not None \
+                and node.child_by_field_name("name").type in ("identifier", "nested_identifier"):
+            self._namespace(node, self.file_id if top else cid, qual, exported)
             return
         if t in ("function_signature", "ambient_declaration", "internal_module", "module"):
             if t in ("ambient_declaration", "internal_module", "module"):
@@ -945,6 +962,54 @@ class _Walker:
                 self._walk(m, self.top_id, None, {}, qual)
         return True
 
+    def _namespace(self, node, parent_id, qual, exported) -> None:
+        """`namespace Geo { export function area() {} export class Shape {} }`: a type whose functions are its
+        static members (Geo.area()), with its classes, interfaces and nested namespaces declared under it."""
+        name = _text(node.child_by_field_name("name"))
+        qname = f"{qual}.{name}"
+        tid = f"{self.repo}:typescript:{qname}"
+        body = node.child_by_field_name("body")
+        self._add(Node(
+            id=tid, kind="type", name=name, parent_id=parent_id, language=LANGUAGE, path=self.path,
+            span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
+            attrs={"native_kind": "namespace", "namespace": qual, "visibility": "public" if exported else "private",
+                   "is_abstract": False, "signature": f"namespace {name}"}))
+        self.self_types.setdefault(tid, {})
+        # A bare call in the namespace to one of its own functions (scale(2)) is a call on the namespace.
+        self.ns_members[tid] = {_text(c.child_by_field_name("name")) for c in _walk_nodes(body, ("function_declaration",
+                                "generator_function_declaration", "variable_declarator"), stop=FUNCS + ("class_body",))
+                                if c.type != "variable_declarator" or self._fn_of(c.child_by_field_name("value")) is not None}
+        for st in (body.named_children if body is not None else []):
+            target, exp = st, False
+            if st.type == "export_statement" and st.child_by_field_name("declaration") is not None:
+                target, exp = st.child_by_field_name("declaration"), True
+            if target.type == "expression_statement" and target.named_children \
+                    and target.named_children[0].type in ("internal_module", "module"):
+                target = target.named_children[0]
+            t = target.type
+            if t in ("function_declaration", "generator_function_declaration"):
+                self._function(_text(target.child_by_field_name("name")), target, st, tid, qname, tid, None,
+                               is_method=True, is_static=True, visibility="public" if exp else "private")
+            elif t in ("class_declaration", "abstract_class_declaration") and target.child_by_field_name("name") is not None:
+                self._class(_text(target.child_by_field_name("name")), target, tid, qname, exp)
+            elif t in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
+                self._typeish(target, tid, qname, exp)
+            elif t in ("internal_module", "module") and target.child_by_field_name("name") is not None \
+                    and target.child_by_field_name("name").type in ("identifier", "nested_identifier"):
+                self._namespace(target, tid, qname, exp)
+            elif t in ("lexical_declaration", "variable_declaration") and any(
+                    d.type == "variable_declarator" and self._fn_of(d.child_by_field_name("value")) is not None
+                    for d in target.named_children):
+                for d in target.named_children:
+                    fn = self._fn_of(d.child_by_field_name("value")) if d.type == "variable_declarator" else None
+                    if fn is not None and d.child_by_field_name("name").type == "identifier":
+                        self._function(_text(d.child_by_field_name("name")), fn, st, tid, qname, tid, None,
+                                       is_method=True, is_static=True, visibility="public" if exp else "private")
+                    elif d.type == "variable_declarator":
+                        self._walk(d, self.top_id, None, {}, qual)
+            else:
+                self._walk(st, self.top_id, None, {}, qual)   # code the namespace runs when the file loads
+
     def _object_members(self, obj, cid, class_id, scope, qual) -> None:
         """Function-valued properties of an object written inside a function are that function's local functions."""
         for m in obj.children:
@@ -1045,7 +1110,8 @@ class _Walker:
                 self.done_calls[key] = None
                 return None   # a local value being called: a parameter, a callback, the result of another call
             else:
-                site = CallSite(cid, name, None, None, argc, line, class_id, col, hints)
+                site = CallSite(cid, name, "this" if name in self.ns_members.get(class_id, ()) else None, None, argc,
+                                line, class_id, col, hints)
         elif fn.type == "super":
             site = CallSite(cid, CTOR, "base", None, argc, line, class_id, col, hints)
         elif fn.type == "member_expression":

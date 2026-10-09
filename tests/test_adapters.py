@@ -451,6 +451,36 @@ def test_typescript_a_request_on_an_axios_instance_is_not_a_route_and_a_made_han
     assert got["web.src.calls.tags"] == ("server.src.routes.more", "GET /api/tags")
 
 
+def test_typescript_namespace_members_are_declared_under_the_namespace(tmp_path):
+    con = _map(tmp_path, {
+        "src/geo.ts": (
+            "export namespace Geo {\n"
+            "  export function area(): number {\n"
+            "    return scale(2);\n"
+            "  }\n"
+            "  function scale(x: number): number { return x; }\n"
+            "  export class Shape {\n"
+            "    m(): number { return 1; }\n"
+            "  }\n"
+            "}\n"),
+        "src/use.ts": (
+            "import { Geo } from './geo';\n"
+            "export function run(): number {\n"
+            "  const s: Geo.Shape = new Geo.Shape();\n"
+            "  s.m();\n"
+            "  return Geo.area();\n"
+            "}\n"),
+    })
+    nodes = {short(r[0]): r[1] for r in con.execute("SELECT id, kind FROM nodes")}
+    assert nodes.get("src.geo.Geo") == "type"
+    assert nodes.get("src.geo.Geo.area") == "callable" and nodes.get("src.geo.Geo.Shape") == "type"
+    assert nodes.get("src.geo.Geo.Shape.m") == "callable"
+    got = calls(con)
+    assert ("src.use.run", "src.geo.Geo.area") in got
+    assert ("src.use.run", "src.geo.Geo.Shape.m") in got
+    assert ("src.geo.Geo.area", "src.geo.Geo.scale") in got
+
+
 def test_typescript_fields_assigned_by_destructuring_are_written(tmp_path):
     con = _map(tmp_path, {
         "src/p.ts": (
