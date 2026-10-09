@@ -542,7 +542,7 @@ class _Walker:
         else:
             receiver = "?"
         cur, up = node, parent
-        while up is not None and up.type in ("pattern_list", "tuple_pattern", "tuple", "parenthesized_expression"):
+        while up is not None and up.type in ("pattern_list", "tuple_pattern", "list_pattern", "tuple", "parenthesized_expression"):
             cur, up = up, up.parent
         access = "r"
         if up is not None:
