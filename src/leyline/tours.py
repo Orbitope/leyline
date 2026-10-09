@@ -89,9 +89,12 @@ def generate(con, repo_id: str) -> dict:
     flow_kind = {f["id"]: f["kind"] for f in flows}
     test_mods = {module.get(f["entry_id"]) for f in flows if flow_kind[f["id"]] == "test"} - {None}
 
+    # Tests kept beside the code they test (grocery.test.ts next to grocery.ts) do not make that code a test module.
+    test_files, mostly_tests = store.test_places(con)
+
     def side(m):  # samples, docs, benchmarks and test helpers: real code, but not the product
         return any(part.lower() in SIDE_DIRS or part.lower().startswith("test") for part in (mods[m]["path"] or "").split("/"))
-    core = [m for m in mods if m not in test_mods and not side(m)] or list(mods)
+    core = [m for m in mods if m not in mostly_tests and not side(m)] or list(mods)
     size = {r["m"]: (r["files"], r["loc"]) for r in q(
         "SELECT a.module_id AS m, COUNT(*) AS files, SUM(COALESCE(n.span_end, 0)) AS loc FROM nodes n"
         " JOIN ancestry a ON a.node_id = n.id WHERE n.kind = 'file' GROUP BY a.module_id")}
@@ -246,7 +249,8 @@ def generate(con, repo_id: str) -> dict:
     n_tests = sum(1 for f in flows if flow_kind[f["id"]] == "test")
     if n_tests:
         tested = {r[0] for r in q(store.TESTED)}
-        fns = [r[0] for r in q("SELECT id FROM nodes WHERE kind = 'callable' AND repo_id = ?", repo_id) if module.get(r[0]) in core]
+        fns = [r[0] for r in q("SELECT id, path FROM nodes WHERE kind = 'callable' AND repo_id = ?", repo_id)
+               if module.get(r[0]) in core and r[1] not in test_files]
         on = sum(1 for i in fns if i in tested)
         home = sorted(test_mods, key=lambda m: -(size.get(m, (0, 0))[1] or 0))
         from . import coverage as measured

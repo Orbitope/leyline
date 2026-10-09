@@ -402,3 +402,24 @@ def test_entry_points_are_named_by_file_and_the_product_comes_first(tmp_path):
     f = con.execute("SELECT id FROM nodes WHERE name = 'attribute'").fetchone()[0]
     names = [e["name"] for e in change.assess(con, "x", [{"id": f, "action": "behavior"}])["entry_points_affected"]]
     assert names == ["src/index.ts", "scripts/bench-sheet.ts"], names
+
+
+# -- the tour reads code with its tests beside it as code ------------------------------------------------------
+def test_the_tour_reads_code_with_its_tests_beside_it_as_code(tmp_path):
+    from leyline import tours
+    con = _map(tmp_path, {
+        "src/lib/grocery.ts": "export function weeksSince(d: number): number {\n  return d / 7;\n}\n"
+                              "export function isDue(d: number): boolean {\n  return weeksSince(d) >= 1;\n}\n",
+        "src/lib/units.ts": "export function toBase(x: number): number {\n  return x * 1000;\n}\n",
+        "src/lib/grocery.test.ts": 'import { it, expect } from "vitest";\nimport { isDue } from "./grocery";\n\n'
+                                   'it("is due after a week", () => {\n  expect(isDue(8)).toBe(true);\n});\n',
+        "src/screens/List.ts": 'import { isDue } from "../lib/grocery";\nimport { toBase } from "../lib/units";\n\n'
+                               "export function show(d: number) {\n  return isDue(d) ? toBase(d) : 0;\n}\n",
+    })
+    repo = con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchone()[0]
+    stops = tours.get(con, f"tour:orientation:{repo}")["stops"]
+    titles = [s["title"] for s in stops]
+    assert "The foundation: lib" in titles, titles
+    tested = next(s["narrative"] for s in stops if s["title"] == "How it is tested")
+    assert "2 of the 4 functions outside test code" in tested, tested
+
