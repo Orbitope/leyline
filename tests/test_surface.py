@@ -48,7 +48,7 @@ def test_the_repository_store_is_found_from_a_folder_inside_it(repo, capsys, mon
 def test_grade_reads_scip_columns_in_the_documents_encoding(tmp_path):
     """scip-python counts columns in UTF-16 code units: on a line with an emoji before a call, grade read the
     columns as characters, missed the `(` after the name, and counted the compiler's call as no call at all."""
-    from leyline import grade, scip_pb2
+    from leyline import exact, grade, scip_pb2
     root = tmp_path / "g"
     root.mkdir()
     line = '    s = "\U0001F600\U0001F600"; return target()'
@@ -67,7 +67,7 @@ def test_grade_reads_scip_columns_in_the_documents_encoding(tmp_path):
     (tmp_path / "index.scip").write_bytes(idx.SerializeToString())
     g = grade.grade(str(root), str(tmp_path / "index.scip"), db=str(tmp_path / "grade.db"))
     assert g["compiler_links"] == 1 and g["recall"] == 1.0 and g["compiler_silent"] == 0
-    assert grade._chars("é(x", 2, scip_pb2.UTF8CodeUnitOffsetFromLineStart) == 1   # é is two bytes
+    assert exact._chars("é(x", 2, scip_pb2.UTF8CodeUnitOffsetFromLineStart) == 1   # é is two bytes
 
 
 @pytest.fixture
