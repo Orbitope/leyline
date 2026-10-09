@@ -200,7 +200,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
             con.close()
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(snap), str(target))
-        marker.write_text(stamp + "\n")
+        store.write_file(marker, stamp + "\n")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return target
@@ -658,7 +658,7 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         out["gate"] = gate(out, gate_config(root))   # judged from this run's facts and the findings as they are now
         page =Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(text(out), encoding="utf-8")
+        store.write_file(page, text(out))
         out["page"] = str(page)
         return out
     finally:

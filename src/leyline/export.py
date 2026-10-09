@@ -420,7 +420,8 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
         try:
             body = json.dumps({"version": 1, "levels": keep}, separators=(",", ":"), sort_keys=True)
             if not memory.is_file() or memory.read_text(encoding="utf-8") != body:
-                memory.write_text(body, encoding="utf-8")
+                from . import store
+                store.write_file(memory, body)
         except OSError:
             pass
     return out

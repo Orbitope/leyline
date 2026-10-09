@@ -117,8 +117,7 @@ def snapshot(con, name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".part")
     for p in (tmp, Path(str(tmp) + "-journal")):
-        if p.exists():
-            p.unlink()
+        p.unlink(missing_ok=True)   # a link to nothing too: SQLite would make the file it points at
     out = sqlite3.connect(str(tmp))
     out.executescript(_snapshot_schema())
     out.close()
