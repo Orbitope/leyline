@@ -1315,6 +1315,9 @@ class Indexer:
                         top = imp.target.split(".")[0] or imp.target
                         xid = self._external("python", top,
                                              {"category": "stdlib" if top in stdlib else "package"}, _repo_of(fid))
+                        if top:   # `import sqlite3`: sqlite3.connect() is not ours to resolve
+                            self.outside_imports[fid].update(
+                                [(s.partition(" as ")[2] or s) for s in imp.symbols] if imp.symbols else [imp.alias or top])
                         if (fid, xid) not in seen:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
@@ -2752,6 +2755,13 @@ class Indexer:
             tid, known = None, False
         if known:
             return None  # receiver has a type that is not in the workspace
+        if lang == "python" and self.outside_imports[fid]:
+            root = call   # sqlite3.connect(), os.path.join(): a module from outside
+            while root.receiver == "?" and root.receiver_type is None and root.chain is not None and root.chain.attr:
+                root = root.chain
+            if root.receiver_type is None and root.chain is None and (root.receiver or "") in self.outside_imports[fid] \
+                    and not self._py_bound(fid, call.src_id, root.receiver):
+                return None
         if not defined_here:
             return None
         if lang == "python" and name.startswith("__") and name.endswith("__"):

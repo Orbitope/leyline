@@ -678,6 +678,35 @@ def test_typescript_an_anonymous_default_class_is_a_class_with_its_methods(tmp_p
     assert ("src.page.show", "src.widget.default.render") in got
 
 
+def test_python_a_call_on_a_module_imported_from_outside_is_not_guessed_onto_ours(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/store.py": (
+            "import sqlite3\n"
+            "\n"
+            "def connect(path):\n"
+            "    return sqlite3.connect(path)\n"),
+        "pkg/use.py": (
+            "import os.path\n"
+            "from json import decoder as dec\n"
+            "from pkg import store\n"
+            "\n"
+            "def join(a):\n"
+            "    return a\n"
+            "\n"
+            "def a(p):\n"
+            "    return os.path.join(p, 'x'), dec.connect(p)\n"
+            "\n"
+            "def b(p):\n"
+            "    return store.connect(p)\n"),
+    })
+    got = calls(con)
+    assert ("pkg.store.connect", "pkg.store.connect") not in got
+    assert ("pkg.use.a", "pkg.use.join") not in got
+    assert ("pkg.use.a", "pkg.store.connect") not in got
+    assert got[("pkg.use.b", "pkg.store.connect")] == "heuristic"
+
+
 def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
     con = _map(tmp_path, {
         "pkg/core.py": (
