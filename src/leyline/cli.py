@@ -555,9 +555,9 @@ def _main(argv=None) -> int:
     p.add_argument("--force", action="store_true", help="install: replace a copy that was edited here")
     # Advanced commands: no help= keeps them out of the list at the top of --help; ADVANCED lists them.
     p = sub.add_parser("drift", description="Compare the code that the living specs (openspec/specs/) and finished changes"
-                                            " name in backticks with the map: what is gone, has moved, has changed signature"
-                                            " or could now be several things. Exits 1 when something is gone or changed"
-                                            " signature.")
+                                            " name in backticks with the map: what is gone, renamed, has moved, has changed"
+                                            " signature or could now be several things. Exits 1 when something is gone,"
+                                            " renamed or changed signature.")
     p.add_argument("path", nargs="?", default=".", help="the repository, or its openspec/ folder (default: here)")
     p.add_argument("--accept", action="store_true", help="the specs and the code agree as they are now: record that, in"
                                                          " openspec/leyline-anchors.json, to compare with later")
