@@ -276,6 +276,22 @@ def test_a_python_override_with_other_parameters_still_overrides(tmp_path):
     assert got == {"o:python:repo.Same.fetch", "o:python:repo.More.fetch"}
 
 
+def test_a_typescript_override_with_other_parameters_still_overrides(tmp_path):
+    """TypeScript has no overloads at run time either: a subclass's method of that name replaces the base's."""
+    root = tmp_path / "t"
+    root.mkdir()
+    (root / "repo.ts").write_text(
+        "export class Base {\n  fetch(q: string): string {\n    return q;\n  }\n}\n\n"
+        "export class Same extends Base {\n  fetch(q: string): string {\n    return q;\n  }\n}\n\n"
+        "export class More extends Base {\n  fetch(q: string, limit: number): string {\n    return q.slice(0, limit);\n  }\n}\n")
+    db = tmp_path / "t.db"
+    index(root, db, "t")
+    c = store.connect(db)
+    got = ids(c, "SELECT src_id FROM edges WHERE kind = 'overrides' AND dst_id = 't:typescript:repo.Base.fetch'")
+    c.close()
+    assert got == {"t:typescript:repo.Same.fetch", "t:typescript:repo.More.fetch"}
+
+
 def test_change_assessment_and_saved_views(tmp_path):
     import shutil
 
