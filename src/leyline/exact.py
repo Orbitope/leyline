@@ -45,14 +45,23 @@ def _quiet(timeout: float) -> dict:
     output read as UTF-8 whatever the locale is, and a time limit."""
     env = {**os.environ, "DOTNET_NOLOGO": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1"}
     return {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "stdin": subprocess.DEVNULL,
-            "timeout": timeout, "env": env}
+            "timeout": timeout, "env": env, "cwd": _outside()}
+
+
+def _outside() -> Path:
+    """Where dotnet runs: the user's cache. dotnet reads global.json from the folder it runs in and the folders above,
+    and lets it choose the SDK (in .NET 10, from a path it names): run from inside the repository being mapped (or
+    from a virtual environment kept in it), someone else's files would choose what runs."""
+    d = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "leyline"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 # -- sources ---------------------------------------------------------------------------------
 def _sdk_framework() -> str:
     """net<major>.0 for the .NET SDK on the PATH (net8.0 when it cannot be told)."""
     try:
-        out = subprocess.run(["dotnet", "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
+        out = subprocess.run(["dotnet", "--version"], capture_output=True, text=True, timeout=60, cwd=_outside()).stdout.strip()
         major = int(out.split(".")[0])
         return f"net{major}.0" if major >= 6 else "net8.0"
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -64,8 +73,7 @@ def _tool() -> Optional[Path]:
     if not shutil.which("dotnet"):
         return None
     framework = _sdk_framework()
-    cache = (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "leyline"
-             / f"roslyn-refs-{TOOL_VERSION}-{framework}")
+    cache = _outside() / f"roslyn-refs-{TOOL_VERSION}-{framework}"
     dll = cache / "RoslynRefs.dll"
     if dll.exists():
         return dll

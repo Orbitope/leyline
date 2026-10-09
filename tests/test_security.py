@@ -278,6 +278,26 @@ def test_the_base_archive_keeps_no_entry_reached_through_a_link(tmp_path):
     assert "w/evil.txt" not in [m.name for m in kept] and "h" not in [m.name for m in kept]
 
 
+def test_dotnet_runs_outside_the_repository(repo, tmp_path, monkeypatch):
+    """dotnet picks its SDK from the global.json of the folder it runs in, and .NET 10's `sdk.paths` there can name an
+    SDK inside the repository: building the exporter from a mapped repository's folder would run its code."""
+    from leyline import exact
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "cwds"
+    fake = bin_dir / "dotnet"
+    fake.write_text(f'#!/bin/sh\npwd >> "{log}"\n[ "$1" = "--version" ] && echo 8.0.100\nexit 1\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.chdir(repo)
+    with pytest.raises(RuntimeError):
+        exact._tool()
+    ran_in = [Path(x).resolve() for x in log.read_text().split()]
+    assert len(ran_in) == 2
+    assert not any(p == repo.resolve() or repo.resolve() in p.parents for p in ran_in), ran_in
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)
