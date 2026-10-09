@@ -656,7 +656,9 @@ def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, 
         # A big map goes in gzipped: the page unpacks it with the browser's own DecompressionStream.
         data, kind = base64.b64encode(gzip.compress(data.encode(), 6, mtime=0)).decode(), "application/gzip+base64"
     else:
-        data = data.replace("</", "<\\/")
+        # No `<` at all inside the script element: `</script>` would end it, and `<!--` then `<script` in some
+        # source text would make the browser read past its real end tag and into the viewer's code.
+        data = data.replace("<", "\\u003c")
     repos = [r["id"] for r in g["repos"]] or ["repo"]
     name = repos[0] if len(repos) == 1 else " + ".join(repos[:3]) + (f" and {len(repos) - 3} more" if len(repos) > 3 else "")
     return (template.replace("__LEYLINE_REPO__", html.escape(name))
