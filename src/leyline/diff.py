@@ -290,12 +290,21 @@ def own_changes(before: sqlite3.Connection, after: sqlite3.Connection, ids: list
     return out
 
 
+COMMENT_LINE = re.compile(r"^(//|/\*|\*(\s|/|$)|#(\s|!|$)|--\s)")
+
+
+def _code_line(text: str) -> bool:
+    """A line that holds code: not blank, and not only a comment (`// ...`, `# ...`, a doc comment's `* ...`)."""
+    t = text.strip()
+    return bool(t) and not COMMENT_LINE.match(t)
+
+
 IMPORT = re.compile(r"^\s*(import\s|from\s+\S+\s+import\s|using\s|#include\s|use\s|require\(|const\s.*=\s*require\(|export\s.*\sfrom\s)")
 
 
 def explained(node: dict, spans: list[tuple[int, int]], names: set[str], reach: int = 2) -> bool:
     """Whether the changed lines a body holds around code a task covers (a module's top level, a class around a new
-    method) are all part of that work: blank, an import, next to (within `reach` lines of) that code, or in a run
+    method) are all part of that work: blank, a comment, an import, next to (within `reach` lines of) that code, or in a run
     of changed lines that names it (an entry in a registration table, up to 15 lines long). A function
     that holds no task code is never explained this way: its own lines are its own edit."""
     own = node.get("own") or []
@@ -317,7 +326,7 @@ def explained(node: dict, spans: list[tuple[int, int]], names: set[str], reach: 
         if len(run) <= 15 and any(names_code(text) for _, text in run):
             continue
         for ln, text in run:
-            if not text.strip() or (spans and IMPORT.match(text)) or any(a - reach <= ln <= b + reach for a, b in spans):
+            if not _code_line(text) or (spans and IMPORT.match(text)) or any(a - reach <= ln <= b + reach for a, b in spans):
                 continue
             return False
     return True
@@ -916,7 +925,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
     if own is not None:
         not_predicted += [{"id": f["id"], "name": "<top-level>", "kind": "file", "path": f["path"], "line": 1,
                            "end": f["span_end"], "why": "outside any function", "own": own[f["id"]]}
-                          for f in files if own.get(f["id"]) and any(text.strip() for _, text in own[f["id"]])]
+                          for f in files if own.get(f["id"]) and any(_code_line(text) for _, text in own[f["id"]])]
     new_declared, new_undeclared = [], []
     for n in d["nodes"]["added"]:
         (new_declared if segments(n["id"]) & declared_new else new_undeclared).append(n)

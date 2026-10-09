@@ -534,6 +534,18 @@ def test_drift_is_still_reported(repo):
     assert "the top level of tool/checks.py" in (ch / "leyline.md").read_text()
 
 
+def test_a_comment_edited_outside_any_function_is_not_an_edit_outside_the_spec(repo):
+    work, ch, db = repo
+    loop.plan(db, ch, diff.parse_test_output(tap(BEFORE) + pytest_out(["a"])))
+    implement(work)
+    v = work / "tool/validator.ts"
+    v.write_text("/**\n * Validation of items.\n */\n// counts are checked elsewhere\n" + v.read_text())
+    c = work / "tool/checks.py"
+    c.write_text("# Checks, kept small.\n" + c.read_text())
+    out = loop.check(db, ch, diff.parse_test_output(tap(AFTER) + pytest_out(["a", "zero"])))
+    assert [n["name"] for n in out["drift"]] == [], out["drift"]
+
+
 def test_findings_show_the_claim_then_the_decision_and_reviews_that_found_nothing(repo):
     """Findings 9 and 10."""
     work, ch, db = repo
