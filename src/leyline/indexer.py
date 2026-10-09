@@ -1317,7 +1317,20 @@ class Indexer:
                     if not target and lang == "python" and imp.target.split(".")[0] not in stdlib:
                         target = self._py_on_path(fid, imp.target)
                         on_path = bool(target)
-                    if target:
+                    subs = {} if target or lang != "python" else \
+                        {s: self._py_module(fid, f"{imp.target}.{s.partition(' as ')[0]}") for s in imp.symbols or ()}
+                    if any(subs.values()):
+                        # `from corp.tools import strings` where corp/tools is a namespace package (no __init__.py):
+                        # the names are its modules
+                        for s, sub in subs.items():
+                            if sub:
+                                name, _, alias = s.partition(" as ")
+                                bind(fid, imp.src_id, alias or name, (sub, None))
+                                self.import_targets[fid].add(sub)
+                                if (fid, sub) not in seen and sub != fid:
+                                    seen.add((fid, sub))
+                                    self.edges.append(Edge("imports", fid, sub, "exact", {"symbols": imp.symbols}))
+                    elif target:
                         if imp.symbols:
                             for s in imp.symbols:
                                 name, _, alias = s.partition(" as ")

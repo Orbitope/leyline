@@ -92,3 +92,23 @@ def test_a_namespace_package_in_a_src_layout_is_imported_by_its_own_name(tmp_pat
     _, calls = _graph(tmp_path / "l.db")
     assert ("r:python:src.corp.app.main.run", "r:python:src.corp.tools.strings.shout") in calls
     assert ("r:python:tests.test_main.test_run", "r:python:src.corp.app.main.run") in calls
+
+
+def test_a_module_imported_from_a_namespace_package_is_local_not_an_outside_package(tmp_path):
+    """`from corp.tools import strings` where corp/tools has no __init__.py names the module corp/tools/strings.py."""
+    from leyline import store
+    from leyline.indexer import index
+    root = tmp_path / "repo"
+    for f, text in {"corp/tools/strings.py": "def shout(s):\n    return s.upper()\n",
+                    "corp/app/main.py": "from corp.tools import strings\n\n\ndef run():\n    return strings.shout('a')\n"}.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    index(root, tmp_path / "l.db", "r")
+    con = store.connect(tmp_path / "l.db")
+    try:
+        externals = [r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external'")]
+        calls = {(r[0], r[1], r[2]) for r in con.execute("SELECT src_id, dst_id, precision FROM calls")}
+    finally:
+        con.close()
+    assert externals == []
+    assert ("r:python:corp.app.main.run", "r:python:corp.tools.strings.shout", "heuristic") in calls, calls
