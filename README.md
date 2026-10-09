@@ -276,7 +276,9 @@ The brief ties each task to code and each scenario to a test, by three conventio
   the map is new code: `` `Owner.NewName` `` says where a member goes, and `` `module.new_func` ``,
   `` `path/to/file.py: new_func` `` or `` `new_func` in `file.py` `` where a top-level function goes. A
   path that is on the map counts with or without backticks. Other words in backticks (an issue code, a
-  value, a doc file) are noted, not checked. A task that names no code is left for the person to check.
+  value, a doc file) are noted, not checked. A task that names no code is left for the person to check;
+  a change whose tasks all name no code (docs only) is planned and checked all the same, and `check` says
+  whether any code changed with it.
 - A task that starts with add, remove, rename or "change the signature" is read that way. Anything
   else is a change in behavior.
 - A scenario is proven by a test with the same name: one on the map, or one made at run time (a name built

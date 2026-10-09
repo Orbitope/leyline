@@ -327,6 +327,32 @@ def test_parse_reads_other_list_markers_and_a_colon_inside_the_bold(tmp_path):
     assert s["when"] == ["an engine starts"] and s["then"] == ["it returns its name", "in upper case"]
 
 
+def test_a_change_whose_tasks_name_no_code_can_be_planned_and_checked(tmp_path):
+    """Docs only: plan blocked it ("no task names code that is on the map") and check had no change to compare, though
+    such a task is one for a person to check."""
+    from leyline import loop
+    work = tmp_path / "repo"
+    shutil.copytree(FIXTURE2, work)
+    ch = work / "openspec" / "changes" / "docs"
+    ch.mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: Docs\n\n## Why\nThe README is out of date.\n")
+    (ch / "tasks.md").write_text("- [ ] 1.1 Say how engines start in the README\n- [ ] 1.2 Fix the typo in `CONTRIBUTING`\n")
+    db = tmp_path / "s.db"
+    index(work, db, "f2")
+    b = loop.plan(db, ch, BEFORE)
+    st = spec.brief_status(b)
+    assert "error" not in b and st["ready"], st["blocking"]
+    assert any("No task names code" in n for n in st["notes"])
+    (work / "README.md").write_text("Engines start loudly.\n")
+    v = loop.check(db, ch, BEFORE)
+    assert "error" not in v, v
+    assert [t["verdict"] for t in v["tasks"]] == ["needs a person", "needs a person"] and v["done_as_agreed"], v["why_not"]
+    core = work / "py/src/pkg/core.py"   # code edited by a docs change is outside the spec
+    core.write_text(core.read_text().replace("return self.name\n", "return self.name.upper()\n", 1))
+    v = loop.check(db, ch, BEFORE)
+    assert not v["done_as_agreed"] and any("outside the spec" in w for w in v["why_not"])
+
+
 def test_a_test_name_with_test_inside_a_word_finds_its_scenario(loud):
     """`test_` was cut wherever it appeared, so `test_shortest_path` read as "shorpath" and never proved "Shortest path"."""
     assert spec._norm("test_shortest_path") == spec._norm("Shortest path") == "shortest path"

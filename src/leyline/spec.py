@@ -468,8 +468,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     intent = parsed["what"] or parsed["why"] or parsed["title"]
     self_tests = _self_tests(con, [run_label(cid, "before"), run_label(cid, "after")])
     report = change.propose(con, intent, targets, parsed["title"], source="spec", change_id=cid,
-                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) if targets else {
-        "error": "no task names code that is on the map. Put code names in backticks in tasks.md."}
+                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) \
+        if targets or parsed["tasks"] else {"error": "tasks.md has no tasks (`- [ ] 1.1 ...`)."}
+    # Tasks that name no code (docs, say) are for a person to check; the baseline still shows what else changed.
     tests = _tests(con)
     test_names = diff.TestNames(con)
     ran = _results_index(con.execute("SELECT name, status, message FROM test_results WHERE run = ?",
@@ -990,7 +991,10 @@ def brief_status(b: dict) -> dict:
     elif missing := [r for r in REVIEWERS if r not in done]:
         notes.append(f"No {' or '.join(missing)} review has run.")
     mine = [t["key"] for t in b["tasks"] if t.get("by_you")]
-    if mine:
+    if mine and len(mine) == len(b["tasks"]):
+        notes.append("No task names code that is on the map, so only you can check the tasks; `check` still says what"
+                     " else changed. Put code names in backticks in tasks.md if the change is to code.")
+    elif mine:
         notes.append(f"{'Task' if len(mine) == 1 else 'Tasks'} {', '.join(mine)} {'names' if len(mine) == 1 else 'name'} no code,"
                      " so you check {} yourself after the change; {} not hold up the verdict.".format(
                          "it" if len(mine) == 1 else "them", "it does" if len(mine) == 1 else "they do"))
