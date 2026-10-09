@@ -33,7 +33,9 @@ from . import change, diff, rules, store
 from . import verdicts
 
 # A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
-TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
+TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
+# A scenario's step: `- **WHEN** ...`, also with the colon inside or after the bold (`**WHEN:**`, `**WHEN**:`).
+STEP = re.compile(r"^\s*[-*+]\s*\*\*(WHEN|GIVEN|AND|THEN)\s*:?\*\*:?\s*(.*)$")
 CODE = re.compile(r"`([^`\n]+)`")
 VERBS = (("add", ("add ", "create ", "introduce ", "new ", "implement ")), ("remove", ("remove ", "delete ", "drop ")),
          ("rename", ("rename ",)), ("signature", ("change the signature", "change signature", "add a parameter", "add parameter",
@@ -151,8 +153,8 @@ def parse(change_dir: str | Path) -> dict:
                 cur = {"key": key, "name": name,
                        "requirement": req, "capability": capability, "kind": section or "ADDED", "when": [], "then": []}
                 out["scenarios"].append(cur)
-            elif cur is not None and re.match(r"^\s*[-*]\s*\*\*(WHEN|GIVEN|AND|THEN)\*\*", line):
-                word = re.match(r"^\s*[-*]\s*\*\*(\w+)\*\*\s*(.*)$", line)
+            elif cur is not None and STEP.match(line):
+                word = STEP.match(line)
                 (cur["then"] if word.group(1) == "THEN" or (word.group(1) == "AND" and cur["then"]) else cur["when"]).append(word.group(2))
             elif re.match(r"^###\s+Scenario", line):
                 out["problems"].append(f"{spec.relative_to(d)}: a scenario heading needs four #, found three: {line.strip()}")

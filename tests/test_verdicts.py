@@ -311,6 +311,22 @@ def test_parse_leaves_out_fenced_code(tmp_path):
     assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"]
 
 
+def test_parse_reads_other_list_markers_and_a_colon_inside_the_bold(tmp_path):
+    """`+ [ ]` bullets and `1. [ ]` checkboxes were not tasks; `**WHEN:**` steps were dropped."""
+    ch = tmp_path / "c"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: C\n")
+    (ch / "tasks.md").write_text("+ [ ] 1.1 Change `Engine.start`\n1. [x] Add `Engine.shout`\n2) [ ] Say so in the README\n")
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        "## ADDED Requirements\n### Requirement: R\nx\n\n#### Scenario: Start\n- **WHEN:** an engine starts\n"
+        "+ **THEN**: it returns its name\n* **AND:** in upper case\n")
+    p = spec.parse(ch)
+    assert [(t["key"], t["text"], t["done"]) for t in p["tasks"]] == [
+        ("1.1", "Change `Engine.start`", False), ("2", "Add `Engine.shout`", True), ("3", "Say so in the README", False)]
+    s = p["scenarios"][0]
+    assert s["when"] == ["an engine starts"] and s["then"] == ["it returns its name", "in upper case"]
+
+
 def test_a_test_name_with_test_inside_a_word_finds_its_scenario(loud):
     """`test_` was cut wherever it appeared, so `test_shortest_path` read as "shorpath" and never proved "Shortest path"."""
     assert spec._norm("test_shortest_path") == spec._norm("Shortest path") == "shortest path"
