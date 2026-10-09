@@ -39,9 +39,11 @@ import json
 import marshal
 import os
 import pickle
+import platform
 import re
 import sqlite3
 import sys
+import time
 import uuid
 import zlib
 from array import array
@@ -198,9 +200,7 @@ class Run:
         self.ix, self.con = ix, con
         from .indexer import max_file_bytes
         self.cache = _Cache(cache_path(db_path))
-        # The cache's write lock is taken before anything is read from it, and held until finish(): a transaction that
-        # read first could not wait for another run writing the cache, and would fail at once.
-        self.cache.con.execute("BEGIN IMMEDIATE")
+        self._take(con, db_path)
         self.key = json.dumps([code_version(), sorted((r, str(p)) for r, p in ix.repos.items()),
                                ix.exact_mode, sorted(ix.scip_paths), max_file_bytes()])
         gen = con.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()
@@ -238,6 +238,50 @@ class Run:
             ix._write = lambda c: (write(c), self._after_full_write())
         else:
             ix._write = self._write_patch
+
+    def _take(self, con, db_path) -> None:
+        """Take the map for this run. A run holds the cache's write lock from before it reads the cache until finish()
+        (a transaction that read first could not wait for another run, and would fail at once), and notes in the
+        store which process it is. A run that finds another one in progress (a map while a plan starts) waits for it
+        to finish, however long that is, up to LEYLINE_WAIT seconds (an hour by default): it says so on stderr, and
+        past the limit it stops, naming the other run. A run that dies lets go of the lock with its process."""
+        c = self.cache.con
+        c.execute("PRAGMA busy_timeout = 1000")   # tried once a second, so the wait can be reported and limited
+        try:
+            limit = max(0.0, float(os.environ.get("LEYLINE_WAIT", "") or 3600))
+        except ValueError:
+            limit = 3600.0
+        began, said = time.time(), False
+        while True:
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) and "busy" not in str(exc):
+                    raise
+            row = con.execute("SELECT value FROM meta WHERE key = 'indexing'").fetchone()
+            other = json.loads(row[0]) if row else {}
+            who = (f"pid {other.get('pid')} on {other.get('host')}, for {time.time() - other.get('started', began):.0f} s"
+                   if other else "a run that did not say which process it is")
+            if time.time() - began >= limit:
+                raise RuntimeError(f"another leyline index of {db_path} is running ({who}) and holds the map until it "
+                                   f"finishes; waited {limit:g} s (LEYLINE_WAIT). Map again when it is done.")
+            if not said:
+                print(f"leyline: another leyline index of {db_path} is running ({who}); waiting for it to finish",
+                      file=sys.stderr)
+                said = True
+        c.execute(f"PRAGMA busy_timeout = {int(store.BUSY_SECONDS * 1000)}")
+        with con:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('indexing', ?)",
+                        (json.dumps({"pid": os.getpid(), "host": platform.node(), "started": time.time()}),))
+
+    def _let_go(self) -> None:
+        """The store no longer says a run is in progress (see _take)."""
+        try:
+            with self.con:
+                self.con.execute("DELETE FROM meta WHERE key = 'indexing'")
+        except sqlite3.Error:
+            pass
 
     # -- parse cache ---------------------------------------------------------------------------------------
     def lookup(self, repo: str, root: Path, work: list, keep_ext: frozenset = frozenset()) -> dict:
@@ -748,6 +792,7 @@ class Run:
         """Save what the next run needs, under a token the store also keeps: a store written by anything else (an
         older leyline, a run that failed) no longer matches the cache, and the next run is a full one."""
         if not hasattr(self, "shapes"):   # nothing was resolved (an empty repository): nothing to keep
+            self._let_go()
             self.cache.con.rollback()
             return
         token = uuid.uuid4().hex
@@ -766,6 +811,7 @@ class Run:
         c.execute("INSERT OR REPLACE INTO meta VALUES ('state', ?)", (pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL),))
         with con:
             con.execute("INSERT OR REPLACE INTO meta VALUES ('generation', ?)", (token,))
+            con.execute("DELETE FROM meta WHERE key = 'indexing'")
         c.execute("INSERT OR REPLACE INTO meta VALUES ('generation', ?)", (token,))
         c.commit()
         c.close()
@@ -782,6 +828,7 @@ class Run:
         self.rows = self._old_rows = self.anc = None
 
     def abandon(self) -> None:
+        self._let_go()
         try:
             self.cache.con.rollback()
             self.cache.con.close()

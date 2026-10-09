@@ -247,6 +247,11 @@ and fingerprints of the last run. Deleting it only makes the next index a full o
 | `leyline serve` (MCP) | Your coding agent, when it starts | The store | Annotations, change proposals and saved views |
 | `leyline view` or `export` | You | The store | Nothing |
 
+One index runs at a time per store. A second one that starts while another is running (a `map` while a `plan`
+re-maps) says so on stderr, naming the other process and how long it has been going, waits for it to finish,
+and then maps what changed since. It waits up to an hour (`LEYLINE_WAIT`, in seconds), and past that stops with
+the same message. A run that dies lets go of the store with its process.
+
 Annotations, proposals and views are not facts, so re-indexing keeps them. An annotation is flagged
 stale when the code behind its evidence changes.
 
