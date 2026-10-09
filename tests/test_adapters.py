@@ -188,3 +188,23 @@ def test_python_functions_defined_under_if_try_and_with_at_the_top_of_a_module_o
         assert (caller, "pkg.compat.helper") in got
     for callee in ("pkg.compat.dumps", "pkg.compat.home", "pkg.compat.Box.size"):
         assert got[("pkg.compat.main", callee)] == "heuristic"
+
+
+def test_typescript_an_overloaded_method_spans_its_implementation(tmp_path):
+    con = _map(tmp_path, {
+        "src/shape.ts": (
+            "export class Shape {\n"
+            "  area(): number;\n"
+            "  area(scale: number): number;\n"
+            "  area(scale?: number): number {\n"
+            "    return this.compute(scale ?? 1);\n"
+            "  }\n"
+            "\n"
+            "  compute(s: number): number {\n"
+            "    return s;\n"
+            "  }\n"
+            "}\n"),
+    })
+    span, attrs = con.execute("SELECT span_start || '-' || span_end, attrs FROM nodes WHERE id LIKE '%Shape.area'").fetchone()
+    assert span == "4-6"
+    assert not json.loads(attrs).get("is_abstract") and json.loads(attrs)["argc_max"] == 1

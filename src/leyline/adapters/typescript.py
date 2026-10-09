@@ -779,7 +779,11 @@ class _Walker:
         self.self_types.setdefault(tid, {})
         if body is None:
             return
+        # Overload signatures: the method is its implementation, wherever the signatures sit.
+        implemented = {self._member_name(m) for m in body.children if m.type == "method_definition"}
         for m in body.children:
+            if m.type == "method_signature" and self._member_name(m) in implemented:
+                continue
             mods = {c.type for c in m.children} | {_text(c) for c in m.children if c.type == "accessibility_modifier"}
             vis = "private" if "private" in mods else "protected" if "protected" in mods else "public"
             static = "static" in mods
