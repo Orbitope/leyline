@@ -468,8 +468,9 @@ def text(r: dict) -> str:
         L += [f"- {line(x)}" for x in r["pairs"]]
         return "\n".join(L)
     if not r["partners"]:
+        own = rule.replace("the first file's", "its")
         return (f"`{r['path']}` changed in {r['changes']} commits ({r['about']}); nothing usually changed with it"
-                f" ({rule.replace('first file', 'its')}).")
+                f" ({own}).")
     L = [f"`{r['path']}` changed in {r['changes']} commits ({r['about']}). What usually changed with it:", ""]
     L += [f"- {'files in ' if x.get('folder') else ''}`{x['path']}`: {x['together']} of {x['changes']}"
           f" ({round(x['confidence'] * 100)}%)" for x in r["partners"]]

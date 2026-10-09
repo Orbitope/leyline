@@ -105,6 +105,13 @@ def test_coupling_says_why_there_is_no_history(tmp_path, monkeypatch, capsys):
     assert "not under git" not in err and "where it was mapped" in err, err
 
 
+def test_a_file_with_no_partners_reads_as_a_sentence():
+    from leyline import coupling
+    out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,
+                         "min_together": 3, "min_confidence": 0.5})
+    assert out.endswith("(at least 3 commits together, and 50% of its).") and "its's" not in out, out
+
+
 def _graph(db) -> tuple[set, set]:
     from leyline import store
     con = store.connect(db)
