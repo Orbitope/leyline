@@ -392,7 +392,12 @@ class Generic:
             body = node.child_by_field_name("body")
             head = src[node.start_byte:body.start_byte if body is not None else node.end_byte].decode("utf8", "replace")
             head = re.sub(r"\s+", " ", head.split("\n\n")[0]).strip()[:240]
-            before = src[max(0, node.start_byte - 160):node.start_byte].decode("utf8", "replace")
+            # What is written before the definition and belongs to it: its attributes and annotations (Rust's #[test]
+            # sits beside the function, not in it), not the end of the definition above (another's @Test).
+            start, prev = node.start_byte, node.prev_named_sibling
+            while prev is not None and re.search(r"attribute|annotation|decorator|comment|pragma", prev.type):
+                start, prev = prev.start_byte, prev.prev_named_sibling
+            before = src[start:node.start_byte].decode("utf8", "replace")
             is_method = kind == "callable" and (native == "method" or bool(owner_name) or (outer is not None and outer[3] == "type"))
             anonymous = kind == "callable" and not owner_name and outer is not None and _in_anonymous(node, outer[0])
             if anonymous:
@@ -407,7 +412,7 @@ class Generic:
                 # body is then never a call on the receiver.
                 explicit_self = recv is not None or bool(plist and ("self" in plist[0].type or
                                                                     re.fullmatch(r"&?(mut )?(self|cls)", _text(plist[0]).strip())))
-                is_test = (test_file and re.match(r"(?i)test", name) is not None) or bool(TEST_MARK.search(before[-90:] + head[:40]))
+                is_test = (test_file and re.match(r"(?i)test", name) is not None) or bool(TEST_MARK.search(before + " " + head[:40]))
                 attrs.update({"argc_min": 0, "argc_max": 99, "is_static": not is_method, "is_virtual": is_method,
                               "type_id": type_id, "owner_name": owner_name, "is_test": is_test or None,
                               "framework": "by convention" if is_test else None,
@@ -460,6 +465,12 @@ class Generic:
 
         top_used = False
         seen_calls = set()
+        kinds_of = {n.id: n.attrs.get("native_kind") for n in res.nodes}
+        parents = {n.id: n.parent_id for n in res.nodes}
+        ctors: dict = {}   # type id -> its first constructor's entry
+        for m in made:
+            if m[3] == "callable" and kinds_of.get(m[2]) == "constructor":
+                ctors.setdefault(parents.get(m[2]), m)
         sites, site_at = [], {}
         for name_node, node in calls:
             name = _text(name_node).strip()
@@ -476,9 +487,13 @@ class Generic:
                     home = max(outer, key=lambda m: m[0]) if outer else None
                 else:
                     continue
+            owner = inside(name_node.start_byte, ("type",))
+            if home is None and owner is not None and _in_field(node, owner[0]):
+                # A field initialiser (private Formatter fmt = Formatter.create()) runs when the object is made: in
+                # the type's constructor, or the type itself when it declares none.
+                home = ctors.get(owner[2]) or owner
             src_id = home[2] if home else top_id
             top_used = top_used or home is None
-            owner = inside(name_node.start_byte, ("type",))
             enclosing_type = owner[2] if owner else None
             if home is not None:
                 n = next((x for x in res.nodes if x.id == home[2]), None) if False else None
@@ -606,6 +621,17 @@ def _type_names(text: str) -> list:
     """The names in a written type, outer first, without package qualifiers: `*pkg.Command` -> [Command]."""
     text = re.sub(r"\b[a-z_]\w*\s*(::|\.)\s*", "", text)
     return [w for w in re.findall(r"[A-Za-z_]\w*", text) if w not in ("mut", "dyn", "impl", "const", "final", "ref", "in", "out")]
+
+
+def _in_field(node, type_start: int) -> bool:
+    """A node sits in a field's declaration (its initialiser) below the type that declares the field. Other code
+    in a type's body (Ruby's has_many, a Python class body) runs when the type is defined, not made."""
+    p = node
+    while p is not None and p.start_byte >= type_start:
+        if _FIELD.match(p.type):
+            return True
+        p = p.parent
+    return False
 
 
 def _in_anonymous(node, outer_start: int) -> bool:

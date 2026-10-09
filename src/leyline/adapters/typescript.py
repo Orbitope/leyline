@@ -48,6 +48,8 @@ TEST_MODS = {"only", "skip", "concurrent", "sequential", "fails", "todo", "skipI
 HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "options"}
 SERVERS = re.compile(r"(app|server|fastify|router|instance|api|route[rs]?)$", re.I)
 CLIENTS = re.compile(r"(axios|http|client|request|ky|got|api)$", re.I)
+# Names a server and a client both go by: api, and instance (a Fastify plugin's, or what axios.create() returns).
+EITHER = re.compile(r"(api|instance)$", re.I)
 FS_READ = {"readFile", "readFileSync", "readdir", "readdirSync", "createReadStream", "readJson", "readJsonSync", "opendir"}
 FS_WRITE = {"writeFile", "writeFileSync", "appendFile", "appendFileSync", "createWriteStream", "writeJson",
             "writeJsonSync", "copyFile", "copyFileSync", "outputFile"}
@@ -179,6 +181,18 @@ def _arity(arg) -> Optional[int]:
     return len([p for p in params.named_children if p.type != "comment"]) if params is not None else 1
 
 
+def _walk_nodes(node, types, stop=()):
+    """Nodes of these types under a node, not looking inside the `stop` ones."""
+    out, stack = [], list(node.named_children) if node is not None else []
+    while stack:
+        n = stack.pop()
+        if n.type in types:
+            out.append(n)
+        if n.type not in stop:
+            stack.extend(n.named_children)
+    return out
+
+
 def _same(a, b) -> bool:
     return a is not None and b is not None and a.start_byte == b.start_byte and a.end_byte == b.end_byte
 
@@ -213,6 +227,8 @@ class _Walker:
         self.fn_names: set[str] = set()
         self.fn_nodes: dict = {}       # name -> the function's node, for a program path a helper of the file builds
         self.imported: set[str] = set()
+        self.ns_members: dict[str, set] = {}   # namespace id -> names of the functions declared in it
+        self.made_fns: set[str] = set()   # const h = withAuth(async (req) => ...): a function a call wraps
         self._prescan(self.tree.root_node)
 
     def _prescan(self, root) -> None:
@@ -228,6 +244,11 @@ class _Walker:
                 if name is not None and name.type == "identifier" and self._fn_of(value) is not None:
                     self.fn_names.add(_text(name))
                     self.fn_nodes.setdefault(_text(name), self._fn_of(value))
+                elif name is not None and name.type == "identifier" and _unwrap(value) is not None \
+                        and _unwrap(value).type == "call_expression" and any(
+                            _unwrap(a) is not None and _unwrap(a).type in FUNCS
+                            for a in (_unwrap(value).child_by_field_name("arguments") or value).named_children):
+                    self.made_fns.add(_text(name))
                 elif name is not None and name.type == "identifier" and value is not None and n.parent is not None \
                         and n.parent.parent is not None and n.parent.parent.type in ("program", "export_statement"):
                     found = _strings(value) if value.type in ("string", "template_string", "array") else []
@@ -407,6 +428,10 @@ class _Walker:
                 if d.type == "variable_declarator":
                     self._declarator(d, node, cid, class_id, scope, qual, top, exported)
             return
+        if t in ("internal_module", "module") and node.child_by_field_name("name") is not None \
+                and node.child_by_field_name("name").type in ("identifier", "nested_identifier"):
+            self._namespace(node, self.file_id if top else cid, qual, exported)
+            return
         if t in ("function_signature", "ambient_declaration", "internal_module", "module"):
             if t in ("ambient_declaration", "internal_module", "module"):
                 self._walk_children(node, cid, class_id, scope, qual, top)
@@ -424,6 +449,8 @@ class _Walker:
         elif t in ("jsx_opening_element", "jsx_self_closing_element"):
             self._jsx(node, cid, class_id)
         elif t == "assignment_expression":
+            if top and self._commonjs(node, qual, scope):
+                return
             self._assign(node, cid, class_id, scope)
         elif t in ("string", "template_string"):
             s = _string(node)
@@ -939,6 +966,90 @@ class _Walker:
                 self._walk(m, self.top_id, None, {}, qual)
         return True
 
+    def _commonjs(self, node, qual, scope) -> bool:
+        """CommonJS exports: `exports.foo = function () {}`, `module.exports.foo = () => ...` and
+        `module.exports = { foo() {}, bar: function () {}, baz }`. Each function is a function of the file, as an
+        exported declaration would be, so `require("./x").foo()` and `const { foo } = require("./x")` reach it."""
+        left, right = _unwrap(node.child_by_field_name("left")), _unwrap(node.child_by_field_name("right"))
+        if left is None or right is None or left.type != "member_expression":
+            return False
+        obj, prop = _text(left.child_by_field_name("object")), _text(left.child_by_field_name("property"))
+        if obj in ("exports", "module.exports") and re.fullmatch(r"[A-Za-z_$][\w$]*", prop):
+            fn = self._fn_of(right)
+            if fn is None:
+                return False
+            self.exported.add(prop)
+            self._function(prop, fn, node, self.file_id, qual, None, scope, exported=True)
+            return True
+        if _text(left) != "module.exports" or right.type != "object":
+            return False
+        for m in right.named_children:
+            if m.type == "method_definition" and self._member_name(m):
+                self.exported.add(self._member_name(m))
+                self._function(self._member_name(m), m, m, self.file_id, qual, None, scope, exported=True)
+                continue
+            if m.type == "shorthand_property_identifier":
+                self.exported.add(_text(m))
+                continue
+            if m.type == "pair":
+                key = m.child_by_field_name("key")
+                kname = (_string(key) if key is not None and key.type == "string" else _text(key)) if key is not None else ""
+                fn = self._fn_of(m.child_by_field_name("value"))
+                if fn is not None and re.fullmatch(r"[A-Za-z_$][\w$]*", kname or ""):
+                    self.exported.add(kname)
+                    self._function(kname, fn, m, self.file_id, qual, None, scope, exported=True)
+                    continue
+            self._walk(m, self.top_id, None, scope, qual)
+        return True
+
+    def _namespace(self, node, parent_id, qual, exported) -> None:
+        """`namespace Geo { export function area() {} export class Shape {} }`: a type whose functions are its
+        static members (Geo.area()), with its classes, interfaces and nested namespaces declared under it."""
+        name = _text(node.child_by_field_name("name"))
+        qname = f"{qual}.{name}"
+        tid = f"{self.repo}:typescript:{qname}"
+        body = node.child_by_field_name("body")
+        self._add(Node(
+            id=tid, kind="type", name=name, parent_id=parent_id, language=LANGUAGE, path=self.path,
+            span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
+            attrs={"native_kind": "namespace", "namespace": qual, "visibility": "public" if exported else "private",
+                   "is_abstract": False, "signature": f"namespace {name}"}))
+        self.self_types.setdefault(tid, {})
+        # A bare call in the namespace to one of its own functions (scale(2)) is a call on the namespace.
+        self.ns_members[tid] = {_text(c.child_by_field_name("name")) for c in _walk_nodes(body, ("function_declaration",
+                                "generator_function_declaration", "variable_declarator"), stop=FUNCS + ("class_body",))
+                                if c.type != "variable_declarator" or self._fn_of(c.child_by_field_name("value")) is not None}
+        for st in (body.named_children if body is not None else []):
+            target, exp = st, False
+            if st.type == "export_statement" and st.child_by_field_name("declaration") is not None:
+                target, exp = st.child_by_field_name("declaration"), True
+            if target.type == "expression_statement" and target.named_children \
+                    and target.named_children[0].type in ("internal_module", "module"):
+                target = target.named_children[0]
+            t = target.type
+            if t in ("function_declaration", "generator_function_declaration"):
+                self._function(_text(target.child_by_field_name("name")), target, st, tid, qname, tid, None,
+                               is_method=True, is_static=True, visibility="public" if exp else "private")
+            elif t in ("class_declaration", "abstract_class_declaration") and target.child_by_field_name("name") is not None:
+                self._class(_text(target.child_by_field_name("name")), target, tid, qname, exp)
+            elif t in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
+                self._typeish(target, tid, qname, exp)
+            elif t in ("internal_module", "module") and target.child_by_field_name("name") is not None \
+                    and target.child_by_field_name("name").type in ("identifier", "nested_identifier"):
+                self._namespace(target, tid, qname, exp)
+            elif t in ("lexical_declaration", "variable_declaration") and any(
+                    d.type == "variable_declarator" and self._fn_of(d.child_by_field_name("value")) is not None
+                    for d in target.named_children):
+                for d in target.named_children:
+                    fn = self._fn_of(d.child_by_field_name("value")) if d.type == "variable_declarator" else None
+                    if fn is not None and d.child_by_field_name("name").type == "identifier":
+                        self._function(_text(d.child_by_field_name("name")), fn, st, tid, qname, tid, None,
+                                       is_method=True, is_static=True, visibility="public" if exp else "private")
+                    elif d.type == "variable_declarator":
+                        self._walk(d, self.top_id, None, {}, qual)
+            else:
+                self._walk(st, self.top_id, None, {}, qual)   # code the namespace runs when the file loads
+
     def _object_members(self, obj, cid, class_id, scope, qual) -> None:
         """Function-valued properties of an object written inside a function are that function's local functions."""
         for m in obj.children:
@@ -1039,7 +1150,8 @@ class _Walker:
                 self.done_calls[key] = None
                 return None   # a local value being called: a parameter, a callback, the result of another call
             else:
-                site = CallSite(cid, name, None, None, argc, line, class_id, col, hints)
+                site = CallSite(cid, name, "this" if name in self.ns_members.get(class_id, ()) else None, None, argc,
+                                line, class_id, col, hints)
         elif fn.type == "super":
             site = CallSite(cid, CTOR, "base", None, argc, line, class_id, col, hints)
         elif fn.type == "member_expression":
@@ -1266,9 +1378,11 @@ class _Walker:
             return
         if fn.type == "member_expression" and name in HTTP_VERBS | {"all"} and addr and addr.startswith("/"):
             recv = _text(fn.child_by_field_name("object"))
-            # On a name that is a client's as well as a server's (api), a name passed after the path is a handler only
-            # when it names a function: api.post("/api/login", credentials) sends credentials.
-            named = (lambda a: _text(a) in self.fn_names or _text(a) in self.imported) if CLIENTS.search(recv) else (lambda a: True)
+            # On a name that is a client's as well as a server's (api, instance), a name passed after the path is a
+            # handler only when it names a function of the file (declared, or made by a call handed one), or an import:
+            # api.post("/api/login", credentials) sends credentials.
+            named = (lambda a: _text(a) in self.fn_names | self.made_fns | self.imported) if EITHER.search(recv) \
+                or CLIENTS.search(recv) else (lambda a: True)
             handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier" and named(_unwrap(a)))
                           for a in arg_nodes[1:])
             method = None if name == "all" else name.upper()
@@ -1276,7 +1390,7 @@ class _Walker:
             if SERVERS.search(recv) and (handler or (last is not None and last.type == "object" and self._handler_member(last))):
                 src, written = self._route_handler(last, method, addr, cid, line)
                 self.res.endpoints.append(Endpoint("http", "serve", src, addr, line, method, handler=written))
-            elif CLIENTS.search(recv):
+            elif CLIENTS.search(recv) or EITHER.search(recv):
                 self.res.endpoints.append(Endpoint("http", "call", cid, addr, line, method))
             return
         if fn.type == "member_expression" and name == "route" and first is not None and first.type == "object" \

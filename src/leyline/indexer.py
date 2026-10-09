@@ -1317,6 +1317,12 @@ class Indexer:
                         if (fid, xid) not in seen:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
+                    elif lang != "typescript" and not imp.target.startswith("."):
+                        # Go, Java, Rust...: the module or package path as written (go:example.com/app/store), not npm's.
+                        xid = self._external(lang, imp.target.strip("\"'<>` "), {"category": "package"}, _repo_of(fid))
+                        if (fid, xid) not in seen:
+                            seen.add((fid, xid))
+                            self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
                     elif not imp.target.startswith("."):
                         spec = imp.target[5:] if imp.target.startswith("node:") else imp.target
                         parts = spec.split("/")
@@ -2994,10 +3000,14 @@ class Indexer:
             cands = [r for r in cands if _repo_of(r.src_id) == _repo_of(req.src_id)] or cands
             near = [r for r in cands if root_of(r.src_id) == root_of(req.src_id)]   # a route declared inside the same test
             chosen = near or (cands if len({r.src_id for r in cands}) == 1 else [])
+            literal = lambda r: sum(1 for x in segments(r.address) if not x.startswith(("<", "{", ":")) and not _wildcard(x))
             if handlers and len({r.src_id for r in chosen or cands}) > 1:   # several handlers, perhaps of one registrar
-                chosen = self._one_handler(chosen or cands, handlers, req.method,
-                                           lambda r: sum(1 for x in segments(r.address)
-                                                         if not x.startswith(("<", "{", ":")) and not _wildcard(x))) or chosen
+                chosen = self._one_handler(chosen or cands, handlers, req.method, literal) or chosen
+            elif len({r.src_id for r in chosen or cands}) > 1:
+                # In every language, the route that names more of the path outright wins: /items/special over /items/{id}.
+                most = max(literal(r) for r in chosen or cands)
+                top = [r for r in chosen or cands if literal(r) == most]
+                chosen = top if len({r.src_id for r in top}) == 1 else chosen
             if req.role == "maybe":   # a path handed to a wrapper: a request only when exactly one route serves it
                 chosen = chosen if len(segments(req.address)) >= 2 and len({r.src_id for r in chosen}) == 1 else []
             elif cands and not chosen:

@@ -1072,15 +1072,16 @@ moves, and carries a `channel` and an `address`.
   (`@app.route("/x")`, `@app.get`), ASP.NET attributes (`[HttpGet("x")]`) and `MapGet`-style calls;
   requests from `.get("/x")`-style calls and `HttpClient` methods with a literal path. A request is
   linked to a route declared inside the same test first, then to the only route in the repository
-  that matches; if several match, it is counted as ambiguous and left unlinked.
+  that matches. When several match, in every language, the route that names more of the path outright
+  wins (`/items/special` over `/items/{id}`, `/api/review/health` over `/api/review/:id`); if that leaves
+  more than one, it is counted as ambiguous and left unlinked.
   In TypeScript (Fastify, Express, Hono, Koa routers), a route's inline handler
   (`server.get("/api/x", async (req) => ...)`, `server.route({ method, url, handler })`, or
   `server.get(path, { schema }, handler)`) is a function of its own, named for its route (`GET /api/x`)
   and nested in the function that registers it: the request lands on it, what it calls is its own, and
   the registrar registers it (kept as a call, so startup still reaches it). A handler given by name
-  (`server.get("/x", listThings)`) is that function. When several handlers' routes fit a request, the
-  route that names more of the path outright wins (`/api/review/health` over `/api/review/:id`), and a
-  request with no method written is taken as a GET. In a pull request, an edit inside a handler touches
+  (`server.get("/x", listThings)`) is that function. When several handlers' routes still fit a request
+  after that, a request with no method written is taken as a GET. In a pull request, an edit inside a handler touches
   its route and no other. An ASP.NET
   controller's `[Route("api/[controller]")]`, and a minimal API's `MapGroup("api/x")`, start the
   routes declared under them. A path handed to

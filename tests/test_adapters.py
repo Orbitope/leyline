@@ -138,6 +138,114 @@ def test_csharp_action_routes_from_a_verb_with_a_route_and_from_a_shared_attribu
     assert got["Client.Calls.PostBulk()"] == ("Api.ItemsController.Bulk()", "POST /api/Items/bulk")
 
 
+def test_python_and_csharp_the_route_that_names_more_of_the_path_wins(tmp_path):
+    con = _map(tmp_path, {
+        "app/main.py": (
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "\n"
+            "@app.get('/items/{item_id}')\n"
+            "def read_item(item_id: int):\n"
+            "    return item_id\n"
+            "\n"
+            "@app.get('/items/special')\n"
+            "def special():\n"
+            "    return 1\n"),
+        "tests/test_api.py": (
+            "def test_special(client):\n"
+            "    client.get('/items/special')\n"
+            "\n"
+            "def test_one(client):\n"
+            "    client.get('/items/3')\n"),
+        "Api/Api.csproj": CSPROJ,
+        "Api/OrdersController.cs": (
+            "namespace Api;\n"
+            "[Route(\"api/orders\")]\n"
+            "public class OrdersController : ControllerBase {\n"
+            "    [HttpGet(\"{id}\")]\n"
+            "    public string Get(string id) => id;\n"
+            "    [HttpGet(\"latest\")]\n"
+            "    public string Latest() => \"\";\n"
+            "}\n"),
+        "Api/Calls.cs": (
+            "namespace Api;\n"
+            "public class Calls {\n"
+            "    private readonly HttpClient _http = new HttpClient();\n"
+            "    public async Task Newest() { await _http.GetAsync(\"/api/orders/latest\"); }\n"
+            "}\n"),
+    })
+    got = http(con)
+    assert got["tests.test_api.test_special"] == ("app.main.special", "GET /items/special")
+    assert got["tests.test_api.test_one"] == ("app.main.read_item", "GET /items/{item_id}")
+    assert got["Api.Calls.Newest()"] == ("Api.OrdersController.Latest()", "GET /api/orders/latest")
+
+
+def test_an_outside_import_in_go_or_java_is_labelled_by_its_own_language_not_npm(tmp_path):
+    con = _map(tmp_path, {
+        "main.go": (
+            "package main\n"
+            "\n"
+            "import (\n"
+            "\t\"fmt\"\n"
+            "\t\"example.com/lib/store\"\n"
+            ")\n"
+            "\n"
+            "func main() { fmt.Println(store.New()) }\n"),
+        "src/app/Main.java": (
+            "package app;\n"
+            "import java.util.List;\n"
+            "public class Main { public static void main(String[] a) { } }\n"),
+    })
+    ext = {r[0].split(":ext:", 1)[1] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external'")}
+    assert {"go:fmt", "go:example.com/lib/store", "java:java.util.List"} <= ext
+    assert not any(x.startswith("npm:") for x in ext)
+
+
+def test_java_a_field_initialiser_runs_in_the_constructor_not_a_module_body(tmp_path):
+    con = _map(tmp_path, {
+        "src/app/Formatter.java": (
+            "package app;\n"
+            "public class Formatter {\n"
+            "    public static Formatter create() { return new Formatter(); }\n"
+            "}\n"),
+        "src/app/Greeter.java": (
+            "package app;\n"
+            "public class Greeter {\n"
+            "    private final Formatter fmt = Formatter.create();\n"
+            "    public Greeter() { }\n"
+            "}\n"),
+        "src/app/Plain.java": (
+            "package app;\n"
+            "public class Plain {\n"
+            "    private final Formatter fmt = Formatter.create();\n"
+            "}\n"),
+    })
+    nodes = {short(r[0]) for r in con.execute("SELECT id FROM nodes")}
+    assert not any(n.endswith("<module>") for n in nodes)
+    got = calls(con)
+    assert ("src.app.Greeter.Greeter.Greeter", "src.app.Formatter.Formatter.create") in got
+    assert ("src.app.Plain.Plain", "src.app.Formatter.Formatter.create") in got
+
+
+def test_generic_a_test_marker_belongs_to_its_own_function_not_the_next(tmp_path):
+    con = _map(tmp_path, {
+        "src/app/Checks.java": (
+            "package app;\n"
+            "public class Checks {\n"
+            "    @Test void a() {}\n"
+            "    void helper() {}\n"
+            "    public static void main(String[] args) {}\n"
+            "}\n"),
+        "src/lib.rs": (
+            "#[test]\n"
+            "fn checks() {}\n"
+            "fn helper() {}\n"),
+    })
+    marked = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE json_extract(attrs, '$.is_test')")}
+    assert marked == {"src.app.Checks.Checks.a", "src.lib.checks"}
+    assert con.execute("SELECT 1 FROM nodes WHERE kind = 'entry_point' AND id LIKE '%Checks.main#entry'").fetchone()
+
+
 def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,
@@ -152,6 +260,23 @@ def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     fields = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE kind = 'field'")}
     assert {"App.Item.Id", "App.Item.Name", "App.Tagged.Tag"} <= fields
     assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")
+
+
+def test_csharp_a_classs_primary_constructor_parameters_are_not_properties(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/Svc.cs": (
+            "namespace App;\n"
+            "public class Svc(ILogger logger, int retries) {\n"
+            "    public int Tries => retries;\n"
+            "}\n"
+            "public struct Point(int x, int y) { public int X => x; }\n"
+            "public record Item(int Id);\n"
+            "public record struct Pair(int A, int B);\n"),
+    })
+    fields = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE kind = 'field'")}
+    assert not {"App.Svc.logger", "App.Svc.retries", "App.Point.x", "App.Point.y"} & fields
+    assert {"App.Svc.Tries", "App.Point.X", "App.Item.Id", "App.Pair.A", "App.Pair.B"} <= fields
 
 
 def test_csharp_a_test_is_marked_by_its_attributes_name_not_a_word_in_its_arguments(tmp_path):
@@ -352,6 +477,100 @@ def test_typescript_a_request_on_a_client_named_api_is_not_a_route(tmp_path):
     got = http(con)
     assert got["web.src.api.login"] == ("server.src.main.<module>/route:POST /api/login", "POST /api/login")
     assert got["web.src.api.items"] == ("server.src.main.listItems", "GET /api/items")
+
+
+def test_typescript_a_request_on_an_axios_instance_is_not_a_route_and_a_made_handler_still_is(tmp_path):
+    con = _map(tmp_path, {
+        "web/src/client.ts": (
+            "import axios from 'axios';\n"
+            "const instance = axios.create({ baseURL: '/' });\n"
+            "\n"
+            "export async function login(credentials: { user: string }) {\n"
+            "  return instance.post('/api/login', credentials);\n"
+            "}\n"),
+        "server/src/routes.ts": (
+            "const withAuth = (fn: any) => fn;\n"
+            "const makeHandler = () => async () => [];\n"
+            "const listItems = withAuth(async () => []);\n"
+            "const listTags = makeHandler();\n"
+            "\n"
+            "export async function routes(instance: any) {\n"
+            "  instance.post('/api/login', async (req: any) => ({ ok: true }));\n"
+            "  instance.get('/api/items', listItems);\n"
+            "}\n"
+            "\n"
+            "export function more(app: any) {\n"
+            "  app.get('/api/tags', listTags);\n"
+            "}\n"),
+        "web/src/calls.ts": (
+            "export async function items() { return fetch('/api/items'); }\n"
+            "export async function tags() { return fetch('/api/tags'); }\n"),
+    })
+    got = http(con)
+    assert got["web.src.client.login"] == ("server.src.routes.routes/route:POST /api/login", "POST /api/login")
+    # A handler a call made is still a handler: the route stands, served by the function that registers it.
+    assert got["web.src.calls.items"] == ("server.src.routes.routes", "GET /api/items")
+    assert got["web.src.calls.tags"] == ("server.src.routes.more", "GET /api/tags")
+
+
+def test_javascript_commonjs_exported_functions_are_functions(tmp_path):
+    con = _map(tmp_path, {
+        "lib/util.js": (
+            "exports.add = function (a, b) { return helper(a); };\n"
+            "module.exports.sub = (a, b) => helper(b);\n"
+            "function helper(x) { return x; }\n"),
+        "lib/obj.js": (
+            "function helper2(x) { return x; }\n"
+            "module.exports = {\n"
+            "  mul: function (a) { return helper2(a); },\n"
+            "  div(a) { return a; },\n"
+            "  helper2,\n"
+            "};\n"),
+        "app.js": (
+            "const util = require('./lib/util');\n"
+            "const { mul, div, helper2 } = require('./lib/obj');\n"
+            "function main() {\n"
+            "  util.add(1, 2);\n"
+            "  util.sub(1, 2);\n"
+            "  mul(1);\n"
+            "  div(2);\n"
+            "  helper2(3);\n"
+            "}\n"),
+    })
+    got = calls(con)
+    for callee in ("lib.util.add", "lib.util.sub", "lib.obj.mul", "lib.obj.div", "lib.obj.helper2"):
+        assert ("app.main", callee) in got, callee
+    assert ("lib.util.add", "lib.util.helper") in got and ("lib.obj.mul", "lib.obj.helper2") in got
+
+
+def test_typescript_namespace_members_are_declared_under_the_namespace(tmp_path):
+    con = _map(tmp_path, {
+        "src/geo.ts": (
+            "export namespace Geo {\n"
+            "  export function area(): number {\n"
+            "    return scale(2);\n"
+            "  }\n"
+            "  function scale(x: number): number { return x; }\n"
+            "  export class Shape {\n"
+            "    m(): number { return 1; }\n"
+            "  }\n"
+            "}\n"),
+        "src/use.ts": (
+            "import { Geo } from './geo';\n"
+            "export function run(): number {\n"
+            "  const s: Geo.Shape = new Geo.Shape();\n"
+            "  s.m();\n"
+            "  return Geo.area();\n"
+            "}\n"),
+    })
+    nodes = {short(r[0]): r[1] for r in con.execute("SELECT id, kind FROM nodes")}
+    assert nodes.get("src.geo.Geo") == "type"
+    assert nodes.get("src.geo.Geo.area") == "callable" and nodes.get("src.geo.Geo.Shape") == "type"
+    assert nodes.get("src.geo.Geo.Shape.m") == "callable"
+    got = calls(con)
+    assert ("src.use.run", "src.geo.Geo.area") in got
+    assert ("src.use.run", "src.geo.Geo.Shape.m") in got
+    assert ("src.geo.Geo.area", "src.geo.Geo.scale") in got
 
 
 def test_typescript_fields_assigned_by_destructuring_are_written(tmp_path):
