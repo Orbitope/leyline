@@ -440,6 +440,7 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     lines_of: dict[int, tuple] = {}      # node -> (declaration, notes)
     files: dict[str, float] = {}         # path -> best score in it, for the order of files
     used, misses, left = reserve, 0, []
+    shown_path: dict[str, str] = {}      # a path shortened to fit the focus into a small budget
 
     def cost(u):
         decl, note = lines_of.get(u) or (_declaration(g, u, sources), _notes(g, u, fset, names))
@@ -450,6 +451,17 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     for pos, u in enumerate(order):
         need = [a for a in _ancestors(g, u) if a not in chosen] + [u]
         c = sum(cost(x) for x in need) + (0 if g.path[u] in files else len(g.path[u]) + 2)
+        if used + c > budget_chars and u in fset and not chosen:
+            # The focus is always shown: when it does not fit, shorten its file's path (keeping the end, which names
+            # the file) and its lines to what the budget has left.
+            room = budget_chars - used - sum(cost(x) - len(lines_of[x][0]) - len(lines_of[x][1]) for x in need) - 2
+            plen = min(len(g.path[u]), max(24, room // 3))
+            shown_path[g.path[u]] = g.path[u] if plen >= len(g.path[u]) else "..." + g.path[u][-(plen - 3):]
+            per = max(16, (room - plen) // sum(1 + bool(lines_of[x][1]) for x in need))
+            for x in need:
+                d, note = lines_of[x]
+                lines_of[x] = (diagrams_cut(d, per), diagrams_cut(note, per) if note else note)
+            c = sum(cost(x) for x in need) + len(shown_path[g.path[u]]) + 2
         if used + c > budget_chars and not (u in fset and not chosen):
             left.append(u)
             misses += 1
@@ -464,7 +476,7 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     # Render: files by their best score, inside each by line, members under their type.
     out = [header, ""]
     for path in sorted(files, key=lambda p: (-files[p], p)):
-        out.append(path)
+        out.append(shown_path.get(path, path))
         for u in sorted((x for x in chosen if g.path[x] == path), key=lambda x: (g.line[x], len(_ancestors(g, x)))):
             depth = len(_ancestors(g, u))
             decl, note = lines_of.get(u) or (_declaration(g, u, sources), _notes(g, u, fset, names))

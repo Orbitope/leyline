@@ -128,3 +128,22 @@ def test_what_was_not_found_and_left_out_stays_inside_the_budget(con, tmp_path):
     r = context.build(c, ["target"], 200)
     c.close()
     assert "Left out:" in r["text"] and r["tokens"] <= 200, r["tokens"]
+
+
+def test_the_focus_is_always_shown_and_shortened_to_fit_a_small_budget(tmp_path):
+    # The focus is shown however small the budget; a very long path and declaration are shortened to fit it.
+    root = tmp_path / "long"
+    folder = root / "/".join([f"a_very_long_folder_name_that_goes_on_and_on_number_{k}" for k in range(8)])
+    folder.mkdir(parents=True)
+    params = ", ".join(f"parameter_with_a_long_name_{k}" for k in range(12))
+    (folder / "the_module_with_the_focus_in_it.py").write_text(
+        f"def target({params}):\n    return 1\n\n\ndef caller():\n    return target({', '.join(['1'] * 12)})\n")
+    db = root / ".leyline/leyline.db"
+    index(str(root), str(db))
+    c = store.connect(db)
+    r = context.build(c, ["target"], 200)
+    c.close()
+    marked = [ln for ln in lines(r["text"]) if ln.startswith("> ")]
+    assert marked and "def target(" in marked[0], r["text"]
+    assert "the_module_with_the_focus_in_it.py" in r["text"]          # the end of the path, which names the file
+    assert r["tokens"] <= 200, (r["tokens"], r["text"])
