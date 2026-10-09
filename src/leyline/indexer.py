@@ -348,7 +348,26 @@ def read_source(path: Path) -> bytes:
             return data.decode("utf-16").encode("utf-8")
         except UnicodeDecodeError:
             return data
+    if str(path).endswith((".py", ".pyi", ".pyw")):   # a PEP 263 declaration in the first two lines: # coding: latin-1
+        m = _CODING.match(b"\n".join(data.split(b"\n", 2)[:2]))
+        if m and codecs_lookup(m[1].decode("ascii")) not in (None, "utf-8"):
+            try:
+                return data.decode(m[1].decode("ascii")).encode("utf-8")
+            except (UnicodeDecodeError, LookupError):
+                return data
     return data
+
+
+_CODING = re.compile(rb"(?:[ \t\f]*(?:#[^\n]*)?\n)?[ \t\f]*#[^\n]*?coding[:=][ \t]*([-\w.]+)")
+
+
+def codecs_lookup(name: str) -> Optional[str]:
+    """A codec's canonical name, or None when Python has no such codec."""
+    import codecs
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return None
 
 
 def source_lines(path: Path) -> list[str]:
