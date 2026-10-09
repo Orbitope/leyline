@@ -111,6 +111,35 @@ def test_skills_install_force_does_not_write_through_a_committed_skill_file_link
     assert (dest / "SKILL.md").read_bytes() == s.files()["SKILL.md"]
 
 
+def test_a_readme_linked_to_a_file_outside_is_not_read_into_the_tour_or_page(repo, tmp_path):
+    secret = tmp_path / "outside" / "credentials"
+    secret.parent.mkdir(exist_ok=True)
+    secret.write_text("aws_access_key_id = AKIAEXAMPLEEXAMPLE and a secret long enough to be a paragraph\n")
+    (repo / "README.md").symlink_to(secret)
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db)
+    from leyline import tours
+    con = store.connect(db)
+    try:
+        said = str([tours.get(con, t["id"]) for t in tours.listing(con)["tours"]])
+    finally:
+        con.close()
+    assert "AKIAEXAMPLE" not in said
+    assert "AKIAEXAMPLE" not in (repo / ".leyline" / "map.html").read_text()
+
+
+def test_a_change_folder_does_not_read_files_linked_from_outside(tmp_path):
+    secret = tmp_path / "outside" / "credentials"
+    secret.parent.mkdir()
+    secret.write_text("# AKIAEXAMPLEEXAMPLE\n\n- [ ] 1.1 AKIAEXAMPLEEXAMPLE\n")
+    d = tmp_path / "repo" / "openspec" / "changes" / "add-x"
+    (d / "specs" / "a").mkdir(parents=True)
+    (d / "proposal.md").symlink_to(secret)
+    (d / "tasks.md").symlink_to(secret)
+    (d / "specs" / "a" / "spec.md").symlink_to(secret)
+    assert "AKIAEXAMPLE" not in str(spec.parse(d))
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)

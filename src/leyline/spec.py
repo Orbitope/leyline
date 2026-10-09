@@ -102,8 +102,10 @@ def parse(change_dir: str | Path) -> dict:
         return {"error": f"no change folder at {d}"}
     out = {"id": d.name, "dir": str(d), "title": d.name.replace("-", " "), "why": "", "what": "", "tasks": [], "scenarios": [],
            "requirements": [], "problems": []}
+    # The repository the folder is in (above openspec/), else the folder: a file linked from outside it is not read.
+    top = next((p.parent for p in d.resolve().parents if p.name == "openspec"), d)
     proposal = d / "proposal.md"
-    if proposal.is_file():
+    if proposal.is_file() and store.inside(proposal, top):
         text = proposal.read_text(encoding="utf-8-sig", errors="replace")
         m = re.search(r"^#\s+(.+)$", text, re.M)
         if m:
@@ -116,7 +118,7 @@ def parse(change_dir: str | Path) -> dict:
         out["problems"].append("proposal.md is missing")
     tasks = d / "tasks.md"
     keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
-    if tasks.is_file():
+    if tasks.is_file() and store.inside(tasks, top):
         n = 0
         for line in unfenced(tasks.read_text(encoding="utf-8-sig", errors="replace")):
             m = TASK.match(line)
@@ -133,6 +135,8 @@ def parse(change_dir: str | Path) -> dict:
     else:
         out["problems"].append("tasks.md is missing")
     for spec in sorted((d / "specs").rglob("spec.md")) if (d / "specs").is_dir() else []:
+        if not store.inside(spec, top):
+            continue
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
