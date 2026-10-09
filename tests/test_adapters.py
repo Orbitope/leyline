@@ -707,6 +707,23 @@ def test_python_a_call_on_a_module_imported_from_outside_is_not_guessed_onto_our
     assert got[("pkg.use.b", "pkg.store.connect")] == "heuristic"
 
 
+def test_state_counts_an_append_on_a_field_as_a_write_and_says_so(tmp_path):
+    from leyline import query
+    con = _map(tmp_path, {
+        "pkg/box.py": (
+            "class Box:\n"
+            "    def __init__(self):\n"
+            "        self.items = []\n"
+            "\n"
+            "class Packer:\n"
+            "    def pack(self, box: Box, x):\n"
+            "        box.items.append(x)\n"),
+    })
+    got = query.shared_state(con)
+    assert [f["name"] for f in got["fields"]] == ["Box.items"]
+    assert "not assignments" not in got["note"] and "append" in got["note"]
+
+
 def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
     con = _map(tmp_path, {
         "pkg/core.py": (
