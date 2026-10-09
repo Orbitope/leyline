@@ -160,6 +160,37 @@ def test_source_and_the_page_do_not_read_a_mapped_file_that_became_a_link_outsid
         con.close()
 
 
+def test_view_serves_the_map_to_this_machine_by_name_only(repo):
+    """DNS rebinding: a web page at evil.example whose name is then pointed at 127.0.0.1 reaches `leyline view` as
+    its own origin, and could read the page with every source file in it. The Host header says which name it used."""
+    import http.client
+    import socket
+    import threading
+    import time
+    from leyline import cli
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db, page=False)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    threading.Thread(target=cli.main, args=(["--db", str(db), "view", "--port", str(port)],), daemon=True).start()
+
+    def get(host):
+        for _ in range(50):
+            try:
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                c.request("GET", "/", headers={"Host": host})
+                r = c.getresponse()
+                return r.status, r.read()
+            except ConnectionRefusedError:
+                time.sleep(0.1)
+        raise AssertionError("the viewer did not start")
+    status, body = get(f"evil.example:{port}")
+    assert status == 403 and b"def f" not in body
+    assert get(f"127.0.0.1:{port}")[0] == 200
+    assert get(f"localhost:{port}")[0] == 200
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)

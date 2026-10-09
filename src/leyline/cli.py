@@ -769,7 +769,17 @@ def _main(argv=None) -> int:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # re-read the store on every load, so a re-index shows up on refresh
-                body = export.page(store.connect(args.db)).encode()
+                # Only a page opened as this machine: a web page whose name an attacker points at 127.0.0.1 (DNS
+                # rebinding) would otherwise be served the map, with every source file in it, as its own origin.
+                host = self.headers.get("Host") or ""
+                if host.rsplit(":", 1)[0] not in ("127.0.0.1", "localhost"):
+                    self.send_error(403, "the map is served to http://127.0.0.1 only")
+                    return
+                con = store.connect(args.db)
+                try:
+                    body = export.page(con).encode()
+                finally:
+                    con.close()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
