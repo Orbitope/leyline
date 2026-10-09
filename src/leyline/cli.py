@@ -768,6 +768,9 @@ def _main(argv=None) -> int:
         _print(stats)
         return 0
     if args.cmd == "serve":
+        if not explicit:   # started in a folder inside the repository: the repository's store, as other commands
+            from .loop import find_store
+            args.db = str(find_store(Path.cwd()) or DEFAULT_DB)
         os.environ["LEYLINE_DB"] = args.db
         from .server import main as serve
         serve()

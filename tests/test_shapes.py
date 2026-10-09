@@ -165,6 +165,22 @@ def test_a_read_only_repository_says_to_keep_the_store_elsewhere_and_can_then_be
         root.chmod(mode)
 
 
+def test_serve_started_in_a_folder_inside_the_repository_reads_the_repositorys_store(tmp_path, monkeypatch):
+    """An agent opened in a package folder of a mapped repository: the server reads the repository's map, as `search`
+    and the other commands do from there, not an empty store in the folder."""
+    import os
+    from leyline import server
+    root = _repo(tmp_path / "repo")
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("LEYLINE_DB", raising=False)
+    assert run("map")[0] == 0
+    seen = []
+    monkeypatch.setattr(server, "main", lambda: seen.append(os.environ["LEYLINE_DB"]))
+    monkeypatch.chdir(root / "pkg")
+    assert run("serve")[0] == 0
+    assert Path(seen[0]).resolve() == (root / ".leyline/leyline.db").resolve()
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,
