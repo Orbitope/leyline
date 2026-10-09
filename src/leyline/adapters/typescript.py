@@ -481,6 +481,9 @@ class _Walker:
             if fn is not None:
                 self.default_name = _text(fn.child_by_field_name("name")) or "default"
                 self._function(self.default_name, fn, node, self.file_id, qual, None, scope, exported=True)
+            elif inner.type == "class":   # export default class { ... }: named default, as a function would be
+                self.default_name = _text(inner.child_by_field_name("name")) or "default"
+                self._class(self.default_name, inner, self.file_id, qual, True)
             else:
                 self._walk(value, cid, class_id, scope, qual)
         else:
@@ -779,7 +782,11 @@ class _Walker:
         self.self_types.setdefault(tid, {})
         if body is None:
             return
+        # Overload signatures: the method is its implementation, wherever the signatures sit.
+        implemented = {self._member_name(m) for m in body.children if m.type == "method_definition"}
         for m in body.children:
+            if m.type == "method_signature" and self._member_name(m) in implemented:
+                continue
             mods = {c.type for c in m.children} | {_text(c) for c in m.children if c.type == "accessibility_modifier"}
             vis = "private" if "private" in mods else "protected" if "protected" in mods else "public"
             static = "static" in mods
@@ -1215,7 +1222,11 @@ class _Walker:
         if receiver not in ("this", "base", "?") and not receiver.startswith(".") and rtype is None and chain is None:
             return   # an untyped local: nothing says what it is
         cur, up = node, parent
-        while up is not None and up.type in ("parenthesized_expression", "non_null_expression", "as_expression"):
+        # Through parentheses and casts, and out of a destructuring target: [this.a, this.b] = [b, a] assigns both.
+        while up is not None and (up.type in ("parenthesized_expression", "non_null_expression", "as_expression",
+                                              "array_pattern", "object_pattern")
+                                  or up.type == "pair_pattern" and _same(up.child_by_field_name("value"), cur)
+                                  or up.type == "assignment_pattern" and _same(up.child_by_field_name("left"), cur)):
             cur, up = up, up.parent
         access = "r"
         if up is not None:
@@ -1253,7 +1264,11 @@ class _Walker:
             return
         if fn.type == "member_expression" and name in HTTP_VERBS | {"all"} and addr and addr.startswith("/"):
             recv = _text(fn.child_by_field_name("object"))
-            handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier") for a in arg_nodes[1:])
+            # On a name that is a client's as well as a server's (api), a name passed after the path is a handler only
+            # when it names a function: api.post("/api/login", credentials) sends credentials.
+            named = (lambda a: _text(a) in self.fn_names or _text(a) in self.imported) if CLIENTS.search(recv) else (lambda a: True)
+            handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier" and named(_unwrap(a)))
+                          for a in arg_nodes[1:])
             method = None if name == "all" else name.upper()
             last = _unwrap(arg_nodes[-1]) if len(arg_nodes) > 1 else None
             if SERVERS.search(recv) and (handler or (last is not None and last.type == "object" and self._handler_member(last))):

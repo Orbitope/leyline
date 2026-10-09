@@ -121,7 +121,7 @@ def _split_top(text: str) -> list[str]:
 
 def _hypothesis_args(lines: list[str], k: int, start: int) -> Optional[str]:
     """The arguments of `test_x(...)` from the line it opens on to its closing parenthesis."""
-    buf, depth, quote = [], 1, None
+    buf, depth, quote, escaped = [], 1, None, False
     for j in range(k, min(len(lines), k + 60)):
         line = lines[j] if j > k else lines[j][start:]
         if j > k:
@@ -129,7 +129,12 @@ def _hypothesis_args(lines: list[str], k: int, start: int) -> Optional[str]:
         line = re.sub(r"\s#\s.*$", "", line)                     # `a=[],  # or any other generated value`
         for ch in line:
             if quote:
-                quote = None if ch == quote else quote
+                if escaped:
+                    escaped = False                               # 'a\'b"c': an escaped quote does not close it
+                elif ch == "\\":
+                    escaped = True
+                else:
+                    quote = None if ch == quote else quote
             elif ch in "\"'":
                 quote = ch
             elif ch in "([{":
