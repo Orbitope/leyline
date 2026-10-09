@@ -435,6 +435,9 @@ def compare(before: sqlite3.Connection, after: sqlite3.Connection) -> dict:
     }
 
 
+_SOURCE_FILE = re.compile(r"\.(?:[cm]?[jt]sx?|py|cs|go|rb|java|kt|rs|php|swift|scala|lua|gd|dart|ex|exs)$")
+
+
 def result_parts(name: str) -> dict:
     """A recorded result's name taken apart: the file, the suites around the test, the test's own name, and for a
     parametrized pytest test its function and parameter id. Names come as `file > suite > test` (TAP, vitest),
@@ -445,7 +448,8 @@ def result_parts(name: str) -> dict:
         out["file"], out["suites"], out["leaf"] = parts[0], parts[1:-1], parts[-1]
     elif " > " in name:
         segs = name.split(" > ")
-        if len(segs) > 1 and re.search(r"\.[A-Za-z]{1,5}$", segs[0]):
+        # A file has a path or a source file's extension; a suite named for what it tests (`Engine.start`) is not one.
+        if len(segs) > 1 and ("/" in segs[0] or "\\" in segs[0] or _SOURCE_FILE.search(segs[0])):
             out["file"], segs = segs[0], segs[1:]
         out["suites"], out["leaf"] = segs[:-1], segs[-1]
     m = re.match(r"^(.+?)\[(.*)\]$", out["leaf"])

@@ -222,6 +222,23 @@ def test_pytest_names_end_where_the_message_starts():
     assert spec._result_keys("t.py::TestK::test_xp")[0] >= {"xp"}
 
 
+def test_a_suite_named_for_a_method_is_not_a_file(tmp_path):
+    """node:test prints no file, so `Engine.start > returns upper case` read `Engine.start` as the test's file and
+    tied the result to no test."""
+    work = tmp_path / "js"
+    (work / "src").mkdir(parents=True)
+    (work / "test").mkdir()
+    (work / "src/engine.js").write_text("export class Engine {\n  start() { return 'X'; }\n}\n")
+    (work / "test/engine.test.js").write_text(
+        "import { describe, it } from 'vitest';\nimport { Engine } from '../src/engine.js';\n"
+        "describe('Engine.start', () => {\n  it('returns upper case', () => { new Engine().start(); });\n});\n")
+    index(work, tmp_path / "s.db", "r")
+    names = diff.TestNames(store.connect(tmp_path / "s.db"))
+    assert diff.result_parts("Engine.start > returns upper case")["file"] is None
+    want = names.node("test/engine.test.js > Engine.start > returns upper case")
+    assert want and names.node("Engine.start > returns upper case") == want
+
+
 def test_node_test_names_and_messages_as_printed():
     """node:test escapes `#` in a `# Subtest:` line too, and prints a failure's message as `error:`."""
     text = ("TAP version 13\n# Subtest: Engine \\#start\n    # Subtest: fails\n    not ok 1 - fails\n      ---\n"
