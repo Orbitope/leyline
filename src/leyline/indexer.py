@@ -747,6 +747,23 @@ class FlowSteps:
                        None if line < 0 else line, None if parent < 0 else parent)
 
 
+def flow_ids(starts: list) -> list:
+    """(start, kind, detail) -> (start, kind, detail, flow id), each start walked once. A flow is `flow:<start>`;
+    a start that is also another kind of start (an entry point that is a test too) gets `flow:<start>#<kind>` for
+    the later ones, so neither flow replaces the other."""
+    out, taken = [], set()
+    for s in dict.fromkeys(starts):
+        start, kind, _ = s
+        fid, n = f"flow:{start}", 2
+        if fid in taken:
+            fid = f"flow:{start}#{kind}"
+            while fid in taken:
+                fid, n = f"flow:{start}#{kind}{n}", n + 1
+        taken.add(fid)
+        out.append((*s, fid))
+    return out
+
+
 def _repo_of(node_id: str) -> str:
     """Every node id starts with its repo id: flask:python:..., flask:file:..., flask:module:..."""
     return node_id.split(":", 1)[0]
@@ -3141,11 +3158,11 @@ class Indexer:
         for n in self.nodes.values():
             if n.kind == "test" or n.attrs.get("is_test"):
                 starts.append((n.id, "test", n.attrs.get("framework")))
+        starts = flow_ids(starts)
         keep = self._flow_select(out, starts)
-        for start, kind, detail in starts:
+        for start, kind, detail, fid in starts:
             if start not in self.nodes or (keep is not None and start not in keep):
                 continue
-            fid = f"flow:{start}"
             entry_file = self.file_of.get(start)
             seen, steps, truncated = {start}, [(0, 0, start, "start", None, None)], False
             stack = [(start, 0, 0)]

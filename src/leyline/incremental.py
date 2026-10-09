@@ -522,12 +522,13 @@ class Run:
         nodes = ix.nodes
         self.flow_hashes = {n: _crc([(line, dst, via, sub, dst in nodes) for line, dst, via, sub in lst])
                             for n, lst in out.items()}
-        self.starts = {}
-        for start, kind, detail in starts:
+        self.starts, self.flow_start = {}, {}   # start -> [(flow id, what its row says)]; flow id -> start
+        for start, kind, detail, fid in starts:
             if start in nodes:
                 n = nodes[start]
                 name = n.name if n.kind == "test" else start.split(":", 2)[-1].split("::")[-1]
-                self.starts.setdefault(start, []).append((name, kind, detail))
+                self.starts.setdefault(start, []).append((fid, (name, kind, detail)))
+                self.flow_start[fid] = start
         if self.flows_all:
             return None
         old_hash = self.prior["flow_hashes"]
@@ -538,20 +539,20 @@ class Run:
             if r[2] and r[2].split(":", 1)[0] in ix.repos:
                 a = json.loads(r[3] or "{}")
                 old_flows[r[0]] = (r[1], a.get("kind"), a.get("detail"))
-        dirty = {s for s, metas in self.starts.items() if old_flows.get("flow:" + s) != metas[-1]}
+        dirty = {s for s, metas in self.starts.items() if any(old_flows.get(fid) != meta for fid, meta in metas)}
         ids = list(changed)
         for k in range(0, len(ids), 900):
             chunk = ids[k:k + 900]
             for r in self.con.execute(
                     "SELECT DISTINCT fk.id FROM steps s JOIN keys fk ON fk.k = s.flow WHERE s.callable IN"
                     f" (SELECT k FROM keys WHERE id IN ({','.join('?' * len(chunk))}))", chunk):
-                if r[0][5:] in self.starts:
-                    dirty.add(r[0][5:])
+                if r[0] in self.flow_start:
+                    dirty.add(self.flow_start[r[0]])
         # A C# program's dispatch steps depend on what its module can see, which a C# file's usings can change.
         touched = self.reparsed | self.removed | getattr(self, "import_moved", set())
         if any(f.split(":file:", 1)[-1].endswith(".cs") for f in touched):
             dirty |= {s for s in self.starts if ix.file_lang.get(ix.file_of.get(s)) == "csharp"}
-        self.flows_drop = {f for f in old_flows if f[5:] not in self.starts} | {"flow:" + s for s in dirty}
+        self.flows_drop = {f for f in old_flows if f not in self.flow_start} | {fid for s in dirty for fid, _ in self.starts[s]}
         self.report["flows_walked"] = len(dirty)
         return dirty
 
@@ -608,10 +609,11 @@ class Run:
     def _sizes_of(flows, steps, sizes: dict) -> dict:
         """start -> the step count of each flow walked from it, as Indexer.run counts them for the coverage row."""
         starts = [f for f, _ in steps.flows]
+        entry = {f[0]: f[3] for f in flows}   # flow id -> its start (flow:<start>, or flow:<start>#<kind>)
         ends = [s for _, s in steps.flows[1:]] + [len(steps)]
         out: dict = {}
         for fid, (_, s), e in zip(starts, steps.flows, ends):
-            out.setdefault(fid[5:], []).append(e - s)
+            out.setdefault(entry.get(fid, fid[5:]), []).append(e - s)
         sizes = {k: v for k, v in sizes.items() if k not in out}
         sizes.update(out)
         return sizes

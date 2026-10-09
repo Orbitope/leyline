@@ -324,6 +324,28 @@ def test_a_function_defined_twice_in_one_file_is_one_node_over_both(tmp_path):
     c.close()
 
 
+def test_a_function_that_is_both_an_entry_and_a_test_has_both_flows(tmp_path):
+    """A start can be both an entry point and a test ([Fact] static void Main()). Each is a flow of its own: the
+    entry keeps the usual id, the test's says its kind, and the counts match the rows."""
+    root = tmp_path / "b"
+    root.mkdir()
+    (root / "P.cs").write_text(
+        "public static class P\n{\n"
+        "    [Fact]\n    public static void Main() { Run(); }\n"
+        "    static void Run() { Step(); }\n"
+        "    static void Step() { }\n}\n")
+    db = tmp_path / "b.db"
+    index(root, db, "b")
+    c = store.connect(db)
+    main = next(r[0] for r in c.execute("SELECT id FROM nodes WHERE name = 'Main' AND kind = 'callable'"))
+    flows = {r[0]: json.loads(r[1])["kind"] for r in c.execute("SELECT id, attrs FROM flows")}
+    assert flows.get(f"flow:{main}") == "entry" and flows.get(f"flow:{main}#test") == "test"
+    counted = json.loads(c.execute("SELECT stats FROM extractor_coverage WHERE extractor = 'flows:static'").fetchone()[0])
+    assert counted["flows"] == len(flows)
+    assert counted["steps"] == c.execute("SELECT COUNT(*) FROM flow_steps").fetchone()[0]
+    c.close()
+
+
 def test_change_assessment_and_saved_views(tmp_path):
     import shutil
 

@@ -278,3 +278,17 @@ def test_file_differing_only_in_extension_added_and_removed(tmp_path):
         ("js added beside", lambda: js.write_text("export function two() {\n  return 2;\n}\n")),
         ("js removed", lambda: js.unlink()),
     ])
+
+
+def test_start_that_is_both_an_entry_and_a_test(tmp_path):
+    """Both flows of a start that is an entry and a test are walked again, kept and dropped as a full run would."""
+    root = tmp_path / "b"
+    root.mkdir()
+    p = root / "P.cs"
+    p.write_text("public static class P\n{\n    [Fact]\n    public static void Main() { Run(); }\n"
+                 "    static void Run() { }\n    static void Step() { }\n}\n")
+    check(tmp_path, root, "b", [
+        ("callee body", lambda: edit(p, "static void Run() { }", "static void Run() { Step(); }")),
+        ("no longer a test", lambda: edit(p, "    [Fact]\n", "")),
+        ("a test again", lambda: edit(p, "    public static void Main()", "    [Fact]\n    public static void Main()")),
+    ])

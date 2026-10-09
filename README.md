@@ -1155,6 +1155,9 @@ and events whose handler was subscribed earlier in the same flow. They do not fo
 writing one does not run its reader. They stop at
 8 calls deep or 300 steps.
 
+A flow's id is `flow:<start>`. A start that is two kinds of start at once (an entry point that is also a test)
+has a flow for each: the entry point's keeps that id, and the other's is `flow:<start>#test`.
+
 Flows are static: they show what can run, not what did run. Per-test coverage will replace them with
 observed paths where it is available.
 
