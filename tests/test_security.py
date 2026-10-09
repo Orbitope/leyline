@@ -311,6 +311,18 @@ def test_a_task_line_with_a_long_run_of_spaces_parses_in_linear_time(tmp_path):
     assert tasks[0]["key"] == "1.1" and tasks[0]["text"].endswith("now") and tasks[0]["names"] == ["f"]
 
 
+def test_paths_named_in_a_long_word_are_found_in_linear_time():
+    """`plan` and `review_pr` look for file paths in the change's text (a pull request's description is someone
+    else's): one long word made the search quadratic."""
+    import time
+    from leyline import coupling
+    began = time.perf_counter()
+    coupling._words(["x_" * 200_000, ("x_" * 150 + " ") * 500])
+    assert time.perf_counter() - began < 5
+    assert coupling._words(["see src/a/b.ts and docs/, EDITOR_GUIDE.md; (lib/x.py)"]) == {
+        "src/a/b.ts", "EDITOR_GUIDE.md", "lib/x.py"}
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)
