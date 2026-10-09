@@ -48,7 +48,7 @@ adds Go, Rust, Java, Kotlin, Swift, C, C++, Ruby, PHP, Scala, Lua, Bash and GDSc
 | Assess a change's impact | "What would changing the validator's output affect?" | `leyline-change-impact` | `impact <name>` | `propose_change`, `impact` |
 | Design it as a spec | "Plan adding an export button, with tests" | `leyline-spec` | `plan <id>` | `plan` |
 | Make a small change | "Make the retry count 3" | `leyline-quick-change` | `quick "<what>" --about NAME`, then `quick --done quick-<slug>` | `quick` |
-| Move a quick change up to a spec | (when the page says it has grown) | | `quick --to-spec <id> quick-<slug>` | `quick` |
+| Move a quick change up to a spec | (when the page says it has grown) | | `quick --to-spec <id> quick-<slug>` | none: the command only |
 | Pick the tests to run | | | `affected-tests <id>` | `affected_tests` |
 
 ### Review
