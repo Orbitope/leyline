@@ -974,8 +974,9 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 
 `change` is a change folder or its id. A tool that cannot answer returns an error saying what to do
 instead (no store yet: call `map`; an unknown id: find it with `search`). Each answer is at most about
-24,000 characters: lists show their first items and their total, `cut` names any list that was
-shortened, and `more` says how to see the rest (`limit`, `offset`, `scope`, or a narrower id).
+24,000 characters (30,000 for `module_outline` and `explain_path`, 36,000 for `context`): lists show their
+first items and their total, `cut` names any list that was shortened, and `more` says how to see the rest
+(`limit`, `offset`, `scope`, or a narrower id).
 
 ## What is indexed
 
