@@ -354,6 +354,40 @@ def test_typescript_a_request_on_a_client_named_api_is_not_a_route(tmp_path):
     assert got["web.src.api.items"] == ("server.src.main.listItems", "GET /api/items")
 
 
+def test_typescript_a_request_on_an_axios_instance_is_not_a_route_and_a_made_handler_still_is(tmp_path):
+    con = _map(tmp_path, {
+        "web/src/client.ts": (
+            "import axios from 'axios';\n"
+            "const instance = axios.create({ baseURL: '/' });\n"
+            "\n"
+            "export async function login(credentials: { user: string }) {\n"
+            "  return instance.post('/api/login', credentials);\n"
+            "}\n"),
+        "server/src/routes.ts": (
+            "const withAuth = (fn: any) => fn;\n"
+            "const makeHandler = () => async () => [];\n"
+            "const listItems = withAuth(async () => []);\n"
+            "const listTags = makeHandler();\n"
+            "\n"
+            "export async function routes(instance: any) {\n"
+            "  instance.post('/api/login', async (req: any) => ({ ok: true }));\n"
+            "  instance.get('/api/items', listItems);\n"
+            "}\n"
+            "\n"
+            "export function more(app: any) {\n"
+            "  app.get('/api/tags', listTags);\n"
+            "}\n"),
+        "web/src/calls.ts": (
+            "export async function items() { return fetch('/api/items'); }\n"
+            "export async function tags() { return fetch('/api/tags'); }\n"),
+    })
+    got = http(con)
+    assert got["web.src.client.login"] == ("server.src.routes.routes/route:POST /api/login", "POST /api/login")
+    # A handler a call made is still a handler: the route stands, served by the function that registers it.
+    assert got["web.src.calls.items"] == ("server.src.routes.routes", "GET /api/items")
+    assert got["web.src.calls.tags"] == ("server.src.routes.more", "GET /api/tags")
+
+
 def test_typescript_fields_assigned_by_destructuring_are_written(tmp_path):
     con = _map(tmp_path, {
         "src/p.ts": (

@@ -48,6 +48,8 @@ TEST_MODS = {"only", "skip", "concurrent", "sequential", "fails", "todo", "skipI
 HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "options"}
 SERVERS = re.compile(r"(app|server|fastify|router|instance|api|route[rs]?)$", re.I)
 CLIENTS = re.compile(r"(axios|http|client|request|ky|got|api)$", re.I)
+# Names a server and a client both go by: api, and instance (a Fastify plugin's, or what axios.create() returns).
+EITHER = re.compile(r"(api|instance)$", re.I)
 FS_READ = {"readFile", "readFileSync", "readdir", "readdirSync", "createReadStream", "readJson", "readJsonSync", "opendir"}
 FS_WRITE = {"writeFile", "writeFileSync", "appendFile", "appendFileSync", "createWriteStream", "writeJson",
             "writeJsonSync", "copyFile", "copyFileSync", "outputFile"}
@@ -211,6 +213,7 @@ class _Walker:
         self.fn_names: set[str] = set()
         self.fn_nodes: dict = {}       # name -> the function's node, for a program path a helper of the file builds
         self.imported: set[str] = set()
+        self.made_fns: set[str] = set()   # const h = withAuth(async (req) => ...): a function a call wraps
         self._prescan(self.tree.root_node)
 
     def _prescan(self, root) -> None:
@@ -226,6 +229,11 @@ class _Walker:
                 if name is not None and name.type == "identifier" and self._fn_of(value) is not None:
                     self.fn_names.add(_text(name))
                     self.fn_nodes.setdefault(_text(name), self._fn_of(value))
+                elif name is not None and name.type == "identifier" and _unwrap(value) is not None \
+                        and _unwrap(value).type == "call_expression" and any(
+                            _unwrap(a) is not None and _unwrap(a).type in FUNCS
+                            for a in (_unwrap(value).child_by_field_name("arguments") or value).named_children):
+                    self.made_fns.add(_text(name))
                 elif name is not None and name.type == "identifier" and value is not None and n.parent is not None \
                         and n.parent.parent is not None and n.parent.parent.type in ("program", "export_statement"):
                     found = _strings(value) if value.type in ("string", "template_string", "array") else []
@@ -1264,9 +1272,11 @@ class _Walker:
             return
         if fn.type == "member_expression" and name in HTTP_VERBS | {"all"} and addr and addr.startswith("/"):
             recv = _text(fn.child_by_field_name("object"))
-            # On a name that is a client's as well as a server's (api), a name passed after the path is a handler only
-            # when it names a function: api.post("/api/login", credentials) sends credentials.
-            named = (lambda a: _text(a) in self.fn_names or _text(a) in self.imported) if CLIENTS.search(recv) else (lambda a: True)
+            # On a name that is a client's as well as a server's (api, instance), a name passed after the path is a
+            # handler only when it names a function of the file (declared, or made by a call handed one), or an import:
+            # api.post("/api/login", credentials) sends credentials.
+            named = (lambda a: _text(a) in self.fn_names | self.made_fns | self.imported) if EITHER.search(recv) \
+                or CLIENTS.search(recv) else (lambda a: True)
             handler = any(_unwrap(a) is not None and (_unwrap(a).type in FUNCS or _unwrap(a).type == "identifier" and named(_unwrap(a)))
                           for a in arg_nodes[1:])
             method = None if name == "all" else name.upper()
@@ -1274,7 +1284,7 @@ class _Walker:
             if SERVERS.search(recv) and (handler or (last is not None and last.type == "object" and self._handler_member(last))):
                 src, written = self._route_handler(last, method, addr, cid, line)
                 self.res.endpoints.append(Endpoint("http", "serve", src, addr, line, method, handler=written))
-            elif CLIENTS.search(recv):
+            elif CLIENTS.search(recv) or EITHER.search(recv):
                 self.res.endpoints.append(Endpoint("http", "call", cid, addr, line, method))
             return
         if fn.type == "member_expression" and name == "route" and first is not None and first.type == "object" \
