@@ -81,6 +81,30 @@ def test_map_with_no_path_in_a_workspaces_folder_maps_the_workspace_again(tmp_pa
         con.close()
 
 
+def test_coupling_says_why_there_is_no_history(tmp_path, monkeypatch, capsys):
+    """A repository with no commits yet is under git; a workspace whose members have moved is not 'not under git'."""
+    root = tmp_path / "fresh"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/core.py").write_text(CORE)
+    git(root, "init", "-q")
+    monkeypatch.chdir(root)
+    assert run("map")[0] == 0
+    capsys.readouterr()
+    assert run("coupling")[0] != 0
+    assert "no commits yet" in capsys.readouterr().err
+
+    _repo(tmp_path / "ws/alpha")
+    _repo(tmp_path / "ws/beta")
+    monkeypatch.chdir(tmp_path / "ws")
+    assert run("map", "alpha", "beta")[0] == 0
+    (tmp_path / "ws/alpha").rename(tmp_path / "ws/alpha2")
+    (tmp_path / "ws/beta").rename(tmp_path / "ws/beta2")
+    capsys.readouterr()
+    assert run("coupling")[0] != 0
+    err = capsys.readouterr().err
+    assert "not under git" not in err and "where it was mapped" in err, err
+
+
 def _graph(db) -> tuple[set, set]:
     from leyline import store
     con = store.connect(db)
