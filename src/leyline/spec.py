@@ -33,7 +33,8 @@ from . import change, diff, rules, store
 from . import verdicts
 
 # A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
-TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
+# matched against a line with its trailing spaces cut: a lazy text before \s*$ is quadratic in a run of spaces inside it
+TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+)$")
 # A scenario's step: `- **WHEN** ...`, also with the colon inside or after the bold (`**WHEN:**`, `**WHEN**:`).
 STEP = re.compile(r"^\s*[-*+]\s*\*\*(WHEN|GIVEN|AND|THEN)\s*:?\*\*:?\s*(.*)$")
 CODE = re.compile(r"`([^`\n]+)`")
@@ -121,7 +122,7 @@ def parse(change_dir: str | Path) -> dict:
     if tasks.is_file() and store.inside(tasks, top):
         n = 0
         for line in unfenced(tasks.read_text(encoding="utf-8-sig", errors="replace")):
-            m = TASK.match(line)
+            m = TASK.match(line.rstrip())
             if not m:
                 continue
             n += 1

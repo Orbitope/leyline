@@ -298,6 +298,19 @@ def test_dotnet_runs_outside_the_repository(repo, tmp_path, monkeypatch):
     assert not any(p == repo.resolve() or repo.resolve() in p.parents for p in ran_in), ran_in
 
 
+def test_a_task_line_with_a_long_run_of_spaces_parses_in_linear_time(tmp_path):
+    """tasks.md comes from the repository (a pull request can add a change folder), and `plan`, `check` and `drift`
+    read it."""
+    import time
+    d = tmp_path / "openspec" / "changes" / "x"
+    d.mkdir(parents=True)
+    (d / "tasks.md").write_text("- [ ] 1.1 Change `f`" + " " * 200_000 + "now  \n")
+    began = time.perf_counter()
+    tasks = spec.parse(d)["tasks"]
+    assert time.perf_counter() - began < 5
+    assert tasks[0]["key"] == "1.1" and tasks[0]["text"].endswith("now") and tasks[0]["names"] == ["f"]
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)
