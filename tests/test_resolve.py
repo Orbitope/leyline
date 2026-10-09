@@ -225,6 +225,21 @@ def test_fields_that_read_the_same_name_their_file(tmp_path):
     c.close()
 
 
+def test_a_field_changed_in_place_from_outside_is_shared_state(tmp_path):
+    # The README: a call such as items.append(x) is a read and a write; shared_state's note must say the same.
+    src = ("class Journal:\n    def __init__(self):\n        self.items = []\n\n"
+           "class Writer:\n    def __init__(self, j: Journal):\n        self.j = j\n\n"
+           "    def put(self, x):\n        self.j.items.append(x)\n")
+    root = write(tmp_path / "repo", {"a/journal.py": src})
+    db = tmp_path / "s.db"
+    index(root, db, "d")
+    c = store.connect(db)
+    r = query.shared_state(c)
+    assert [f["name"] for f in r["fields"]] == ["Journal.items"]
+    assert "are not seen" not in r["note"], r["note"]
+    c.close()
+
+
 def test_a_test_title_that_is_a_template_is_shown_after_its_suite(tmp_path):
     root = write(tmp_path / "repo", {"t/rename.test.ts": (
         'import { describe, it, expect } from "vitest";\n\n'

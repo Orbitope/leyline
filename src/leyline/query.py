@@ -659,4 +659,5 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
     return {"total": len(rows), "fields": rows[:limit],
             "note": "A field many types assign has no single place that keeps it valid. Test code, constructors and values set "
                     "while creating an object (new Foo { a = 1 }) are not counted. "
-                    "Changes made by calling a method on the field (list.Add) are not assignments and are not seen."}
+                    "A call that changes a collection in place (list.Add, items.append) counts as an assignment; any "
+                    "other method called on the field does not, since the map cannot tell what it does."}
