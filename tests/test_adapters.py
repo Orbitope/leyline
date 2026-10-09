@@ -208,3 +208,31 @@ def test_typescript_an_overloaded_method_spans_its_implementation(tmp_path):
     span, attrs = con.execute("SELECT span_start || '-' || span_end, attrs FROM nodes WHERE id LIKE '%Shape.area'").fetchone()
     assert span == "4-6"
     assert not json.loads(attrs).get("is_abstract") and json.loads(attrs)["argc_max"] == 1
+
+
+def test_typescript_an_anonymous_default_class_is_a_class_with_its_methods(tmp_path):
+    con = _map(tmp_path, {
+        "src/widget.ts": (
+            "export default class {\n"
+            "  render(): string {\n"
+            "    return this.label();\n"
+            "  }\n"
+            "\n"
+            "  label(): string {\n"
+            "    return 'x';\n"
+            "  }\n"
+            "}\n"),
+        "src/page.ts": (
+            "import Widget from './widget';\n"
+            "\n"
+            "export function show(): string {\n"
+            "  const w = new Widget();\n"
+            "  return w.render();\n"
+            "}\n"),
+    })
+    nodes = {short(r[0]): r[1] for r in con.execute("SELECT id, kind FROM nodes")}
+    assert nodes.get("src.widget.default") == "type"
+    assert nodes.get("src.widget.default.render") == "callable"
+    got = calls(con)
+    assert ("src.widget.default.render", "src.widget.default.label") in got
+    assert ("src.page.show", "src.widget.default.render") in got

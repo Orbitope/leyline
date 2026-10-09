@@ -481,6 +481,9 @@ class _Walker:
             if fn is not None:
                 self.default_name = _text(fn.child_by_field_name("name")) or "default"
                 self._function(self.default_name, fn, node, self.file_id, qual, None, scope, exported=True)
+            elif inner.type == "class":   # export default class { ... }: named default, as a function would be
+                self.default_name = _text(inner.child_by_field_name("name")) or "default"
+                self._class(self.default_name, inner, self.file_id, qual, True)
             else:
                 self._walk(value, cid, class_id, scope, qual)
         else:
