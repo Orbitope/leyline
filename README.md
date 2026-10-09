@@ -651,7 +651,7 @@ would pass whatever the change did. With no per-test coverage, `check` reads as 
 
 `leyline affected-tests <change>` (the `affected_tests` tool) lists the tests to run for a planned change or a
 `pr-<id>` review, each with why, and prints a command that runs them (`pytest path::test ...`, `npx vitest run
-<files>`, `npx jest <files>`, `go test -run`). With per-test coverage it takes the tests measured running the changed
+<files>`, `npx jest --runTestsByPath <files>`, `go test -run`). With per-test coverage it takes the tests measured running the changed
 or must-edit code, the change's own new tests, and, from the map, tests that reach changed code no measured test ran
 or that the measured run left out; without it, the tests whose path on the map passes through the change. Feed that
 smaller run to `check`. `leyline pr` lists the tests measured running the changed code the same way.

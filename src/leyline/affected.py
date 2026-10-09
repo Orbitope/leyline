@@ -388,7 +388,7 @@ def _js_runner(root: Path, path: str) -> tuple[Optional[str], Path]:
 
 
 def commands(con, tests: list[dict]) -> list[dict]:
-    """One command per runner and directory: pytest node ids, `npx vitest run <files>`, `npx jest <files>`, `go test
+    """One command per runner and directory: pytest node ids, `npx vitest run <files>`, `npx jest --runTestsByPath <files>`, `go test
     -run`. Tests no runner was recognized for are listed by name instead."""
     roots = store.roots(con)
     groups: dict[tuple, list] = defaultdict(list)
@@ -420,7 +420,8 @@ def commands(con, tests: list[dict]) -> list[dict]:
         elif runner == "vitest":
             cmd = "npx vitest run " + " ".join(shlex.quote(i) for i in items)
         elif runner == "jest":
-            cmd = "npx jest " + " ".join(shlex.quote(i) for i in items)
+            # by path: jest reads a plain argument as a pattern (`[id].test.tsx` is a character class)
+            cmd = "npx jest --runTestsByPath " + " ".join(shlex.quote(i) for i in items)
         else:
             by_dir = defaultdict(list)
             for d, name in items:
