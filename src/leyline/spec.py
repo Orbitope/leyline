@@ -1391,6 +1391,18 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     # New code a task named (`build_cases.case_x`, `func` in `file.py`) is the task's, found the way the plan found it.
     drift = [n for n in review["not_predicted"] if n not in tests_touched and not in_container(n["id"])
              and n["id"] not in declared and n["id"] not in named]
+    # Named code that is gone took what was inside it along (a class's members, a file's functions): not edits of their own.
+    gone_named = sorted(i for i in named if i not in names.by_id)
+    if gone_named and drift:
+        was = diff._open(diff.snapshot_path(con, cid))
+        try:
+            marks = ",".join("?" * len(gone_named))
+            went = {r[0] for r in was.execute(f"SELECT node_id FROM ancestry WHERE file_id IN ({marks}) OR module_id IN ({marks})",
+                                              gone_named + gone_named)}
+        finally:
+            was.close()
+        drift = [n for n in drift if not (n["id"] in removed and (n["id"] in went or any(
+            n["id"].startswith((i + ".", i + "/", i + "(")) for i in gone_named)))]
     # A new function that only code named in the spec calls is how a task got done, not a change of its own.
     in_spec = {t for t in touched if t not in {n["id"] for n in drift}} | named
     helpers = []
