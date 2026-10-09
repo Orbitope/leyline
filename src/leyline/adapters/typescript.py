@@ -85,8 +85,10 @@ def _squash(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def module_path(rel_path: str) -> str:
-    return _EXT.sub("", rel_path).replace("/", ".")
+def module_path(rel_path: str, keep_ext: bool = False) -> str:
+    """keep_ext: another file in the directory differs from this one only in its extension (a.js beside a.ts), and
+    the indexer gave it the plain name; this one keeps its extension so that their ids do not collide."""
+    return (rel_path if keep_ext else _EXT.sub("", rel_path)).replace("/", ".")
 
 
 def _string(node) -> Optional[str]:
@@ -1386,8 +1388,11 @@ class _Walker:
         return cid, None
 
 
-def parse(repo: str, rel_path: str, file_id: str, src: bytes, module: str = "") -> FileResult:
+def parse(repo: str, rel_path: str, file_id: str, src: bytes, module: str = "", keep_ext: bool = False) -> FileResult:
     w = _Walker(repo, rel_path, file_id, src)
+    if keep_ext:   # see module_path
+        w.mod = module_path(rel_path, True)
+        w.top_id = f"{repo}:typescript:{w.mod}.<module>"
     res = w.run()
     channels.extract(LANGUAGE, w.tree, res, file_id, w.consts)
     return res

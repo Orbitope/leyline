@@ -1191,6 +1191,11 @@ Node ids are stable across file moves within a project:
 - C#: `repo:csharp:Project::Namespace.Type.Member(ParamTypes)`. The project is part of the id
   because two projects may declare the same type name.
 - Python: `repo:python:package.module.Class.method`
+- TypeScript, JavaScript and the generic languages: `repo:language:dir.file.Name`, the file named without its
+  extension. Two files of one language in one directory that differ only in their extension (`a.js` beside
+  `a.ts`, `m.c` beside `m.h`) would name their contents alike: the first by path keeps that id, and the others
+  keep their extension in it (`repo:typescript:dir.a.ts.Name`). Adding or removing such a neighbour can change
+  the ids of the files after it.
 - Files and modules: `repo:file:path` and `repo:module:path`
 
 ## Tests

@@ -397,6 +397,19 @@ def _module_for(path: str, module_dirs: set[str]) -> str:
     return d  # no marker: the file's own directory ("" is the repo root)
 
 
+def _ext_clashes(work: list) -> set[str]:
+    """The files whose ids keep their extension: files of one language in one directory that differ only in their
+    extension (a.js beside a.ts, m.c beside m.h) would name their contents alike. The first by path keeps the usual
+    ids, so a directory with no such pair keeps them all; the others keep the extension in theirs."""
+    import inspect
+    groups: dict[tuple, list] = defaultdict(list)
+    for w in work:
+        adapter = BY_EXTENSION[w[1]]
+        if "keep_ext" in inspect.signature(adapter.parse).parameters:
+            groups[(adapter.LANGUAGE, adapter.module_path(w[0]))].append(w[0])
+    return {f for fs in groups.values() if len(fs) > 1 for f in sorted(fs)[1:]}
+
+
 def _arity(type_id: str) -> int:
     tail = type_id.rsplit("`", 1)
     return int(tail[1]) if len(tail) == 2 and tail[1].isdigit() else 0
@@ -477,7 +490,7 @@ def _deep(fn, *args):
 
 
 def _parse_file(job):
-    root, repo, (f, ext, mod_dir, mod_id) = job
+    root, repo, (f, ext, mod_dir, mod_id) = job[:3]
     try:
         data = read_source(Path(root) / f)
     except OSError as exc:   # gone or made unreadable since it was listed
@@ -485,11 +498,15 @@ def _parse_file(job):
     loc, sha = data.count(b"\n") + 1, hashlib.sha1(data).hexdigest()
     adapter = BY_EXTENSION[ext]
     args = (repo, f, f"{repo}:file:{f}", data, mod_dir or ".")
+    parse = adapter.parse
+    if len(job) > 3 and job[3]:   # see _ext_clashes
+        import functools
+        parse = functools.partial(adapter.parse, keep_ext=True)
     try:
         try:
-            res = adapter.parse(*args)
+            res = parse(*args)
         except RecursionError:
-            res = _deep(adapter.parse, *args)
+            res = _deep(parse, *args)
     except RecursionError:
         return f, ext, mod_dir, mod_id, loc, sha, None, "nested too deeply to read", None
     except Exception as exc:
@@ -558,14 +575,14 @@ def _timeout() -> float:
         return 600.0
 
 
-def _parse_all(root: Path, repo: str, work: list, died: Optional[list] = None):
+def _parse_all(root: Path, repo: str, work: list, died: Optional[list] = None, keep_ext: frozenset = frozenset()):
     """Parse every file, across processes when there are enough files to pay for starting them.
     Results come back in the order given, so the index is the same however many processes ran.
     A worker that dies (a crash inside a parser, or the system killing it for memory) or gets stuck loses only the
     file it was on: the files that were in flight are parsed again one at a time, each in a fresh process, and the
     one that kills or stalls its process is reported as failed (and named in `died`)."""
     jobs = _jobs()
-    items = [(str(root), repo, w) for w in work]
+    items = [(str(root), repo, w, w[0] in keep_ext) for w in work]
     if jobs == 1 or len(items) < PARALLEL_MIN_FILES:
         yield from map(_parse_one, items)
         return
@@ -800,6 +817,7 @@ class Indexer:
         self._file_index: dict[str, int] = {}
         self.file_lang: dict[str, str] = {}
         self.file_of_path: dict[str, str] = {}
+        self.keep_ext: set[str] = set()          # file ids whose node ids keep the file's extension (_ext_clashes)
         self._decl_cache: dict[str, dict] = {}
         self._read_decls: dict[str, dict] = {}   # file id -> node id -> (span, declarations read in the parse)
         self._text_cache: dict[str, list] = {}
@@ -932,8 +950,10 @@ class Indexer:
         # With a parse cache (leyline.incremental), a file whose content and module are as they were last time is
         # not parsed again. Either way the files are taken in the listed order, so the index is the same.
         cache = self.parse_cache
-        cached = cache.lookup(repo, root, work) if cache is not None else {}
-        fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached])
+        keep_ext = _ext_clashes(work)
+        self.keep_ext.update(f"{repo}:file:{f}" for f in keep_ext)
+        cached = cache.lookup(repo, root, work, keep_ext) if cache is not None else {}
+        fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached], keep_ext=keep_ext)
         failed_here = self.failed.setdefault(repo, [])
         packs = packing.packs(len(work))
         for w in work:
@@ -943,7 +963,7 @@ class Indexer:
                 got = next(fresh)
             f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
             if cache is not None:
-                cache.keep(f"{repo}:file:{f}", got, fresh_one)
+                cache.keep(f"{repo}:file:{f}", got, fresh_one, f in keep_ext)
             del got
             res, heavy, decls = packing.unpack(blob) if blob is not None else (None, None, None)
             blob = None
@@ -1489,7 +1509,10 @@ class Indexer:
         return cache[fid]
 
     def _modpath(self, fid: str) -> str:
-        return BY_LANGUAGE[self.file_lang[fid]].module_path(self.nodes[fid].path)
+        adapter = BY_LANGUAGE[self.file_lang[fid]]
+        if fid in self.keep_ext:
+            return adapter.module_path(self.nodes[fid].path, True)
+        return adapter.module_path(self.nodes[fid].path)
 
     def _py_export(self, target_fid: str, symbol: str, depth: int = 0) -> Optional[str]:
         """The node a module exposes under a name, following re-exports (`from .app import Flask`,

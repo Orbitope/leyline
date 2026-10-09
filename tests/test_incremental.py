@@ -264,3 +264,17 @@ def test_tour_goes_when_a_repository_has_no_modules_left(tmp_path):
     full = tmp_path / "full.db"
     index(root, full, "e", full=True)
     assert differences(db, full) == {}
+
+
+def test_file_differing_only_in_extension_added_and_removed(tmp_path):
+    """Whether a file's ids keep its extension depends on the files beside it (a.js beside a.ts): adding or removing
+    one changes the other's ids though its content is the same, so its kept parse output must not be used."""
+    root = tmp_path / "x"
+    (root / "src").mkdir(parents=True)
+    ts, js = root / "src/a.ts", root / "src/a.js"
+    ts.write_text("export function one(): number {\n  return 1;\n}\n")
+    (root / "src/main.ts").write_text('import { one } from "./a";\n\nexport function main(): number {\n  return one();\n}\n')
+    check(tmp_path, root, "x", [
+        ("js added beside", lambda: js.write_text("export function two() {\n  return 2;\n}\n")),
+        ("js removed", lambda: js.unlink()),
+    ])

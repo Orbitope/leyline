@@ -167,6 +167,12 @@ def _ancestry(nodes: dict, groups: bool = False) -> dict:
     return out
 
 
+def _module_key(mod_dir: str, keep_ext: bool) -> str:
+    """What a file's parse output depends on besides its content: its module, and whether its ids keep the file's
+    extension (indexer._ext_clashes), which a file added or removed beside it can change."""
+    return mod_dir + ("\0keep_ext" if keep_ext else "")
+
+
 class _Hits(dict):
     """path -> a file whose kept parse output is used, read from the cache when the indexer takes it (pop): held
     all at once, every file's output was in memory for the whole run."""
@@ -234,7 +240,7 @@ class Run:
             ix._write = self._write_patch
 
     # -- parse cache ---------------------------------------------------------------------------------------
-    def lookup(self, repo: str, root: Path, work: list) -> dict:
+    def lookup(self, repo: str, root: Path, work: list, keep_ext: frozenset = frozenset()) -> dict:
         """path -> the parse output kept for it, for the files whose content and module are unchanged."""
         if not self.rows:
             return {}
@@ -249,18 +255,18 @@ class Run:
             except OSError:   # gone since it was listed: parsed again, which reports it
                 continue
             sha = hashlib.sha1(data).hexdigest()
-            if row[1] == sha and row[2] == mod_dir:
+            if row[1] == sha and row[2] == _module_key(mod_dir, f in keep_ext):
                 out[f] = (f, ext, mod_dir, mod_id, row[0], sha)
         return _Hits(self.cache.con, out)
 
-    def keep(self, file_id: str, got: tuple, fresh: bool) -> None:
+    def keep(self, file_id: str, got: tuple, fresh: bool, keep_ext: bool = False) -> None:
         f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
         self.seen.add(file_id)
         self.toks[file_id] = toks
         if fresh:
             self.reparsed.add(file_id)
             self.cache.con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?)",
-                                   (file_id, sha, mod_dir, loc, blob, failed, toks))
+                                   (file_id, sha, _module_key(mod_dir, keep_ext), loc, blob, failed, toks))
 
     # -- what changed --------------------------------------------------------------------------------------
     def _markers(self) -> list:
