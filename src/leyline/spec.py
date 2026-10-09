@@ -74,6 +74,25 @@ def reviews(con, change_id: str) -> list[str]:
 
 
 # -- reading the folder ------------------------------------------------------------------------
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def unfenced(text: str) -> list[str]:
+    """The lines of Markdown outside fenced code (``` or ~~~): an example task or scenario in a fence is not one.
+    A fence closes on a line of the same character, at least as long, with nothing after it."""
+    out, fence = [], None
+    for line in text.splitlines():
+        m = FENCE.match(line)
+        if fence is None and m:
+            fence = m.group(1)
+        elif fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line.strip().strip(fence[0]):
+                fence = None
+        else:
+            out.append(line)
+    return out
+
+
 def parse(change_dir: str | Path) -> dict:
     """Read an OpenSpec change folder into its title, tasks, requirements and scenarios."""
     d = Path(change_dir)
@@ -97,7 +116,7 @@ def parse(change_dir: str | Path) -> dict:
     keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
     if tasks.is_file():
         n = 0
-        for line in tasks.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        for line in unfenced(tasks.read_text(encoding="utf-8-sig", errors="replace")):
             m = TASK.match(line)
             if not m:
                 continue
@@ -115,7 +134,7 @@ def parse(change_dir: str | Path) -> dict:
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
-        for line in spec.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        for line in unfenced(spec.read_text(encoding="utf-8-sig", errors="replace")):
             if line.startswith("## "):
                 section = (line[3:].split() or [""])[0].upper() or None   # `## ` alone names no section
             elif line.startswith("### Requirement:"):

@@ -297,6 +297,20 @@ def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tm
     assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"] and not p["problems"]
 
 
+def test_parse_leaves_out_fenced_code(tmp_path):
+    """An example inside a fence (```, ~~~) was read as a task or a scenario of the change."""
+    ch = tmp_path / "c"
+    (ch / "specs" / "engine").mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Change: C\n")
+    (ch / "tasks.md").write_text("- [ ] 1.1 Change `Engine.start`\n\nA task looks like:\n\n```markdown\n"
+                                 "- [ ] 9.9 Example task\n```\n~~~\n- [x] 9.8 Another\n~~~\n- [ ] 1.2 Add `Engine.shout`\n")
+    (ch / "specs" / "engine" / "spec.md").write_text(
+        SPEC + "\nWritten as:\n\n````\n#### Scenario: Example\n- **WHEN** x\n```\n#### Scenario: Still fenced\n````\n")
+    p = spec.parse(ch)
+    assert [t["key"] for t in p["tasks"]] == ["1.1", "1.2"]
+    assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"]
+
+
 def test_a_test_name_with_test_inside_a_word_finds_its_scenario(loud):
     """`test_` was cut wherever it appeared, so `test_shortest_path` read as "shorpath" and never proved "Shortest path"."""
     assert spec._norm("test_shortest_path") == spec._norm("Shortest path") == "shortest path"
