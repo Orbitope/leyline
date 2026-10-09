@@ -228,3 +228,24 @@ def test_module_variable_type_changed(tmp_path):
         ("variable removed", lambda: edit(glob, 'current: App = App("current")\n', "")),
         ("variable added", lambda: glob.write_text(glob.read_text() + 'current: App = App("current")\n')),
     ])
+
+
+def test_waits_for_another_run_writing_the_cache(tmp_path):
+    """A second run that starts while another is writing the cache (a map while a plan starts) waits for it, as it
+    waits for the store, rather than failing at once with "database is locked"."""
+    import threading
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.py").write_text("def a():\n    return 1\n")
+    db = tmp_path / "w.db"
+    index(root, db, "w")
+    (root / "a.py").write_text("def a():\n    return 2\n")
+    other = sqlite3.connect(str(cache_path(db)), check_same_thread=False)
+    other.execute("BEGIN IMMEDIATE")   # as a run holds it from its first parse until it finishes
+    done = threading.Timer(1.5, other.rollback)
+    done.start()
+    try:
+        assert index(root, db, "w")["incremental"]["mode"] in ("full", "incremental")
+    finally:
+        done.join()
+        other.close()

@@ -116,7 +116,7 @@ def cache_path(db_path) -> Path:
 class _Cache:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.con = sqlite3.connect(str(path))
+        self.con = sqlite3.connect(str(path), timeout=store.BUSY_SECONDS)   # another run may be writing it: wait
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.executescript("""
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB);
@@ -192,6 +192,9 @@ class Run:
         self.ix, self.con = ix, con
         from .indexer import max_file_bytes
         self.cache = _Cache(cache_path(db_path))
+        # The cache's write lock is taken before anything is read from it, and held until finish(): a transaction that
+        # read first could not wait for another run writing the cache, and would fail at once.
+        self.cache.con.execute("BEGIN IMMEDIATE")
         self.key = json.dumps([code_version(), sorted((r, str(p)) for r, p in ix.repos.items()),
                                ix.exact_mode, sorted(ix.scip_paths), max_file_bytes()])
         gen = con.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()
@@ -203,7 +206,6 @@ class Run:
         self.why_full = None if not self.full else ("asked" if full else "no usable cache from an earlier run")
         with con:   # until finish() writes a new token, the store matches no cache: a run that fails half way is not built on
             con.execute("DELETE FROM meta WHERE key = 'generation'")
-        self.cache.con.execute("BEGIN")
         self.rows: dict = {}
         # Parse output depends only on a file's content and module, not on where the checkout is or on the rest of
         # the store: a full run that was not asked for (a moved checkout, a store copied to map another commit)
