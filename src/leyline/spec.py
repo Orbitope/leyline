@@ -33,7 +33,8 @@ from . import change, diff, rules, store
 from . import verdicts
 
 # A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
-TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+?)\s*$")
+# matched against a line with its trailing spaces cut: a lazy text before \s*$ is quadratic in a run of spaces inside it
+TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+)$")
 # A scenario's step: `- **WHEN** ...`, also with the colon inside or after the bold (`**WHEN:**`, `**WHEN**:`).
 STEP = re.compile(r"^\s*[-*+]\s*\*\*(WHEN|GIVEN|AND|THEN)\s*:?\*\*:?\s*(.*)$")
 CODE = re.compile(r"`([^`\n]+)`")
@@ -102,8 +103,10 @@ def parse(change_dir: str | Path) -> dict:
         return {"error": f"no change folder at {d}"}
     out = {"id": d.name, "dir": str(d), "title": d.name.replace("-", " "), "why": "", "what": "", "tasks": [], "scenarios": [],
            "requirements": [], "problems": []}
+    # The repository the folder is in (above openspec/), else the folder: a file linked from outside it is not read.
+    top = next((p.parent for p in d.resolve().parents if p.name == "openspec"), d)
     proposal = d / "proposal.md"
-    if proposal.is_file():
+    if proposal.is_file() and store.inside(proposal, top):
         text = proposal.read_text(encoding="utf-8-sig", errors="replace")
         m = re.search(r"^#\s+(.+)$", text, re.M)
         if m:
@@ -116,10 +119,10 @@ def parse(change_dir: str | Path) -> dict:
         out["problems"].append("proposal.md is missing")
     tasks = d / "tasks.md"
     keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
-    if tasks.is_file():
+    if tasks.is_file() and store.inside(tasks, top):
         n = 0
         for line in unfenced(tasks.read_text(encoding="utf-8-sig", errors="replace")):
-            m = TASK.match(line)
+            m = TASK.match(line.rstrip())
             if not m:
                 continue
             n += 1
@@ -133,6 +136,8 @@ def parse(change_dir: str | Path) -> dict:
     else:
         out["problems"].append("tasks.md is missing")
     for spec in sorted((d / "specs").rglob("spec.md")) if (d / "specs").is_dir() else []:
+        if not store.inside(spec, top):
+            continue
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
@@ -942,9 +947,9 @@ def _write(path: Path, body: str) -> None:
     block = f"{BEGIN}\n{body.rstrip()}\n{END}\n"
     old = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
     if BEGIN in old and END in old:
-        path.write_text(old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"), encoding="utf-8")
+        store.write_file(path, old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"))
     else:
-        path.write_text(block, encoding="utf-8")
+        store.write_file(path, block)
 
 
 def _some(xs: list[str], n: int = 4) -> str:

@@ -277,6 +277,11 @@ def about(run: dict) -> str:
 
 # -- the spec loop and pull requests -------------------------------------------------------------------
 PATHISH = re.compile(r"[\w.@+-]+(?:/[\w.@+-]+)*\.[A-Za-z0-9]+|[\w.@+-]+(?:/[\w.@+-]+)+/?")
+# PATHISH tries every place a dot could end a run, from every place it could start: quadratic in a run's length, so a
+# spec or pull request description with one long word would hold the plan for minutes. It only ever matches inside a
+# run of these characters, so it is tried run by run, and a run longer than any path is not one.
+_RUN = re.compile(r"[\w.@+/-]+")
+LONGEST_PATH = 400
 
 
 def written_paths(texts: Iterable[str], known: Iterable[str]) -> set:
@@ -297,7 +302,8 @@ def written_paths(texts: Iterable[str], known: Iterable[str]) -> set:
 
 
 def _words(texts: Iterable[str]) -> set:
-    words = {w.strip("`'\"()[],;:").lstrip("./").rstrip("/") for t in texts for w in PATHISH.findall(t or "")}
+    words = {w.strip("`'\"()[],;:").lstrip("./").rstrip("/") for t in texts for run in _RUN.findall(t or "")
+             if len(run) <= LONGEST_PATH for w in PATHISH.findall(run)}
     return {w for w in words if w}
 
 

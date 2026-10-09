@@ -29,6 +29,35 @@ def _current(con) -> bool:
     return row is not None and row[0] == SCHEMA_VERSION
 
 
+def write_file(path: str | Path, data: str | bytes) -> None:
+    """Write a file Leyline makes inside a repository (a page, the store's folder, a skill) without following a link
+    at its name. The repository may be someone else's, and a link committed where Leyline writes (`.leyline/map.html`
+    pointing at ~/.bashrc) would otherwise have Leyline write over the file it points at. The text goes to a new
+    file beside it, which then takes the name's place: a link there is replaced, not written through."""
+    import os
+    import tempfile
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb" if isinstance(data, bytes) else "w", **({} if isinstance(data, bytes) else {"encoding": "utf-8"})) as f:
+            f.write(data)
+        os.chmod(tmp, 0o644)   # a temporary file is private; the file it becomes is not
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def inside(path: str | Path, root: str | Path) -> bool:
+    """Whether `path`, links followed, is `root` or under it: a file Leyline reads from a repository into a page or an
+    answer (a README, a change's proposal) must not be a link to one outside it, such as ~/.aws/credentials."""
+    try:
+        real, top = Path(path).resolve(), Path(root).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return real == top or top in real.parents
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)

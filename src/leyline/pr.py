@@ -60,7 +60,8 @@ def git_root(path: Path) -> Path:
 def github_pr(root: Path, number: str) -> dict:
     """Base branch, title, description and head commit of a GitHub pull request, through the gh command."""
     try:
-        out = subprocess.run(["gh", "pr", "view", str(number), "--json", "baseRefName,title,body,headRefOid,number,url"],
+        # after --: a number that starts with - (`--web`, `--repo=...`, passed by an agent) is not one of gh's options
+        out = subprocess.run(["gh", "pr", "view", "--json", "baseRefName,title,body,headRefOid,number,url", "--", str(number)],
                              cwd=root, capture_output=True, check=False)
     except FileNotFoundError:
         raise GitError("--github needs the gh command (https://cli.github.com), signed in")
@@ -77,8 +78,9 @@ def change_id(root: Path, given: Optional[str] = None, number: Optional[str] = N
     """pr-<given>, pr-<number>, or pr-<branch name>; on a detached checkout, pr-<commit>."""
     if given:
         return "pr-" + slug(given.removeprefix("pr-"))
-    if number:
-        return f"pr-{number}"
+    if number:   # 123, #123 or a pull request's URL; the id names files under .leyline/, so it is a slug
+        m = re.fullmatch(r"#?(\d+)|https?://\S+/pull/(\d+)/?", str(number).strip())
+        return "pr-" + (m.group(1) or m.group(2) if m else slug(str(number)))
     try:
         branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
     except GitError:
@@ -100,14 +102,36 @@ def _repo_of(con, root: Path) -> Optional[str]:
 def _safe_members(tar: tarfile.TarFile, into: Path):
     """The archive's entries that stay inside `into`: a branch under review is someone else's code, and an entry
     named ../x, or a link out of the tree followed by a file written through it, must not reach outside."""
+    import posixpath
     top = into.resolve()
-    for m in tar.getmembers():
+    members = tar.getmembers()
+    # Each check below reads the path as written, before anything is extracted. A path that passes through a link
+    # in the archive (s -> ., then w -> s/.. and w/evil.txt) is checked as if the link were a folder, and is only
+    # where it seems once nothing follows it: Python without extraction filters would write it outside.
+    links = {posixpath.normpath(m.name) for m in members if m.issym()}
+
+    def through_link(path: str) -> bool:
+        cur: list[str] = []
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        for k, part in enumerate(parts):
+            if part == "..":
+                if not cur:
+                    return True
+                cur.pop()
+            else:
+                cur.append(part)
+                if k < len(parts) - 1 and "/".join(cur) in links:
+                    return True
+        return False
+    for m in members:
         dest = (top / m.name).resolve()
-        if m.name.startswith("/") or (dest != top and top not in dest.parents):
+        if m.name.startswith("/") or (dest != top and top not in dest.parents) or through_link(m.name):
             continue
         if m.issym() or m.islnk():
             target = (dest.parent / m.linkname).resolve() if m.issym() else (top / m.linkname).resolve()
             if m.linkname.startswith("/") or (target != top and top not in target.parents):
+                continue
+            if through_link(posixpath.join(posixpath.dirname(m.name), m.linkname) if m.issym() else m.linkname):
                 continue
         if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
             continue
@@ -200,7 +224,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
             con.close()
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(snap), str(target))
-        marker.write_text(stamp + "\n")
+        store.write_file(marker, stamp + "\n")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return target
@@ -658,7 +682,7 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         out["gate"] = gate(out, gate_config(root))   # judged from this run's facts and the findings as they are now
         page =Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(text(out), encoding="utf-8")
+        store.write_file(page, text(out))
         out["page"] = str(page)
         return out
     finally:

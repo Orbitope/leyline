@@ -153,7 +153,7 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
             return {"error": "nothing is mapped in this store yet: name the repository directories"}
     ignore = Path(db).parent / ".gitignore"
     if Path(db).parent.name == ".leyline" and not ignore.exists():
-        ignore.write_text("# Leyline's map and baselines: local, rebuilt by `leyline map`.\n*\n", encoding="utf-8")
+        store.write_file(ignore, "# Leyline's map and baselines: local, rebuilt by `leyline map`.\n*\n")
     con = store.connect(db)
     try:
         prune_baselines(con)
@@ -178,7 +178,7 @@ def write_page(con, db: str | Path, open_change: Optional[str] = None, always: b
     path = Path(db).parent / "map.html"
     if not always and not path.is_file():
         return None
-    path.write_text(export.page(con, open_change=open_change), encoding="utf-8")
+    store.write_file(path, export.page(con, open_change=open_change))
     return path
 
 

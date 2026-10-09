@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from . import __version__
+from . import __version__, store
 
 HERE = Path(__file__).resolve().parent
 MANIFEST = ".leyline-skills.json"
@@ -160,7 +160,7 @@ def _copy(s: Skill, dest: Path, shipped: dict[str, bytes], drop: list[str]) -> N
         (dest / rel).unlink(missing_ok=True)
     for rel, data in shipped.items():
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-        (dest / rel).write_bytes(data)
+        store.write_file(dest / rel, data)
         shutil.copymode(s.folder / rel, dest / rel)
 
 
@@ -215,7 +215,7 @@ def install(root: Path, which: Optional[str] = None, force: bool = False, names:
         manifest = _manifest(t["path"])
         results = [install_one(s, t["path"], manifest, force) for s in skills]
         manifest["leyline"] = __version__
-        (t["path"] / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        store.write_file(t["path"] / MANIFEST, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         out.append({"folder": t["label"], "path": str(t["path"]), "also": t["also"], "skills": results})
     return {"root": str(root), "targets": out}
 

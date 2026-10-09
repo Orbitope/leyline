@@ -38,7 +38,7 @@ def _readme(con, repo_id: str) -> Optional[str]:
         return None
     for name in ("README.md", "README.rst", "README.txt", "README"):
         p = Path(row[0]) / name
-        if p.is_file():
+        if p.is_file() and store.inside(p, row[0]):
             para: list[str] = []
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")

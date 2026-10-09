@@ -105,6 +105,9 @@ def source(con, repo: str, path: str, root_of: Optional[dict] = None) -> Optiona
     root = (root_of if root_of is not None else roots(con)).get(repo)
     if root is None:
         return None
+    from . import store
+    if not store.inside(root / path, root):   # a link out of the repository, checked out since it was mapped
+        return None
     try:
         return (root / path).read_bytes()
     except OSError:
@@ -117,8 +120,7 @@ def snapshot(con, name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".part")
     for p in (tmp, Path(str(tmp) + "-journal")):
-        if p.exists():
-            p.unlink()
+        p.unlink(missing_ok=True)   # a link to nothing too: SQLite would make the file it points at
     out = sqlite3.connect(str(tmp))
     out.executescript(_snapshot_schema())
     out.close()
@@ -537,16 +539,21 @@ def record_tests(con, run: str, results: list[dict]) -> dict:
     return {"run": run, **counts, "matched_to_test_nodes": sum(1 for r in rows if r[2])}
 
 
-_PLAIN = re.compile(r"^\s*(PASS(?:ED)?|FAIL(?:ED)?|ERROR|SKIP(?:PED)?|XFAIL|XPASS)\b[\s:]*(.+?)\s*$")
-_POINT = re.compile(r"^(\s*)(not ok|ok)\b(?:\s+\d+)?(?:\s*-(?=\s|$))?\s*(.*?)\s*$")
-_SUBTEST = re.compile(r"^(\s*)# Subtest:\s*(.*?)\s*$")
+# Each is matched against a line with its trailing spaces cut (parse_test_output does): a lazy name followed by `\s*$`
+# tries every split of a long run of spaces inside the name, and a test that prints one line of a million spaces would
+# hold the parse for hours.
+_PLAIN = re.compile(r"^\s*(PASS(?:ED)?|FAIL(?:ED)?|ERROR|SKIP(?:PED)?|XFAIL|XPASS)\b[\s:]*(.+)$")
+_POINT = re.compile(r"^(\s*)(not ok|ok)\b(?:\s+\d+)?(?:\s*-(?=\s|$))?\s*(.*)$")
+_SUBTEST = re.compile(r"^(\s*)# Subtest:\s*(.*)$")
 _YAML_START = re.compile(r"^\s*---\s*$")
 # go test: `--- PASS: TestX/sub (0.00s)`, `=== RUN   TestX`, and a package's line `ok  \tpkg\t0.3s`, `FAIL\tpkg\t0.1s`,
 # `?   \tpkg\t[no test files]` or `FAIL\tpkg [build failed]`.
 # jest's default reporter: ` PASS  src/a.test.js (5.1 s)`, and with --verbose `✓ name (2 ms)`, `✕`, `○ skipped`, `✎ todo`
 # (√ and × on Windows).
-_JEST_FILE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)(?:\s+\([\d.]+\s*m?s\))?\s*$")
-_JEST_TEST = re.compile(r"^(\s*)(✓|✕|○|✎|√|×)\s+(.*?)(?:\s+\([\d.]+\s*m?s\))?\s*$")
+_JEST_FILE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+)(?:\s+\([\d.]+\s*m?s\))?$")   # and the file is JavaScript
+_JS_FILE = re.compile(r"\.[cm]?[jt]sx?$")
+_JEST_TEST = re.compile(r"^(\s*)(✓|✕|○|✎|√|×)\s+(.*)$")
+_JEST_TIME = re.compile(r"\(([\d.]+\s*m?s)\)$")   # `name (2 ms)`: searched from the `(`, so a long name costs nothing
 _GO_RESULT = re.compile(r"^(\s*)--- (PASS|FAIL|SKIP): (\S+) \([\d.]+m?s\)\s*$")
 _GO_RUN = re.compile(r"^=== (?:RUN|CONT|PAUSE|NAME)\s+(\S+)\s*$")
 _GO_PACKAGE = re.compile(r"^(ok|FAIL|\?)\s+(\S+)(?:\t.*| \[(build failed|setup failed)\])$")
@@ -627,7 +634,7 @@ def parse_test_output(text: str) -> list[dict]:
             return None
         return emit([f["name"] for f in stack] + [frame["name"]], frame["status"])
 
-    lines = text.splitlines()
+    lines = [ln.rstrip() for ln in text.splitlines()]
     for k, line in enumerate(lines):
         if in_yaml:
             if re.match(r"^\s*\.\.\.\s*$", line):
@@ -677,14 +684,14 @@ def parse_test_output(text: str) -> list[dict]:
                 continue
             go_after = None
         m = _JEST_FILE.match(line)
-        if m:   # jest: ` PASS  src/a.test.js`, then (with --verbose) its tests as a tree, then a `●` section per failure
+        if m and _JS_FILE.search(m.group(1)):   # jest: ` PASS  src/a.test.js`, then (with --verbose) its tests as a tree, then a `●` section per failure
             jest = {"file": m.group(1), "tree": [], "in_tree": True, "wait": None}
             continue
         if jest is not None:
             if line.startswith("Test Suites:"):
                 jest = None
                 continue
-            m = re.match(r"^\s*●\s+(.*?)\s*$", line)
+            m = re.match(r"^\s*●\s+(.*)$", line)
             if m:
                 jest["in_tree"] = False
                 title = m.group(1)
@@ -706,7 +713,11 @@ def parse_test_output(text: str) -> list[dict]:
                     jest["tree"].append((indent, line.strip()))
                     continue
                 status = {"✓": "pass", "√": "pass", "✕": "fail", "×": "fail"}.get(m.group(2), "skip")
-                name = re.sub(r"^(?:skipped|todo)\s+", "", m.group(3)) if status == "skip" else m.group(3)
+                name = m.group(3)
+                t = _JEST_TIME.search(name) if name.endswith(")") else None
+                if t and name[:t.start()][-1:].isspace() and name[:t.start()].strip():
+                    name = name[:t.start()].rstrip()
+                name = re.sub(r"^(?:skipped|todo)\s+", "", name) if status == "skip" else name
                 last = emit([jest["file"]] + [n for _, n in jest["tree"]] + [name], status)
                 continue
             if not jest["in_tree"]:
@@ -726,7 +737,7 @@ def parse_test_output(text: str) -> list[dict]:
         m = _POINT.match(line)
         if m:
             indent = len(m.group(1).expandtabs())
-            after = next((ln for ln in lines[k + 1:] if ln.strip()), "")   # a block opened with ` {` is indented
+            after = next((lines[j] for j in range(k + 1, len(lines)) if lines[j].strip()), "")   # a block opened with ` {` is indented
             deeper = len(after.expandtabs()) - len(after.expandtabs().lstrip()) > indent and not _YAML_START.match(after)
             desc, directive, opens = _tap_point(m.group(3), can_open=deeper)
             word = directive.split()[0].upper() if directive else ""

@@ -194,7 +194,7 @@ def _keep_source(con, cid: str, files: set) -> dict:
     out = {"texts": texts, "repos": repos}
     p = _src_path(con, cid)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(out), encoding="utf-8")
+    store.write_file(p, json.dumps(out))
     return out
 
 
