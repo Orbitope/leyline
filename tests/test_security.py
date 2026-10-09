@@ -249,6 +249,35 @@ def test_a_pull_request_number_names_a_review_inside_the_store_and_is_not_an_opt
     assert not any("--web" in a and a.index("--web") < (a.index("--") if "--" in a else len(a)) for a in ran)
 
 
+def test_the_base_archive_keeps_no_entry_reached_through_a_link(tmp_path):
+    """Python before 3.12 (and 3.10.12, 3.11.4) has no extraction filter, so the members `pr` keeps must be safe on
+    their own. Each link is inside when checked alone (s -> ., w -> s/..), but w/evil.txt, written through both
+    once they exist, lands beside the folder."""
+    import io
+    import tarfile
+    from leyline import pr
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name, target in (("s", "."), ("w", "s/..")):
+            m = tarfile.TarInfo(name)
+            m.type, m.linkname = tarfile.SYMTYPE, target
+            t.addfile(m)
+        m = tarfile.TarInfo("w/evil.txt")
+        m.size = 4
+        t.addfile(m, io.BytesIO(b"evil"))
+        m = tarfile.TarInfo("h")
+        m.type, m.linkname = tarfile.LNKTYPE, "w/evil.txt"
+        t.addfile(m)
+    into = tmp_path / "base"
+    into.mkdir()
+    buf.seek(0)
+    with tarfile.open(fileobj=buf) as t:
+        kept = list(pr._safe_members(t, into))
+        t.extractall(into, members=kept, filter="fully_trusted")   # as an unfiltered extraction does
+    assert not (tmp_path / "evil.txt").exists()
+    assert "w/evil.txt" not in [m.name for m in kept] and "h" not in [m.name for m in kept]
+
+
 def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     p = tmp_path / "x.txt"
     p.symlink_to(victim)

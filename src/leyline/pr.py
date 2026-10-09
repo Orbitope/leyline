@@ -102,14 +102,36 @@ def _repo_of(con, root: Path) -> Optional[str]:
 def _safe_members(tar: tarfile.TarFile, into: Path):
     """The archive's entries that stay inside `into`: a branch under review is someone else's code, and an entry
     named ../x, or a link out of the tree followed by a file written through it, must not reach outside."""
+    import posixpath
     top = into.resolve()
-    for m in tar.getmembers():
+    members = tar.getmembers()
+    # Each check below reads the path as written, before anything is extracted. A path that passes through a link
+    # in the archive (s -> ., then w -> s/.. and w/evil.txt) is checked as if the link were a folder, and is only
+    # where it seems once nothing follows it: Python without extraction filters would write it outside.
+    links = {posixpath.normpath(m.name) for m in members if m.issym()}
+
+    def through_link(path: str) -> bool:
+        cur: list[str] = []
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        for k, part in enumerate(parts):
+            if part == "..":
+                if not cur:
+                    return True
+                cur.pop()
+            else:
+                cur.append(part)
+                if k < len(parts) - 1 and "/".join(cur) in links:
+                    return True
+        return False
+    for m in members:
         dest = (top / m.name).resolve()
-        if m.name.startswith("/") or (dest != top and top not in dest.parents):
+        if m.name.startswith("/") or (dest != top and top not in dest.parents) or through_link(m.name):
             continue
         if m.issym() or m.islnk():
             target = (dest.parent / m.linkname).resolve() if m.issym() else (top / m.linkname).resolve()
             if m.linkname.startswith("/") or (target != top and top not in target.parents):
+                continue
+            if through_link(posixpath.join(posixpath.dirname(m.name), m.linkname) if m.issym() else m.linkname):
                 continue
         if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
             continue
