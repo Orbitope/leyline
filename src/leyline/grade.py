@@ -25,6 +25,21 @@ from .indexer import Indexer, source_lines
 CTOR_NAMES = ("constructor", ".ctor", "__init__", "new", "init")
 
 
+def _chars(text: str, col: int, encoding: int) -> int:
+    """A SCIP column as a character index into `text`. Columns count UTF-16 code units (scip-python,
+    scip-typescript), UTF-8 bytes or characters, as the document's position_encoding says; unspecified is read as
+    characters, as before. (The same job as exact._chars on the audit-indexing branch.)"""
+    if encoding not in (1, 2) or text.isascii():   # characters already, or no difference
+        return col
+    unit = (lambda ch: 2 if ord(ch) > 0xFFFF else 1) if encoding == 2 else (lambda ch: len(ch.encode("utf-8")))
+    n = 0
+    for k, ch in enumerate(text):
+        if n >= col:
+            return k
+        n += unit(ch)
+    return len(text)
+
+
 def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set]:
     """What the compiler says at each call site.
 
@@ -66,6 +81,7 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
             row, col, end = exact.occ_range(occ) or (len(lines), 0, 0)
             if row >= len(lines):
                 continue
+            col, end = (_chars(lines[row], c, doc.position_encoding) for c in (col, end))
             if sym.startswith("local "):
                 # A local the compiler could not tie to a declaration (often an import it failed to follow):
                 # a call through it is not judged either way.

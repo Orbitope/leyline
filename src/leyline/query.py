@@ -468,9 +468,9 @@ def trace(con, from_id: str, to_id: str, max_depth: int = 12) -> dict:
     return {"from": from_id, "to": to_id, "found": True, "hops": len(path) - 1, "path": path[::-1]}
 
 
-def impact(con, node_id: str, max_depth: int = 6) -> dict:
+def impact(con, node_id: str, max_depth: int = 6, flows_limit: int = 40) -> dict:
     """Everything that can reach a node through calls and channels, grouped by module, plus the
-    flows that pass through it. Use it before changing the node."""
+    flows that pass through it (the first `flows_limit`, and their total). Use it before changing the node."""
     row = _node(con, node_id)
     if row is None:
         return {"error": f"No node with id {node_id!r}."}
@@ -508,10 +508,13 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
     for i in reached:
         m = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (i,)).fetchone()
         mod = (m[0] if m and m[0] else "?")
-        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "repo": mod.split(":", 1)[0], "count": 0, "direct": []})
+        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "repo": mod.split(":", 1)[0], "count": 0,
+                                       "direct": [], "direct_total": 0})
         g["count"] += 1
-        if dist[i] == 1 and len(g["direct"]) < 15:
-            g["direct"].append(i)
+        if dist[i] == 1:
+            g["direct_total"] += 1
+            if len(g["direct"]) < 15:
+                g["direct"].append(i)
     marks = ",".join("?" * len(targets))
     through = [{"id": r["id"], "name": r["name"]} for r in con.execute(
         f"SELECT DISTINCT f.id, f.name FROM flows f JOIN flow_steps s ON s.flow_id = f.id"
@@ -523,7 +526,7 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
             "crosses_module_boundary": any(m != (home[0] if home else None) for m in by_module),
             "by_repo": dict(by_repo), "crosses_repo_boundary": any(r != row["repo_id"] for r in by_repo),
             "by_module": sorted(by_module.values(), key=lambda g: -g["count"]),
-            "flows_through": {"total": len(through), "items": through[:40]},
+            "flows_through": {"total": len(through), "items": through[:flows_limit]},
             "note": "Callers found from syntax. Code reached only through outside frameworks is not counted."}
 
 

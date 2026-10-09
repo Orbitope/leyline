@@ -11,6 +11,7 @@ import functools
 import inspect
 import json
 import os
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -107,18 +108,27 @@ def _cap(x, n: int, keep: tuple = (), cut: Optional[dict] = None, path: str = ""
     return cut
 
 
-def _largest(x, path: str = "", best=None):
-    """The longest list (of more than 3 items) or string (over 1,000 characters) inside x, as
-    (size, holder, key, path)."""
+CUT_MARK = re.compile(r"\n\[\.\.\. cut here: ([\d,]+) characters in all\]$")
+
+
+def _uncut(s: str) -> tuple[str, int]:
+    """A string as it was before `_fit` cut it, as far as it is kept: (what is left of it, its whole length)."""
+    m = CUT_MARK.search(s)
+    return (s[:m.start()], int(m[1].replace(",", ""))) if m else (s, len(s))
+
+
+def _largest(x, path: str = "", best=None, floor: tuple = (3, 1000)):
+    """The longest list (of more than floor[0] items) or string (over floor[1] characters, not counting the mark of
+    an earlier cut) inside x, as (size, holder, key, path)."""
     items = x.items() if isinstance(x, dict) else enumerate(x) if isinstance(x, list) else ()
     for k, v in items:
         p = f"{path}.{k}" if isinstance(k, str) and path else (k if isinstance(k, str) else f"{path}[]")
-        if (isinstance(v, list) and len(v) > 3) or (isinstance(v, str) and len(v) > 1000):
+        if (isinstance(v, list) and len(v) > floor[0]) or (isinstance(v, str) and len(_uncut(v)[0]) > floor[1]):
             size = len(_dump(v))
             if best is None or size > best[0]:
                 best = (size, x, k, p)
         if isinstance(v, (dict, list)):
-            best = _largest(v, p, best)
+            best = _largest(v, p, best, floor)
     return best
 
 
@@ -128,25 +138,28 @@ MORE = ("Lists were cut to keep this answer short; `cut` says which (shown of to
 
 def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE) -> str:
     """The answer as compact JSON of at most about `limit` characters: the longest lists and strings are
-    shortened until it fits, and `cut` says what was cut."""
+    shortened until it fits (to 3 items and 1,000 characters, then, when that is not enough, to 1 item and 200
+    characters), and `cut` says what was cut."""
     text = _dump(out)
-    for _ in range(200):
-        if len(text) <= limit:
-            break
-        best = _largest(out)
-        if best is None:
-            break
-        size, holder, key, p = best
-        v, excess = holder[key], len(text) - limit + 200
-        if isinstance(v, list):
-            keep = max(3, min(len(v) - 1, len(v) - -(-excess * len(v) // max(size, 1))))
-            cut[p] = f"{keep} of {cut[p].split(' of ')[1] if p in cut else len(v)}"
-            holder[key] = v[:keep]
-        else:
-            keep = max(1000, len(v) - excess)
-            holder[key] = v[:keep] + f"\n[... cut here: {len(v):,} characters in all]"
-            cut[p] = f"{keep:,} of {len(v):,} characters"
-        text = _dump({**out, "cut": cut} if cut else out)
+    for floor in ((3, 1000), (1, 200)):
+        for _ in range(200):
+            if len(text) <= limit:
+                break
+            best = _largest(out, floor=floor)
+            if best is None:
+                break
+            size, holder, key, p = best
+            v, excess = holder[key], len(text) - limit + 200
+            if isinstance(v, list):
+                keep = max(floor[0], min(len(v) - 1, len(v) - -(-excess * len(v) // max(size, 1))))
+                cut[p] = f"{keep} of {cut[p].split(' of ')[1] if p in cut else len(v)}"
+                holder[key] = v[:keep]
+            else:
+                body, whole = _uncut(v)   # a string cut before is cut again from what is left, and keeps its length
+                keep = max(floor[1], len(body) - excess)
+                holder[key] = body[:keep] + f"\n[... cut here: {whole:,} characters in all]"
+                cut[p] = f"{keep:,} of {whole:,} characters"
+            text = _dump({**out, "cut": cut, "more": more} if cut else out)
     if cut:
         out["cut"], out["more"] = cut, more
         text = _dump(out)
@@ -548,11 +561,12 @@ def impact(node_id: NodeId,
     gives a fuller assessment and saves it as a view."""
     if (err := _known(node_id)):
         return err
-    r = query.impact(_db(), node_id, max_depth)
+    r = query.impact(_db(), node_id, max_depth, limit)
     mods = r["by_module"]
     for m in mods:
-        if len(m["direct"]) > 5:
-            m["direct"], m["direct_more"] = m["direct"][:5], len(m["direct"]) - 5
+        total = m.pop("direct_total", len(m["direct"]))
+        if total > 5:
+            m["direct"], m["direct_more"] = m["direct"][:5], total - 5
     r["by_module"] = {"total": len(mods), "items": mods[:limit]}
     r["flows_through"]["items"] = r["flows_through"]["items"][:limit]
     return r
