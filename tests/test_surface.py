@@ -45,6 +45,31 @@ def test_the_repository_store_is_found_from_a_folder_inside_it(repo, capsys, mon
     assert "no store at elsewhere.db" in capsys.readouterr().err
 
 
+def test_grade_reads_scip_columns_in_the_documents_encoding(tmp_path):
+    """scip-python counts columns in UTF-16 code units: on a line with an emoji before a call, grade read the
+    columns as characters, missed the `(` after the name, and counted the compiler's call as no call at all."""
+    from leyline import grade, scip_pb2
+    root = tmp_path / "g"
+    root.mkdir()
+    line = '    s = "\U0001F600\U0001F600"; return target()'
+    (root / "m.py").write_text("def target():\n    return 1\n\n\ndef caller():\n" + line + "\n", encoding="utf-8")
+    col = len(line[:line.index("target")].encode("utf-16-le")) // 2
+    idx = scip_pb2.Index()
+    doc = idx.documents.add()
+    doc.relative_path, doc.position_encoding = "m.py", scip_pb2.UTF16CodeUnitOffsetFromLineStart
+    sym = "scip-python python g 0.1 `m`/target()."
+    d = doc.occurrences.add()
+    d.symbol, d.symbol_roles = sym, 1
+    d.range.extend([0, 4, 10])
+    r = doc.occurrences.add()
+    r.symbol = sym
+    r.range.extend([5, col, col + 6])
+    (tmp_path / "index.scip").write_bytes(idx.SerializeToString())
+    g = grade.grade(str(root), str(tmp_path / "index.scip"), db=str(tmp_path / "grade.db"))
+    assert g["compiler_links"] == 1 and g["recall"] == 1.0 and g["compiler_silent"] == 0
+    assert grade._chars("é(x", 2, scip_pb2.UTF8CodeUnitOffsetFromLineStart) == 1   # é is two bytes
+
+
 @pytest.fixture
 def tools(monkeypatch):
     """The MCP tools, called in this process against the store at LEYLINE_DB."""
