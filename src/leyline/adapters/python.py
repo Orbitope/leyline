@@ -151,6 +151,20 @@ def _narrowing(cond) -> list[tuple]:
 
 OVERLOAD = re.compile(r"@(typing\.|t\.)?overload$")
 
+COMPOUND = ("if_statement", "try_statement", "with_statement", "for_statement", "while_statement")
+CLAUSES = ("elif_clause", "else_clause", "except_clause", "except_group_clause", "finally_clause")
+DEFINITIONS = ("function_definition", "class_definition", "decorated_definition")
+
+
+def _defines(node) -> bool:
+    """Whether a compound statement's blocks, or those of one inside them, define a function or a class."""
+    for c in node.children:
+        if c.type in ("block",) + CLAUSES and _defines(c):
+            return True
+        if node.type == "block" and (c.type in DEFINITIONS or c.type in COMPOUND and _defines(c)):
+            return True
+    return False
+
 
 # Methods that change the collection they are called on. A field used this way is written, not only read.
 MUTATORS = frozenset("""append extend insert remove pop clear add update discard sort reverse setdefault popitem
@@ -238,10 +252,24 @@ class _Walker:
                     attrs={"trigger": "cli", "address": self.path}))
                 self.res.edges.append(Edge("exposes", self.top_id + "#entry", self.top_id))
                 self._body(c, cid, class_id, scope)
+            elif t in COMPOUND and _defines(c):
+                self._compound(c, parent_id, qual, class_id, cid, scope, top)
             else:
                 self._body(c, cid, None if cid == self.top_id else class_id, scope)
         if cid == self.top_id and any(c.src_id == cid for c in self.res.calls[calls_before:]):
             self.top_used = True
+
+    def _compound(self, node, parent_id, qual, class_id, cid, scope, top) -> None:
+        """An if, try, with or loop at the top of a module or class whose blocks define functions or classes (a
+        fallback when an import fails, one definition per platform): those are declared as if written outside it,
+        and the rest is walked as it would be."""
+        for c in node.children:
+            if c.type == "block":
+                self._block(c, parent_id, qual, class_id, cid, scope, top)
+            elif c.type in CLAUSES:
+                self._compound(c, parent_id, qual, class_id, cid, scope, top)
+            else:
+                self._body(c, cid, None if cid == self.top_id else class_id, scope)
 
     def _class(self, node, outer, parent_id, qual, decorators, run_cid=None) -> None:
         """run_cid: the function whose code runs the class statement (the module body, at the top level).

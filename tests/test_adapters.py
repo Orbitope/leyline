@@ -148,3 +148,43 @@ def test_python_attributes_assigned_together_are_fields(tmp_path):
     assert {"pkg.box.Box.w", "pkg.box.Box.h", "pkg.box.Box.x", "pkg.box.Box.y"} <= fields
     assert ("pkg.box.Box.__init__", "pkg.box.Box.h") in edges(con, "writes")
     assert ("pkg.box.Box.area", "pkg.box.Box.h") in edges(con, "reads")
+
+
+def test_python_functions_defined_under_if_try_and_with_at_the_top_of_a_module_or_class(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/compat.py": (
+            "import sys\n"
+            "\n"
+            "try:\n"
+            "    from fast import dumps\n"
+            "except ImportError:\n"
+            "    def dumps(x):\n"
+            "        return helper(x)\n"
+            "\n"
+            "if sys.platform == 'win32':\n"
+            "    def home():\n"
+            "        return helper(1)\n"
+            "else:\n"
+            "    def home():\n"
+            "        return helper(2)\n"
+            "\n"
+            "class Box:\n"
+            "    if sys.version_info >= (3, 8):\n"
+            "        def size(self):\n"
+            "            return helper(3)\n"
+            "\n"
+            "def helper(x):\n"
+            "    return x\n"
+            "\n"
+            "def main(b: Box):\n"
+            "    dumps(1)\n"
+            "    home()\n"
+            "    b.size()\n"),
+    })
+    nodes = {short(r[0]): r[1] for r in con.execute("SELECT id, kind FROM nodes WHERE kind = 'callable'")}
+    assert {"pkg.compat.dumps", "pkg.compat.home", "pkg.compat.Box.size"} <= set(nodes)
+    got = calls(con)
+    for caller in ("pkg.compat.dumps", "pkg.compat.home", "pkg.compat.Box.size"):
+        assert (caller, "pkg.compat.helper") in got
+    for callee in ("pkg.compat.dumps", "pkg.compat.home", "pkg.compat.Box.size"):
+        assert got[("pkg.compat.main", callee)] == "heuristic"
