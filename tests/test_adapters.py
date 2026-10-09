@@ -217,6 +217,23 @@ def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")
 
 
+def test_csharp_a_classs_primary_constructor_parameters_are_not_properties(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/Svc.cs": (
+            "namespace App;\n"
+            "public class Svc(ILogger logger, int retries) {\n"
+            "    public int Tries => retries;\n"
+            "}\n"
+            "public struct Point(int x, int y) { public int X => x; }\n"
+            "public record Item(int Id);\n"
+            "public record struct Pair(int A, int B);\n"),
+    })
+    fields = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE kind = 'field'")}
+    assert not {"App.Svc.logger", "App.Svc.retries", "App.Point.x", "App.Point.y"} & fields
+    assert {"App.Svc.Tries", "App.Point.X", "App.Item.Id", "App.Pair.A", "App.Pair.B"} <= fields
+
+
 def test_csharp_a_test_is_marked_by_its_attributes_name_not_a_word_in_its_arguments(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,

@@ -418,8 +418,9 @@ class _Walker:
         if native == "delegate":
             return
         # Record primary-constructor parameters as fields (records), with a body or without: record Item(int Id);
+        # A class's or struct's (C# 12: class Svc(ILogger logger)) are parameters it captures, not properties.
         plist = _child(node, "parameter_list")
-        if plist is not None:
+        if plist is not None and native == "record":
             for p in plist.children:
                 if p.type == "parameter":
                     self._field_node(tid, _text(p.child_by_field_name("name")), p.child_by_field_name("type"),
