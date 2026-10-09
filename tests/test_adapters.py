@@ -133,6 +133,19 @@ def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")
 
 
+def test_csharp_signatures_in_a_file_that_starts_with_a_byte_order_mark(tmp_path):
+    root = tmp_path / "repo"
+    (root / "App").mkdir(parents=True)
+    (root / "App/App.csproj").write_text(CSPROJ)
+    (root / "App/Tests.cs").write_bytes(
+        b"\xef\xbb\xbfnamespace App;\npublic class OrderTests\n{\n    [Fact]\n    public void Totals() { }\n}\n")
+    index(root, tmp_path / "s.db", "a")
+    con = store.connect(tmp_path / "s.db")
+    sigs = {short(r[0]): json.loads(r[1])["signature"] for r in con.execute("SELECT id, attrs FROM nodes WHERE kind IN ('type', 'callable')")}
+    assert sigs["App.OrderTests"] == "public class OrderTests"
+    assert sigs["App.OrderTests.Totals()"] == "[Fact] public void Totals()"
+
+
 def test_python_attributes_assigned_together_are_fields(tmp_path):
     con = _map(tmp_path, {
         "pkg/box.py": (

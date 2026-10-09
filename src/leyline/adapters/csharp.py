@@ -321,6 +321,7 @@ class _Walker:
         self.file_id = file_id
         self.module = module
         self.res = FileResult()
+        self.src = src   # spans are offsets into the file; the root node starts after a byte order mark
         self.tree = _parser.parse(src)
         self.field_types: dict[str, dict[str, str]] = {}  # type id -> member name -> type name
         self.redirect: dict[tuple, str] = {}  # lambda span -> node its body's calls belong to
@@ -404,7 +405,7 @@ class _Walker:
                    "visibility": _visibility(mods, "internal" if parent_id == self.file_id else "private"),
                    "is_abstract": "abstract" in mods or native == "interface",
                    "is_static": "static" in mods, "is_partial": "partial" in mods,
-                   "signature": _squash(self.tree.root_node.text[node.start_byte:head_end].decode("utf8", "replace"))}))
+                   "signature": _squash(self.src[node.start_byte:head_end].decode("utf8", "replace"))}))
         base_list = _child(node, "base_list")
         if base_list is not None:
             for b in base_list.children:
@@ -530,7 +531,7 @@ class _Walker:
         self.res.nodes.append(Node(
             id=cid, kind="callable", name=name, parent_id=parent_id, language=LANGUAGE, path=self.path,
             span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
-            attrs={"signature": _squash(self.tree.root_node.text[node.start_byte:head_end].decode("utf8", "replace")).rstrip(";"),
+            attrs={"signature": _squash(self.src[node.start_byte:head_end].decode("utf8", "replace")).rstrip(";"),
                    "visibility": "public" if in_interface else _visibility(mods, "private"),
                    "is_static": "static" in mods, "is_async": "async" in mods,
                    "is_virtual": in_interface or any(m in mods for m in ("virtual", "abstract", "override")),
