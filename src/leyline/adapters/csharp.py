@@ -572,7 +572,10 @@ class _Walker:
             for method in bare:
                 self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + prefix.lstrip("/"), node.start_point[0] + 1,
                                                    method))
-        found = set(re.findall(r"[A-Za-z_]+", attrs_text)) & TEST_ATTRIBUTES
+        # The attributes' own names ([Xunit.Fact], [TestCase(1)]), not words in their arguments ([Description("Test")]).
+        found = {re.sub(r"Attribute$", "", _text(a.child_by_field_name("name")).rsplit(".", 1)[-1])
+                 for al in node.children if al.type == "attribute_list"
+                 for a in al.named_children if a.type == "attribute"} & TEST_ATTRIBUTES
         if found:
             self.res.nodes[-1].attrs["is_test"] = True
             self.res.nodes[-1].attrs["framework"] = sorted(found)[0]

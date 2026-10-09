@@ -133,6 +133,28 @@ def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     assert ("App.Use.Of(Item,Tagged)", "App.Item.Name") in edges(con, "reads")
 
 
+def test_csharp_a_test_is_marked_by_its_attributes_name_not_a_word_in_its_arguments(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/Api.cs": (
+            "namespace App;\n"
+            "public class Api {\n"
+            "    [SwaggerOperation(Summary = \"Test the connection\")]\n"
+            "    public void Ping() { }\n"
+            "    [Obsolete(\"Fact: use Ping\")]\n"
+            "    public void Old() { }\n"
+            "}\n"
+            "public class ApiTests {\n"
+            "    [Xunit.Fact]\n"
+            "    public void Pings() { }\n"
+            "    [TestCaseAttribute(1)]\n"
+            "    public void Cases(int n) { }\n"
+            "}\n"),
+    })
+    marked = {short(r[0]) for r in con.execute("SELECT id FROM nodes WHERE json_extract(attrs, '$.is_test')")}
+    assert marked == {"App.ApiTests.Pings()", "App.ApiTests.Cases(int)"}
+
+
 def test_csharp_fields_assigned_by_deconstruction_are_written(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,
