@@ -119,6 +119,13 @@ def _archive(root: Path, sha: str) -> bytes:
     `export-subst` attributes shape release tarballs (tests left out, a version string filled in), so the archive is
     made from an empty repository that borrows this one's objects and unsets both, at the highest precedence."""
     objects = (root / _git(root, "rev-parse", "--git-path", "objects")).resolve()
+    # Line endings as the checkout has them (core.autocrlf=true writes CRLF), or every file would differ from it.
+    eol = []
+    for key in ("core.autocrlf", "core.eol"):
+        try:
+            eol += ["-c", f"{key}={_git(root, 'config', '--get', key)}"]
+        except GitError:   # not set
+            pass
     with tempfile.TemporaryDirectory(prefix="leyline-archive-") as tmp:
         bare = Path(tmp)
         _git(bare, "init", "-q", "--bare")
@@ -126,7 +133,7 @@ def _archive(root: Path, sha: str) -> bytes:
         (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n")
         (bare / "info").mkdir(exist_ok=True)
         (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
-        return _git(bare, "archive", "--format=tar", sha, binary=True)
+        return _git(bare, *eol, "archive", "--format=tar", sha, binary=True)
 
 
 def _export(root: Path, sha: str, into: Path) -> None:
