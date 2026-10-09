@@ -297,6 +297,21 @@ def test_parse_reads_a_bom_an_empty_heading_and_text_that_starts_with_a_digit(tm
     assert [s["name"] for s in p["scenarios"]] == ["Start", "Shout", "Made"] and not p["problems"]
 
 
+def test_a_test_name_with_test_inside_a_word_finds_its_scenario(loud):
+    """`test_` was cut wherever it appeared, so `test_shortest_path` read as "shorpath" and never proved "Shortest path"."""
+    assert spec._norm("test_shortest_path") == spec._norm("Shortest path") == "shortest path"
+    assert spec._result_keys("tests/test_g.py::test_latest_value[a]")[0] >= {"latest value a"}
+    work, ch, db = loud
+    (ch / "specs" / "engine" / "spec.md").write_text(SPEC.replace("Scenario: Shout", "Scenario: Fastest shout"))
+    (ch / "tasks.md").write_text(TASKS.replace('"Shout"', '"Fastest shout"'))
+    c = store.connect(db)
+    spec.brief(c, ch)
+    c.close()
+    _implement(work)
+    v = _check(work, db, ch, AFTER + [{"name": "py/tests/test_engine.py::test_fastest_shout", "status": "pass"}])
+    assert {s["name"]: s["state"] for s in v["scenarios"]}["Fastest shout"] == "passes"
+
+
 def test_adding_or_removing_a_parameter_is_a_change_of_signature(loud):
     """"Add a parameter to `X`" was read as an add (so X's callers were not listed as must change) and "Remove a
     parameter from `X`" as a removal of X, though VERBS lists both phrases under signature."""

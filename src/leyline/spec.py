@@ -390,7 +390,8 @@ def _tests(con) -> dict:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower().replace("test_", "")).strip()
+    # `test_` only where a name starts: `test_shortest_path` is "shortest path", not "shorpath"
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"(?<![a-z0-9])test_", "", s.lower())).strip()
 
 
 def _result_keys(name: str) -> tuple[set, set]:
