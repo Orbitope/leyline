@@ -606,6 +606,8 @@ class _Walker:
             return
         if t in TYPE_DECLS:
             return
+        if t == "invocation_expression" and _text(node.child_by_field_name("function")) == "nameof":
+            return   # nameof(_repo) is the name, read when compiling: nothing in it runs
         if t == "variable_declaration":
             tnode = node.child_by_field_name("type")
             declared = _outer_type(tnode) if tnode is not None and _text(tnode) != "var" else None

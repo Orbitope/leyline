@@ -82,6 +82,27 @@ def test_csharp_a_named_arguments_label_and_an_anonymous_objects_member_are_not_
     assert ("App.A.Reads()", "App.A.count") in reads and ("App.A.Reads()", "App.A.Name") in reads
 
 
+def test_csharp_a_name_in_nameof_is_not_a_field_read(tmp_path):
+    con = _map(tmp_path, {
+        "App/App.csproj": CSPROJ,
+        "App/A.cs": (
+            "namespace App;\n"
+            "public class A {\n"
+            "    private object _repo;\n"
+            "    public string FullName => \"\";\n"
+            "    public A(object r) {\n"
+            "        _repo = r ?? throw new System.ArgumentNullException(nameof(_repo));\n"
+            "        Changed(nameof(FullName));\n"
+            "    }\n"
+            "    void Changed(string n) {}\n"
+            "}\n"),
+    })
+    reads = edges(con, "reads")
+    assert ("App.A..ctor(object)", "App.A._repo") not in reads
+    assert ("App.A..ctor(object)", "App.A.FullName") not in reads
+    assert ("App.A..ctor(object)", "App.A._repo") in edges(con, "writes")
+
+
 def test_csharp_action_routes_from_a_verb_with_a_route_and_from_a_shared_attribute_list(tmp_path):
     con = _map(tmp_path, {
         "Api/Api.csproj": CSPROJ,
