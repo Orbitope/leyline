@@ -551,6 +551,9 @@ def _tap_point(rest: str) -> tuple[str, str, bool]:
     return desc.strip().replace("\\#", "#").replace("\\\\", "\\"), directive, opens
 
 
+_COLLECTED = re.compile(r"^(\S+\.py) - (.+)$")
+
+
 def _outside_brackets(text: str, sep: str) -> int:
     """Where `sep` first appears outside a pytest parameter's brackets (`test[a - b] - message`), or -1."""
     depth = 0
@@ -658,6 +661,8 @@ def parse_test_output(text: str) -> list[dict]:
                 if k >= 0:
                     name, message = rest[:k], (rest[k + len(sep):] if status == "fail" else None)
                     break
+        elif status == "fail" and _COLLECTED.match(rest):   # pytest: `ERROR tests/x.py - ImportError: ...`, a file that did not load
+            name, message = _COLLECTED.match(rest).groups()
         elif status == "fail":
             for sep in (": ", " - "):
                 if sep in rest:

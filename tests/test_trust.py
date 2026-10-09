@@ -222,6 +222,19 @@ def test_pytest_names_end_where_the_message_starts():
     assert spec._result_keys("t.py::TestK::test_xp")[0] >= {"xp"}
 
 
+def test_a_pytest_collection_error_is_recorded_under_its_file():
+    """`ERROR tests/x.py - ModuleNotFoundError: ...` (pytest 7) was a test named `tests/x.py - ModuleNotFoundError`."""
+    text = ("PASSED tests/test_ok.py::test_fine\n"
+            "ERROR tests/test_bad.py - ModuleNotFoundError: No module named 'nosuchmodule_xyz'\n"
+            "ERROR tests/sub/test_worse.py - ImportError: cannot import name 'a' - b\n"
+            "ERROR tests/test_plain.py\n")   # pytest 8 and 9 print no message here
+    out = {r["name"]: r for r in diff.parse_test_output(text)}
+    assert set(out) == {"tests/test_ok.py::test_fine", "tests/test_bad.py", "tests/sub/test_worse.py", "tests/test_plain.py"}
+    assert out["tests/test_bad.py"]["status"] == "fail"
+    assert out["tests/test_bad.py"]["message"] == "ModuleNotFoundError: No module named 'nosuchmodule_xyz'"
+    assert out["tests/sub/test_worse.py"]["message"] == "ImportError: cannot import name 'a' - b"
+
+
 def test_a_suite_named_for_a_method_is_not_a_file(tmp_path):
     """node:test prints no file, so `Engine.start > returns upper case` read `Engine.start` as the test's file and
     tied the result to no test."""
