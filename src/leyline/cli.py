@@ -744,6 +744,9 @@ def _main(argv=None) -> int:
         g.pop("_samples", None)
         _print(g)
         return 0
+    if not explicit:   # the repository's store, as --help says, from anywhere inside the repository
+        from .loop import find_store
+        args.db = str(find_store(Path.cwd()) or DEFAULT_DB)
     if not Path(args.db).exists():
         print(f"leyline: no store at {args.db}. Run `leyline map` first.", file=sys.stderr)
         return 2

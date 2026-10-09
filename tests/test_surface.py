@@ -34,6 +34,17 @@ def test_an_unknown_id_fails_the_command(repo, capsys):
     assert "def start(self)" in capsys.readouterr().out
 
 
+def test_the_repository_store_is_found_from_a_folder_inside_it(repo, capsys, monkeypatch):
+    """--help says the store defaults to .leyline/leyline.db in the repository; from a subfolder it was looked for
+    in the subfolder, and every query command said there was no store."""
+    monkeypatch.delenv("LEYLINE_DB", raising=False)
+    monkeypatch.chdir(repo / "py" / "src")
+    assert main(["search", "Engine"]) == 0
+    assert json.loads(capsys.readouterr().out)["results"]
+    assert main(["--db", "elsewhere.db", "search", "Engine"]) == 2     # a store named outright is still that one
+    assert "no store at elsewhere.db" in capsys.readouterr().err
+
+
 @pytest.fixture
 def tools(monkeypatch):
     """The MCP tools, called in this process against the store at LEYLINE_DB."""
