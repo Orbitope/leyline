@@ -138,6 +138,48 @@ def test_csharp_action_routes_from_a_verb_with_a_route_and_from_a_shared_attribu
     assert got["Client.Calls.PostBulk()"] == ("Api.ItemsController.Bulk()", "POST /api/Items/bulk")
 
 
+def test_python_and_csharp_the_route_that_names_more_of_the_path_wins(tmp_path):
+    con = _map(tmp_path, {
+        "app/main.py": (
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "\n"
+            "@app.get('/items/{item_id}')\n"
+            "def read_item(item_id: int):\n"
+            "    return item_id\n"
+            "\n"
+            "@app.get('/items/special')\n"
+            "def special():\n"
+            "    return 1\n"),
+        "tests/test_api.py": (
+            "def test_special(client):\n"
+            "    client.get('/items/special')\n"
+            "\n"
+            "def test_one(client):\n"
+            "    client.get('/items/3')\n"),
+        "Api/Api.csproj": CSPROJ,
+        "Api/OrdersController.cs": (
+            "namespace Api;\n"
+            "[Route(\"api/orders\")]\n"
+            "public class OrdersController : ControllerBase {\n"
+            "    [HttpGet(\"{id}\")]\n"
+            "    public string Get(string id) => id;\n"
+            "    [HttpGet(\"latest\")]\n"
+            "    public string Latest() => \"\";\n"
+            "}\n"),
+        "Api/Calls.cs": (
+            "namespace Api;\n"
+            "public class Calls {\n"
+            "    private readonly HttpClient _http = new HttpClient();\n"
+            "    public async Task Newest() { await _http.GetAsync(\"/api/orders/latest\"); }\n"
+            "}\n"),
+    })
+    got = http(con)
+    assert got["tests.test_api.test_special"] == ("app.main.special", "GET /items/special")
+    assert got["tests.test_api.test_one"] == ("app.main.read_item", "GET /items/{item_id}")
+    assert got["Api.Calls.Newest()"] == ("Api.OrdersController.Latest()", "GET /api/orders/latest")
+
+
 def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,
