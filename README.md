@@ -247,6 +247,11 @@ and fingerprints of the last run. Deleting it only makes the next index a full o
 | `leyline serve` (MCP) | Your coding agent, when it starts | The store | Annotations, change proposals and saved views |
 | `leyline view` or `export` | You | The store | Nothing |
 
+One index runs at a time per store. A second one that starts while another is running (a `map` while a `plan`
+re-maps) says so on stderr, naming the other process and how long it has been going, waits for it to finish,
+and then maps what changed since. It waits up to an hour (`LEYLINE_WAIT`, in seconds), and past that stops with
+the same message. A run that dies lets go of the store with its process.
+
 Annotations, proposals and views are not facts, so re-indexing keeps them. An annotation is flagged
 stale when the code behind its evidence changes.
 
@@ -1157,6 +1162,9 @@ and events whose handler was subscribed earlier in the same flow. They do not fo
 writing one does not run its reader. They stop at
 8 calls deep or 300 steps.
 
+A flow's id is `flow:<start>`. A start that is two kinds of start at once (an entry point that is also a test)
+has a flow for each: the entry point's keeps that id, and the other's is `flow:<start>#test`.
+
 Flows are static: they show what can run, not what did run. Per-test coverage will replace them with
 observed paths where it is available.
 
@@ -1193,7 +1201,17 @@ Node ids are stable across file moves within a project:
 - C#: `repo:csharp:Project::Namespace.Type.Member(ParamTypes)`. The project is part of the id
   because two projects may declare the same type name.
 - Python: `repo:python:package.module.Class.method`
+- TypeScript, JavaScript and the generic languages: `repo:language:dir.file.Name`, the file named without its
+  extension. Two files of one language in one directory that differ only in their extension (`a.js` beside
+  `a.ts`, `m.c` beside `m.h`) would name their contents alike: the first by path keeps that id, and the others
+  keep their extension in it (`repo:typescript:dir.a.ts.Name`). Adding or removing such a neighbour can change
+  the ids of the files after it.
 - Files and modules: `repo:file:path` and `repo:module:path`
+
+A name defined twice in one file (`def load()` in both branches of an `if` or a `try`, a property's getter and
+setter) is one node: which definition runs is not known from the text. Its span runs from the first definition
+to the last, its `definitions` attribute lists each one's lines, its text hash reads every body, and its calls
+come from all of them.
 
 ## Tests
 

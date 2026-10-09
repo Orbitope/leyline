@@ -264,3 +264,88 @@ def test_tour_goes_when_a_repository_has_no_modules_left(tmp_path):
     full = tmp_path / "full.db"
     index(root, full, "e", full=True)
     assert differences(db, full) == {}
+
+
+def test_file_differing_only_in_extension_added_and_removed(tmp_path):
+    """Whether a file's ids keep its extension depends on the files beside it (a.js beside a.ts): adding or removing
+    one changes the other's ids though its content is the same, so its kept parse output must not be used."""
+    root = tmp_path / "x"
+    (root / "src").mkdir(parents=True)
+    ts, js = root / "src/a.ts", root / "src/a.js"
+    ts.write_text("export function one(): number {\n  return 1;\n}\n")
+    (root / "src/main.ts").write_text('import { one } from "./a";\n\nexport function main(): number {\n  return one();\n}\n')
+    check(tmp_path, root, "x", [
+        ("js added beside", lambda: js.write_text("export function two() {\n  return 2;\n}\n")),
+        ("js removed", lambda: js.unlink()),
+    ])
+
+
+def test_start_that_is_both_an_entry_and_a_test(tmp_path):
+    """Both flows of a start that is an entry and a test are walked again, kept and dropped as a full run would."""
+    root = tmp_path / "b"
+    root.mkdir()
+    p = root / "P.cs"
+    p.write_text("public static class P\n{\n    [Fact]\n    public static void Main() { Run(); }\n"
+                 "    static void Run() { }\n    static void Step() { }\n}\n")
+    check(tmp_path, root, "b", [
+        ("callee body", lambda: edit(p, "static void Run() { }", "static void Run() { Step(); }")),
+        ("no longer a test", lambda: edit(p, "    [Fact]\n", "")),
+        ("a test again", lambda: edit(p, "    public static void Main()", "    [Fact]\n    public static void Main()")),
+    ])
+
+
+def _holding_run(tmp_path):
+    """A repository mapped once, and a second run of it that has started and holds the map (as one does from its
+    first parse until it finishes)."""
+    from leyline import incremental, store
+    from leyline.indexer import Indexer
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.py").write_text("def a():\n    return 1\n")
+    db = tmp_path / "w.db"
+    index(root, db, "w")
+    (root / "a.py").write_text("def a():\n    return 2\n")
+    con = store.connect(db)
+    holder = incremental.Run(con, db, Indexer(root, "w"))
+    return root, db, con, holder
+
+
+def test_a_run_waits_for_a_long_run_to_finish(tmp_path, monkeypatch):
+    """A run that finds another one in progress waits for it to finish, however long it takes (here longer than
+    the time SQLite is told to wait for a lock), then maps as usual."""
+    import threading
+    from leyline import store
+    monkeypatch.setattr(store, "BUSY_SECONDS", 0.5)
+    root, db, con, holder = _holding_run(tmp_path)
+
+    got = {}
+
+    def second():
+        try:
+            got["mode"] = index(root, db, "w")["incremental"]["mode"]
+        except Exception as exc:
+            got["error"] = exc
+    t = threading.Thread(target=second)
+    t.start()
+    t.join(2.0)   # still waiting, past the lock's own time limit
+    assert t.is_alive() and not got
+    holder.abandon()
+    con.close()
+    t.join(60)
+    assert got.get("mode") in ("full", "incremental"), got
+
+
+def test_a_run_that_waits_too_long_says_who_holds_the_map(tmp_path, monkeypatch):
+    """LEYLINE_WAIT limits the wait; past it the run stops with a message naming the other run and how long it has
+    been going, not with "database is locked"."""
+    import os
+    root, db, con, holder = _holding_run(tmp_path)
+    monkeypatch.setenv("LEYLINE_WAIT", "1")
+    try:
+        with pytest.raises(RuntimeError) as err:
+            index(root, db, "w")
+        assert "another leyline index" in str(err.value) and f"pid {os.getpid()}" in str(err.value)
+    finally:
+        holder.abandon()
+        con.close()
+    assert index(root, db, "w")["incremental"]["mode"] in ("full", "incremental")

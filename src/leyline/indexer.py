@@ -397,6 +397,19 @@ def _module_for(path: str, module_dirs: set[str]) -> str:
     return d  # no marker: the file's own directory ("" is the repo root)
 
 
+def _ext_clashes(work: list) -> set[str]:
+    """The files whose ids keep their extension: files of one language in one directory that differ only in their
+    extension (a.js beside a.ts, m.c beside m.h) would name their contents alike. The first by path keeps the usual
+    ids, so a directory with no such pair keeps them all; the others keep the extension in theirs."""
+    import inspect
+    groups: dict[tuple, list] = defaultdict(list)
+    for w in work:
+        adapter = BY_EXTENSION[w[1]]
+        if "keep_ext" in inspect.signature(adapter.parse).parameters:
+            groups[(adapter.LANGUAGE, adapter.module_path(w[0]))].append(w[0])
+    return {f for fs in groups.values() if len(fs) > 1 for f in sorted(fs)[1:]}
+
+
 def _arity(type_id: str) -> int:
     tail = type_id.rsplit("`", 1)
     return int(tail[1]) if len(tail) == 2 and tail[1].isdigit() else 0
@@ -477,7 +490,7 @@ def _deep(fn, *args):
 
 
 def _parse_file(job):
-    root, repo, (f, ext, mod_dir, mod_id) = job
+    root, repo, (f, ext, mod_dir, mod_id) = job[:3]
     try:
         data = read_source(Path(root) / f)
     except OSError as exc:   # gone or made unreadable since it was listed
@@ -485,11 +498,15 @@ def _parse_file(job):
     loc, sha = data.count(b"\n") + 1, hashlib.sha1(data).hexdigest()
     adapter = BY_EXTENSION[ext]
     args = (repo, f, f"{repo}:file:{f}", data, mod_dir or ".")
+    parse = adapter.parse
+    if len(job) > 3 and job[3]:   # see _ext_clashes
+        import functools
+        parse = functools.partial(adapter.parse, keep_ext=True)
     try:
         try:
-            res = adapter.parse(*args)
+            res = parse(*args)
         except RecursionError:
-            res = _deep(adapter.parse, *args)
+            res = _deep(parse, *args)
     except RecursionError:
         return f, ext, mod_dir, mod_id, loc, sha, None, "nested too deeply to read", None
     except Exception as exc:
@@ -558,14 +575,14 @@ def _timeout() -> float:
         return 600.0
 
 
-def _parse_all(root: Path, repo: str, work: list, died: Optional[list] = None):
+def _parse_all(root: Path, repo: str, work: list, died: Optional[list] = None, keep_ext: frozenset = frozenset()):
     """Parse every file, across processes when there are enough files to pay for starting them.
     Results come back in the order given, so the index is the same however many processes ran.
     A worker that dies (a crash inside a parser, or the system killing it for memory) or gets stuck loses only the
     file it was on: the files that were in flight are parsed again one at a time, each in a fresh process, and the
     one that kills or stalls its process is reported as failed (and named in `died`)."""
     jobs = _jobs()
-    items = [(str(root), repo, w) for w in work]
+    items = [(str(root), repo, w, w[0] in keep_ext) for w in work]
     if jobs == 1 or len(items) < PARALLEL_MIN_FILES:
         yield from map(_parse_one, items)
         return
@@ -730,6 +747,23 @@ class FlowSteps:
                        None if line < 0 else line, None if parent < 0 else parent)
 
 
+def flow_ids(starts: list) -> list:
+    """(start, kind, detail) -> (start, kind, detail, flow id), each start walked once. A flow is `flow:<start>`;
+    a start that is also another kind of start (an entry point that is a test too) gets `flow:<start>#<kind>` for
+    the later ones, so neither flow replaces the other."""
+    out, taken = [], set()
+    for s in dict.fromkeys(starts):
+        start, kind, _ = s
+        fid, n = f"flow:{start}", 2
+        if fid in taken:
+            fid = f"flow:{start}#{kind}"
+            while fid in taken:
+                fid, n = f"flow:{start}#{kind}{n}", n + 1
+        taken.add(fid)
+        out.append((*s, fid))
+    return out
+
+
 def _repo_of(node_id: str) -> str:
     """Every node id starts with its repo id: flask:python:..., flask:file:..., flask:module:..."""
     return node_id.split(":", 1)[0]
@@ -800,6 +834,7 @@ class Indexer:
         self._file_index: dict[str, int] = {}
         self.file_lang: dict[str, str] = {}
         self.file_of_path: dict[str, str] = {}
+        self.keep_ext: set[str] = set()          # file ids whose node ids keep the file's extension (_ext_clashes)
         self._decl_cache: dict[str, dict] = {}
         self._read_decls: dict[str, dict] = {}   # file id -> node id -> (span, declarations read in the parse)
         self._text_cache: dict[str, list] = {}
@@ -932,8 +967,10 @@ class Indexer:
         # With a parse cache (leyline.incremental), a file whose content and module are as they were last time is
         # not parsed again. Either way the files are taken in the listed order, so the index is the same.
         cache = self.parse_cache
-        cached = cache.lookup(repo, root, work) if cache is not None else {}
-        fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached])
+        keep_ext = _ext_clashes(work)
+        self.keep_ext.update(f"{repo}:file:{f}" for f in keep_ext)
+        cached = cache.lookup(repo, root, work, keep_ext) if cache is not None else {}
+        fresh = _parse_all(root, repo, [w for w in work if w[0] not in cached], keep_ext=keep_ext)
         failed_here = self.failed.setdefault(repo, [])
         packs = packing.packs(len(work))
         for w in work:
@@ -943,7 +980,7 @@ class Indexer:
                 got = next(fresh)
             f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
             if cache is not None:
-                cache.keep(f"{repo}:file:{f}", got, fresh_one)
+                cache.keep(f"{repo}:file:{f}", got, fresh_one, f in keep_ext)
             del got
             res, heavy, decls = packing.unpack(blob) if blob is not None else (None, None, None)
             blob = None
@@ -1037,6 +1074,16 @@ class Indexer:
             first = self.nodes[n.id]
             if n.kind == "type" and n.path != first.path:
                 first.attrs.setdefault("also_in", []).append(n.path)
+            elif n.path == first.path and n.span_start and first.span_start and n.kind not in ("file", "module", "repo"):
+                # One name defined twice in a file (if/else or try/except, a property's getter and setter): which one
+                # runs is not known from the text, so it is one node over both, listing each, its text hash reading
+                # every body.
+                spans = first.attrs.setdefault("definitions", [[first.span_start, first.span_end or first.span_start]])
+                spans.append([n.span_start, n.span_end or n.span_start])
+                first.span_start = min(first.span_start, n.span_start)
+                first.span_end = max(first.span_end or first.span_start, n.span_end or n.span_start)
+                if first.content_hash and n.content_hash:
+                    first.content_hash = hashlib.sha1(f"{first.content_hash}|{n.content_hash}".encode()).hexdigest()[:16]
             return
         self.nodes[n.id] = n
 
@@ -1489,7 +1536,10 @@ class Indexer:
         return cache[fid]
 
     def _modpath(self, fid: str) -> str:
-        return BY_LANGUAGE[self.file_lang[fid]].module_path(self.nodes[fid].path)
+        adapter = BY_LANGUAGE[self.file_lang[fid]]
+        if fid in self.keep_ext:
+            return adapter.module_path(self.nodes[fid].path, True)
+        return adapter.module_path(self.nodes[fid].path)
 
     def _py_export(self, target_fid: str, symbol: str, depth: int = 0) -> Optional[str]:
         """The node a module exposes under a name, following re-exports (`from .app import Flask`,
@@ -2685,9 +2735,10 @@ class Indexer:
                     for base in self._chain(tid)[1:]:
                         if self.nodes[base].kind != "type" or base == self.nodes[tid].parent_id:
                             continue
-                        # Python has no overloads: a method replaces the base's of that name, whatever it takes
+                        # Python and TypeScript have no overloads at run time: a method replaces the base's of that name,
+                        # whatever it takes
                         cands = [c for c in self.members.get(base, {}).get(name, [])
-                                 if impl.language == "python" or c.attrs.get("argc_max") == impl.attrs.get("argc_max")]
+                                 if impl.language in ("python", "typescript") or c.attrs.get("argc_max") == impl.attrs.get("argc_max")]
                         if cands:
                             self.edges.append(Edge("overrides", impl.id, cands[0].id, "heuristic"))
                             self.implementers[cands[0].id].append(impl.id)
@@ -3107,11 +3158,11 @@ class Indexer:
         for n in self.nodes.values():
             if n.kind == "test" or n.attrs.get("is_test"):
                 starts.append((n.id, "test", n.attrs.get("framework")))
+        starts = flow_ids(starts)
         keep = self._flow_select(out, starts)
-        for start, kind, detail in starts:
+        for start, kind, detail, fid in starts:
             if start not in self.nodes or (keep is not None and start not in keep):
                 continue
-            fid = f"flow:{start}"
             entry_file = self.file_of.get(start)
             seen, steps, truncated = {start}, [(0, 0, start, "start", None, None)], False
             stack = [(start, 0, 0)]

@@ -187,8 +187,8 @@ class Generic:
                 self._query = None
 
     @staticmethod
-    def module_path(rel_path: str) -> str:
-        return re.sub(r"\.[A-Za-z0-9]+$", "", rel_path).replace("/", ".")
+    def module_path(rel_path: str, keep_ext: bool = False) -> str:
+        return (rel_path if keep_ext else re.sub(r"\.[A-Za-z0-9]+$", "", rel_path)).replace("/", ".")   # see typescript.module_path
 
     # -- reading one file ---------------------------------------------------------------------------
     def _collect(self, root, use_tags: bool):
@@ -302,12 +302,12 @@ class Generic:
             stack.extend(n.named_children)
         return defs, calls, refs, containers
 
-    def parse(self, repo: str, rel_path: str, file_id: str, src: bytes, module: str = "") -> FileResult:
+    def parse(self, repo: str, rel_path: str, file_id: str, src: bytes, module: str = "", keep_ext: bool = False) -> FileResult:
         self._load()
         res = FileResult()
         tree = self._parser.parse(src)
         root = tree.root_node
-        mod = self.module_path(rel_path)
+        mod = self.module_path(rel_path, keep_ext)
         lang = self.LANGUAGE
         prefix = f"{repo}:{lang}:{mod}"
         top_id = f"{prefix}.<module>"

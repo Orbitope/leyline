@@ -276,6 +276,76 @@ def test_a_python_override_with_other_parameters_still_overrides(tmp_path):
     assert got == {"o:python:repo.Same.fetch", "o:python:repo.More.fetch"}
 
 
+def test_a_typescript_override_with_other_parameters_still_overrides(tmp_path):
+    """TypeScript has no overloads at run time either: a subclass's method of that name replaces the base's."""
+    root = tmp_path / "t"
+    root.mkdir()
+    (root / "repo.ts").write_text(
+        "export class Base {\n  fetch(q: string): string {\n    return q;\n  }\n}\n\n"
+        "export class Same extends Base {\n  fetch(q: string): string {\n    return q;\n  }\n}\n\n"
+        "export class More extends Base {\n  fetch(q: string, limit: number): string {\n    return q.slice(0, limit);\n  }\n}\n")
+    db = tmp_path / "t.db"
+    index(root, db, "t")
+    c = store.connect(db)
+    got = ids(c, "SELECT src_id FROM edges WHERE kind = 'overrides' AND dst_id = 't:typescript:repo.Base.fetch'")
+    c.close()
+    assert got == {"t:typescript:repo.Same.fetch", "t:typescript:repo.More.fetch"}
+
+
+def test_a_function_defined_twice_in_one_file_is_one_node_over_both(tmp_path):
+    """`if ...: def load()` / `else: def load()` (or try/except) defines one name twice; which runs is not known from
+    the text. It is one node whose span covers both definitions and lists each, whose text hash reads both bodies,
+    and whose calls come from both."""
+    root = tmp_path / "d"
+    root.mkdir()
+    src = ("import sys\n\n"
+           "if sys.platform == 'win32':\n"
+           "    def load(s):\n"
+           "        return first(s)\n"
+           "else:\n"
+           "    def load(s):\n"
+           "        return second(s)\n\n\n"
+           "def first(s):\n    return 1\n\n\n"
+           "def second(s):\n    return 2\n")
+    (root / "m.py").write_text(src)
+    db = tmp_path / "d.db"
+    index(root, db, "d")
+    c = store.connect(db)
+    rows = c.execute("SELECT span_start, span_end, content_hash, attrs FROM nodes WHERE id = 'd:python:m.load'").fetchall()
+    assert len(rows) == 1
+    start, end, before, attrs = rows[0]
+    assert (start, end) == (4, 8) and json.loads(attrs)["definitions"] == [[4, 5], [7, 8]]
+    assert calls(c, "d:python:m.load") == {"d:python:m.first", "d:python:m.second"}
+    c.close()
+    (root / "m.py").write_text(src.replace("return second(s)", "return second(s) + 1"))
+    index(root, db, "d")
+    c = store.connect(db)
+    assert c.execute("SELECT content_hash FROM nodes WHERE id = 'd:python:m.load'").fetchone()[0] != before
+    c.close()
+
+
+def test_a_function_that_is_both_an_entry_and_a_test_has_both_flows(tmp_path):
+    """A start can be both an entry point and a test ([Fact] static void Main()). Each is a flow of its own: the
+    entry keeps the usual id, the test's says its kind, and the counts match the rows."""
+    root = tmp_path / "b"
+    root.mkdir()
+    (root / "P.cs").write_text(
+        "public static class P\n{\n"
+        "    [Fact]\n    public static void Main() { Run(); }\n"
+        "    static void Run() { Step(); }\n"
+        "    static void Step() { }\n}\n")
+    db = tmp_path / "b.db"
+    index(root, db, "b")
+    c = store.connect(db)
+    main = next(r[0] for r in c.execute("SELECT id FROM nodes WHERE name = 'Main' AND kind = 'callable'"))
+    flows = {r[0]: json.loads(r[1])["kind"] for r in c.execute("SELECT id, attrs FROM flows")}
+    assert flows.get(f"flow:{main}") == "entry" and flows.get(f"flow:{main}#test") == "test"
+    counted = json.loads(c.execute("SELECT stats FROM extractor_coverage WHERE extractor = 'flows:static'").fetchone()[0])
+    assert counted["flows"] == len(flows)
+    assert counted["steps"] == c.execute("SELECT COUNT(*) FROM flow_steps").fetchone()[0]
+    c.close()
+
+
 def test_change_assessment_and_saved_views(tmp_path):
     import shutil
 

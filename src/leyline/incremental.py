@@ -39,9 +39,11 @@ import json
 import marshal
 import os
 import pickle
+import platform
 import re
 import sqlite3
 import sys
+import time
 import uuid
 import zlib
 from array import array
@@ -167,6 +169,12 @@ def _ancestry(nodes: dict, groups: bool = False) -> dict:
     return out
 
 
+def _module_key(mod_dir: str, keep_ext: bool) -> str:
+    """What a file's parse output depends on besides its content: its module, and whether its ids keep the file's
+    extension (indexer._ext_clashes), which a file added or removed beside it can change."""
+    return mod_dir + ("\0keep_ext" if keep_ext else "")
+
+
 class _Hits(dict):
     """path -> a file whose kept parse output is used, read from the cache when the indexer takes it (pop): held
     all at once, every file's output was in memory for the whole run."""
@@ -192,9 +200,7 @@ class Run:
         self.ix, self.con = ix, con
         from .indexer import max_file_bytes
         self.cache = _Cache(cache_path(db_path))
-        # The cache's write lock is taken before anything is read from it, and held until finish(): a transaction that
-        # read first could not wait for another run writing the cache, and would fail at once.
-        self.cache.con.execute("BEGIN IMMEDIATE")
+        self._take(con, db_path)
         self.key = json.dumps([code_version(), sorted((r, str(p)) for r, p in ix.repos.items()),
                                ix.exact_mode, sorted(ix.scip_paths), max_file_bytes()])
         gen = con.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()
@@ -233,8 +239,52 @@ class Run:
         else:
             ix._write = self._write_patch
 
+    def _take(self, con, db_path) -> None:
+        """Take the map for this run. A run holds the cache's write lock from before it reads the cache until finish()
+        (a transaction that read first could not wait for another run, and would fail at once), and notes in the
+        store which process it is. A run that finds another one in progress (a map while a plan starts) waits for it
+        to finish, however long that is, up to LEYLINE_WAIT seconds (an hour by default): it says so on stderr, and
+        past the limit it stops, naming the other run. A run that dies lets go of the lock with its process."""
+        c = self.cache.con
+        c.execute("PRAGMA busy_timeout = 1000")   # tried once a second, so the wait can be reported and limited
+        try:
+            limit = max(0.0, float(os.environ.get("LEYLINE_WAIT", "") or 3600))
+        except ValueError:
+            limit = 3600.0
+        began, said = time.time(), False
+        while True:
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) and "busy" not in str(exc):
+                    raise
+            row = con.execute("SELECT value FROM meta WHERE key = 'indexing'").fetchone()
+            other = json.loads(row[0]) if row else {}
+            who = (f"pid {other.get('pid')} on {other.get('host')}, for {time.time() - other.get('started', began):.0f} s"
+                   if other else "a run that did not say which process it is")
+            if time.time() - began >= limit:
+                raise RuntimeError(f"another leyline index of {db_path} is running ({who}) and holds the map until it "
+                                   f"finishes; waited {limit:g} s (LEYLINE_WAIT). Map again when it is done.")
+            if not said:
+                print(f"leyline: another leyline index of {db_path} is running ({who}); waiting for it to finish",
+                      file=sys.stderr)
+                said = True
+        c.execute(f"PRAGMA busy_timeout = {int(store.BUSY_SECONDS * 1000)}")
+        with con:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('indexing', ?)",
+                        (json.dumps({"pid": os.getpid(), "host": platform.node(), "started": time.time()}),))
+
+    def _let_go(self) -> None:
+        """The store no longer says a run is in progress (see _take)."""
+        try:
+            with self.con:
+                self.con.execute("DELETE FROM meta WHERE key = 'indexing'")
+        except sqlite3.Error:
+            pass
+
     # -- parse cache ---------------------------------------------------------------------------------------
-    def lookup(self, repo: str, root: Path, work: list) -> dict:
+    def lookup(self, repo: str, root: Path, work: list, keep_ext: frozenset = frozenset()) -> dict:
         """path -> the parse output kept for it, for the files whose content and module are unchanged."""
         if not self.rows:
             return {}
@@ -249,18 +299,18 @@ class Run:
             except OSError:   # gone since it was listed: parsed again, which reports it
                 continue
             sha = hashlib.sha1(data).hexdigest()
-            if row[1] == sha and row[2] == mod_dir:
+            if row[1] == sha and row[2] == _module_key(mod_dir, f in keep_ext):
                 out[f] = (f, ext, mod_dir, mod_id, row[0], sha)
         return _Hits(self.cache.con, out)
 
-    def keep(self, file_id: str, got: tuple, fresh: bool) -> None:
+    def keep(self, file_id: str, got: tuple, fresh: bool, keep_ext: bool = False) -> None:
         f, ext, mod_dir, mod_id, loc, sha, blob, failed, toks = got
         self.seen.add(file_id)
         self.toks[file_id] = toks
         if fresh:
             self.reparsed.add(file_id)
             self.cache.con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?)",
-                                   (file_id, sha, mod_dir, loc, blob, failed, toks))
+                                   (file_id, sha, _module_key(mod_dir, keep_ext), loc, blob, failed, toks))
 
     # -- what changed --------------------------------------------------------------------------------------
     def _markers(self) -> list:
@@ -516,12 +566,13 @@ class Run:
         nodes = ix.nodes
         self.flow_hashes = {n: _crc([(line, dst, via, sub, dst in nodes) for line, dst, via, sub in lst])
                             for n, lst in out.items()}
-        self.starts = {}
-        for start, kind, detail in starts:
+        self.starts, self.flow_start = {}, {}   # start -> [(flow id, what its row says)]; flow id -> start
+        for start, kind, detail, fid in starts:
             if start in nodes:
                 n = nodes[start]
                 name = n.name if n.kind == "test" else start.split(":", 2)[-1].split("::")[-1]
-                self.starts.setdefault(start, []).append((name, kind, detail))
+                self.starts.setdefault(start, []).append((fid, (name, kind, detail)))
+                self.flow_start[fid] = start
         if self.flows_all:
             return None
         old_hash = self.prior["flow_hashes"]
@@ -532,20 +583,20 @@ class Run:
             if r[2] and r[2].split(":", 1)[0] in ix.repos:
                 a = json.loads(r[3] or "{}")
                 old_flows[r[0]] = (r[1], a.get("kind"), a.get("detail"))
-        dirty = {s for s, metas in self.starts.items() if old_flows.get("flow:" + s) != metas[-1]}
+        dirty = {s for s, metas in self.starts.items() if any(old_flows.get(fid) != meta for fid, meta in metas)}
         ids = list(changed)
         for k in range(0, len(ids), 900):
             chunk = ids[k:k + 900]
             for r in self.con.execute(
                     "SELECT DISTINCT fk.id FROM steps s JOIN keys fk ON fk.k = s.flow WHERE s.callable IN"
                     f" (SELECT k FROM keys WHERE id IN ({','.join('?' * len(chunk))}))", chunk):
-                if r[0][5:] in self.starts:
-                    dirty.add(r[0][5:])
+                if r[0] in self.flow_start:
+                    dirty.add(self.flow_start[r[0]])
         # A C# program's dispatch steps depend on what its module can see, which a C# file's usings can change.
         touched = self.reparsed | self.removed | getattr(self, "import_moved", set())
         if any(f.split(":file:", 1)[-1].endswith(".cs") for f in touched):
             dirty |= {s for s in self.starts if ix.file_lang.get(ix.file_of.get(s)) == "csharp"}
-        self.flows_drop = {f for f in old_flows if f[5:] not in self.starts} | {"flow:" + s for s in dirty}
+        self.flows_drop = {f for f in old_flows if f not in self.flow_start} | {fid for s in dirty for fid, _ in self.starts[s]}
         self.report["flows_walked"] = len(dirty)
         return dirty
 
@@ -602,10 +653,11 @@ class Run:
     def _sizes_of(flows, steps, sizes: dict) -> dict:
         """start -> the step count of each flow walked from it, as Indexer.run counts them for the coverage row."""
         starts = [f for f, _ in steps.flows]
+        entry = {f[0]: f[3] for f in flows}   # flow id -> its start (flow:<start>, or flow:<start>#<kind>)
         ends = [s for _, s in steps.flows[1:]] + [len(steps)]
         out: dict = {}
         for fid, (_, s), e in zip(starts, steps.flows, ends):
-            out.setdefault(fid[5:], []).append(e - s)
+            out.setdefault(entry.get(fid, fid[5:]), []).append(e - s)
         sizes = {k: v for k, v in sizes.items() if k not in out}
         sizes.update(out)
         return sizes
@@ -740,6 +792,7 @@ class Run:
         """Save what the next run needs, under a token the store also keeps: a store written by anything else (an
         older leyline, a run that failed) no longer matches the cache, and the next run is a full one."""
         if not hasattr(self, "shapes"):   # nothing was resolved (an empty repository): nothing to keep
+            self._let_go()
             self.cache.con.rollback()
             return
         token = uuid.uuid4().hex
@@ -758,6 +811,7 @@ class Run:
         c.execute("INSERT OR REPLACE INTO meta VALUES ('state', ?)", (pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL),))
         with con:
             con.execute("INSERT OR REPLACE INTO meta VALUES ('generation', ?)", (token,))
+            con.execute("DELETE FROM meta WHERE key = 'indexing'")
         c.execute("INSERT OR REPLACE INTO meta VALUES ('generation', ?)", (token,))
         c.commit()
         c.close()
@@ -774,6 +828,7 @@ class Run:
         self.rows = self._old_rows = self.anc = None
 
     def abandon(self) -> None:
+        self._let_go()
         try:
             self.cache.con.rollback()
             self.cache.con.close()

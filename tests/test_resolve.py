@@ -304,3 +304,28 @@ def test_a_typescript_import_inside_a_dot_directory(tmp_path):
     assert {r[0] for r in con.execute("SELECT dst_id FROM calls WHERE src_id LIKE 'd:typescript:%main.main'")} \
         == {"d:typescript:.storybook.helper.helper"}
     con.close()
+
+
+def test_two_files_that_differ_only_in_extension_both_stay_on_the_map(tmp_path):
+    """a.js beside a.ts (or a.c beside a.h) would name their contents alike. The first by path keeps the usual ids;
+    the other keeps its extension in them, so neither file's functions are lost and each call stays in its file."""
+    root = write(tmp_path / "ext", {
+        "src/a.js": "export function one() {\n  return two();\n}\n\nexport function two() {\n  return 2;\n}\n",
+        "src/a.ts": "export function one(): number {\n  return 1;\n}\n\nexport function three(): number {\n  return one();\n}\n",
+        "c/m.c": "int f(void) { return g(); }\nint g(void) { return 1; }\n",
+        "c/m.h": "static int f(void) { return 2; }\n",
+    })
+    db = tmp_path / "e.db"
+    index(root, db, "e")
+    con = store.connect(db)
+    rows = {r[0]: r[1] for r in con.execute("SELECT id, path FROM nodes WHERE kind = 'callable' AND name IN ('one', 'two', 'three')")}
+    assert rows == {"e:typescript:src.a.one": "src/a.js", "e:typescript:src.a.two": "src/a.js",
+                    "e:typescript:src.a.ts.one": "src/a.ts", "e:typescript:src.a.ts.three": "src/a.ts"}
+    assert {r[0] for r in con.execute("SELECT path FROM nodes WHERE kind = 'callable' AND name = 'f'")} == {"c/m.c", "c/m.h"}
+    assert con.execute("SELECT COUNT(*) FROM nodes WHERE id LIKE 'e:c:c.m.f%'").fetchone()[0] \
+        == con.execute("SELECT COUNT(*) FROM nodes WHERE id LIKE 'e:c:c.m.h.f%'").fetchone()[0]
+    assert con.execute("SELECT COUNT(*) FROM nodes GROUP BY id HAVING COUNT(*) > 1").fetchall() == []
+    calls = {(r[0], r[1]) for r in con.execute("SELECT src_id, dst_id FROM calls")}
+    assert ("e:typescript:src.a.ts.three", "e:typescript:src.a.ts.one") in calls
+    assert ("e:typescript:src.a.one", "e:typescript:src.a.two") in calls
+    con.close()
