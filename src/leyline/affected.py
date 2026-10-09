@@ -267,6 +267,13 @@ def _test_row(con, i: str) -> Optional[dict]:
     return out
 
 
+def _as_ran(test: str, row: dict) -> bool:
+    """Whether a pytest node id as the run named it can stand for a test on the map: only when it names the test's
+    file by its path in the repository. pytest run from a folder below (`backend/`) names it from there, and the
+    command runs from the repository's root."""
+    return "::" in test and bool(row.get("pytest")) and test.split("::", 1)[0] == row["path"]
+
+
 def _file_repo(con, path: str) -> Optional[str]:
     r = con.execute("SELECT repo_id FROM nodes WHERE kind = 'file' AND (path = ? OR ? LIKE '%/' || path) ORDER BY length(path) DESC",
                     (path, path)).fetchone()
@@ -297,7 +304,7 @@ def select(con, change_id: str) -> dict:
                 path = r["test"].split("::", 1)[0]
                 row = {"name": r["test"].split("::")[-1], "id": None, "repo": _file_repo(con, path), "path": path,
                        **({"pytest": r["test"]} if "::" in r["test"] and PY_TEST.search(path) else {"file_only": True})}
-            elif "::" in r["test"] and row.get("pytest"):
+            elif _as_ran(r["test"], row):
                 row["pytest"] = r["test"]          # exactly as pytest named it when it ran
             add(row["id"] or row.get("pytest") or row["path"], row,
                 "ran the changed code when coverage was measured" + (" (measured per test file)" if row.get("file_only") else ""))
@@ -355,7 +362,7 @@ def measured_tests(con, ids) -> list[dict]:
         row = (_test_row(con, r["test_id"]) if r["test_id"] else None) or {
             "name": r["test"].split("::")[-1], "id": None, "repo": _file_repo(con, r["test"].split("::", 1)[0]),
             "path": r["test"].split("::", 1)[0]}
-        if "::" in r["test"] and PY_TEST.search(row["path"]):
+        if (_as_ran(r["test"], row) if row.get("id") else "::" in r["test"] and PY_TEST.search(row["path"])):
             row["pytest"] = r["test"]
         out.append({**row, "functions": r["hits"]})
     return out

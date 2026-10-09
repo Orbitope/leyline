@@ -114,9 +114,24 @@ def _safe_members(tar: tarfile.TarFile, into: Path):
         yield m
 
 
+def _archive(root: Path, sha: str) -> bytes:
+    """`git archive` of a commit with every file in it as the checkout has it. The repository's `export-ignore` and
+    `export-subst` attributes shape release tarballs (tests left out, a version string filled in), so the archive is
+    made from an empty repository that borrows this one's objects and unsets both, at the highest precedence."""
+    objects = (root / _git(root, "rev-parse", "--git-path", "objects")).resolve()
+    with tempfile.TemporaryDirectory(prefix="leyline-archive-") as tmp:
+        bare = Path(tmp)
+        _git(bare, "init", "-q", "--bare")
+        (bare / "objects" / "info").mkdir(parents=True, exist_ok=True)
+        (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n")
+        (bare / "info").mkdir(exist_ok=True)
+        (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
+        return _git(bare, "archive", "--format=tar", sha, binary=True)
+
+
 def _export(root: Path, sha: str, into: Path) -> None:
     """The files of a commit, as git keeps them, written under `into`. Nothing in the repository changes."""
-    data = _git(root, "archive", "--format=tar", sha, binary=True)
+    data = _archive(root, sha)
     tmp = into.parent / (into.name + ".tar")
     tmp.write_bytes(data)
     try:
@@ -561,7 +576,9 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                              f" ({gh['headRefOid'][:7]}): run `gh pr checkout {github}` first"}
     if not base:
         base = _default_base(root)
-    for name in (base, "origin/" + base):   # a branch this clone has only as origin's
+    # A branch this clone has only as origin's; for a GitHub pull request origin's first, as GitHub compares with it
+    # (a local branch of that name may have been left behind).
+    for name in (("origin/" + base, base) if github else (base, "origin/" + base)):
         try:
             _git(root, "rev-parse", "--verify", "-q", name + "^{commit}")
             base = name
@@ -572,7 +589,7 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         return {"error": f"no commit or branch {base!r} in {root}"}
     base_sha = _git(root, "merge-base", base, "HEAD")
     head_sha = _git(root, "rev-parse", "HEAD")
-    dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
+    dirty = bool(_git(root, "status", "--porcelain"))   # a new file not yet added is mapped, so it counts too
     given = about.strip() or None   # said by the person (or the pull request); a description made here is not kept
     if not given:
         about = _described(root, base_sha, db, given_id, github)
@@ -704,8 +721,9 @@ def _other_files(root: Path, base_sha: str, mapped: list[str]) -> list[str]:
     """Files the change touches that the map does not read (docs, styles, data, config): the page names them so a
     reviewer knows the map's view of the change stops short of them."""
     try:
-        listed = _git(root, "diff", "--name-only", base_sha).splitlines()
-        listed += _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+        # NUL-separated and unquoted: git otherwise quotes a path with a byte outside ASCII ("caf\303\251.py")
+        listed = _git(root, "-c", "core.quotePath=false", "diff", "--name-only", "-z", base_sha).split("\0")
+        listed += _git(root, "-c", "core.quotePath=false", "ls-files", "-z", "--others", "--exclude-standard").split("\0")
     except GitError:
         return []
     seen = set(mapped)

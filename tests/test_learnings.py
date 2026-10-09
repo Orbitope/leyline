@@ -153,6 +153,21 @@ def test_retire_by_hand_and_the_source_finding_changing_its_mind(decided):
     assert l["status"] == "retired" and "marked accepted" in l["retired"]
 
 
+def test_a_learnings_file_that_cannot_be_read_is_left_as_it_is(decided):
+    """A file a merge left conflict markers in is the team's decisions, half merged: a new rejection must not
+    write a file holding only itself over it, and a matched finding must not either."""
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    broken = "<<<<<<< HEAD\n" + path.read_text(encoding="utf-8") + "=======\n>>>>>>> other\n"
+    path.write_text(broken, encoding="utf-8")
+    con = store.connect(root / ".leyline/leyline.db")
+    f = spec.add_finding(con, "pr-feature", "logic", "low", "first ignores every line after the first one",
+                         [_id(con, "first")])
+    r = spec.resolve_finding(con, f["id"], "rejected", "only the first line is wanted")
+    assert path.read_text(encoding="utf-8") == broken
+    assert "learning" not in r and "could not be read" in r["learning_note"]
+
+
 def test_a_spec_review_lists_the_learnings_that_apply(decided):
     """A learning made on a pull request applies to a spec change that names the same code."""
     root, lid = decided

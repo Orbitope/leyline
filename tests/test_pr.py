@@ -113,6 +113,16 @@ def test_uncommitted_edits_count_and_a_missing_base_is_said(branch, monkeypatch)
     assert code == 1
 
 
+def test_a_new_file_not_yet_added_counts_as_an_uncommitted_edit(branch, monkeypatch):
+    """The map reads the files git lists, untracked ones included, so a new file not yet added is in the review: the
+    page must say the checkout has uncommitted edits, not that it is the head commit."""
+    monkeypatch.chdir(branch)
+    (branch / "app/extra.py").write_text("def extra():\n    return 3\n")
+    r = pr.review(branch / ".leyline/leyline.db", branch, "main")
+    assert "extra" in [x["name"] for x in r["changed"]["added"]]
+    assert r["dirty"] is True and "with uncommitted edits" in Path(r["page"]).read_text()
+
+
 def test_a_hostile_archive_cannot_write_outside(tmp_path):
     """The base of someone else's branch is extracted from an archive: entries that climb out, and links that point
     out, are left out."""
@@ -131,6 +141,95 @@ def test_a_hostile_archive_cannot_write_outside(tmp_path):
     with tarfile.open(tar_path) as tar:
         kept = [m.name for m in pr._safe_members(tar, into)]
     assert kept == ["ok/a.py", "in"]
+
+
+def test_the_base_is_every_file_of_the_commit_whatever_its_export_attributes_say(tmp_path, monkeypatch):
+    """`export-ignore` and `export-subst` shape release tarballs, not the code: a base mapped from an archive that
+    applied them would lack the ignored tests (so the branch seems to add them all) and hold a substituted version
+    file (so the branch seems to edit it)."""
+    root = tmp_path / "repo"
+    files = {**FILES, "app/_version.py": "def version():\n    return \"$Format:%H$\"\n",
+             ".gitattributes": "tests export-ignore\napp/_version.py export-subst\n"}
+    for f, text in files.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    other = root / "app/other.py"
+    other.write_text(other.read_text().replace("return 1", "return 2"))
+    git(root, "commit", "-qam", "Return two")
+    monkeypatch.chdir(root)
+    r = pr.review(root / ".leyline/leyline.db", root, "main")
+    c = r["changed"]
+    assert [x["name"] for x in c["edited"]] == ["unrelated"]
+    assert c["added"] == [] and c["files"] == ["app/other.py"]
+    assert git(root, "status", "--porcelain") == ""
+
+
+def test_files_the_map_does_not_read_are_named_as_they_are(branch):
+    """git quotes a path with a byte outside ASCII (`"caf\\303\\251.py"`) unless told not to: a mapped file of that
+    name must not be listed as one the map does not read, and a doc must be listed by its own name."""
+    for f in ("app/café.py", "docs/résumé.md", "docs/my notes.md"):
+        (branch / f).parent.mkdir(parents=True, exist_ok=True)
+        (branch / f).write_text("x = 1\n")
+    git(branch, "add", "app/café.py", "docs/résumé.md")
+    git(branch, "commit", "-qm", "More files")
+    base = git(branch, "merge-base", "main", "HEAD").strip()
+    assert pr._other_files(branch, base, ["app/café.py", "app/store.py", "app/use.py", "web/server.ts"]) == ["docs/my notes.md", "docs/résumé.md"]
+
+
+def test_a_github_pull_request_is_read_against_origins_base_not_a_stale_local_one(tmp_path, monkeypatch):
+    """GitHub compares a pull request with its base branch as GitHub has it. A clone whose own `main` was left behind
+    (fetched, never pulled) must not count what `main` gained since as part of the pull request."""
+    up = tmp_path / "upstream"
+    for f, text in FILES.items():
+        (up / f).parent.mkdir(parents=True, exist_ok=True)
+        (up / f).write_text(text)
+    git(up, "init", "-q", "-b", "main")
+    git(up, "add", "-A")
+    git(up, "commit", "-qm", "base")
+    git(tmp_path, "clone", "-q", str(up), "clone")
+    root = tmp_path / "clone"
+    other = up / "app/other.py"
+    other.write_text(other.read_text().replace("return 1", "return 2"))
+    git(up, "commit", "-qam", "Upstream work, merged before the pull request")
+    git(root, "fetch", "-q")
+    git(root, "checkout", "-q", "-b", "feature", "origin/main")
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p)) + 0"))
+    git(root, "commit", "-qam", "Count one more")
+    head = git(root, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(pr, "github_pr", lambda root, n: {"baseRefName": "main", "title": "Count one more", "body": "",
+                                                          "headRefOid": head, "number": 7, "url": ""})
+    monkeypatch.chdir(root)
+    r = pr.review(root / ".leyline/leyline.db", root, github="7")
+    assert r["base_sha"] == git(root, "rev-parse", "origin/main").strip()
+    assert [x["name"] for x in r["changed"]["edited"]] == ["count"]
+
+
+def test_a_checkout_in_a_folder_named_like_a_url_is_reviewed(tmp_path, monkeypatch):
+    """The base map and each run's map are opened read-only by URI: `#` and `%` in a folder's name are characters."""
+    root = tmp_path / "C# work" / "repo"
+    root.parent.mkdir()
+    for f, text in FILES.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("return len(load(p))", "return len(load(p)) + 0"))
+    git(root, "commit", "-qam", "Count one more")
+    monkeypatch.chdir(root)
+    r = pr.review(root / ".leyline/leyline.db", root, "main")
+    assert [x["name"] for x in r["changed"]["edited"]] == ["count"]
+    use.write_text(use.read_text().replace("+ 0", "+ 1"))
+    git(root, "commit", "-qam", "Count two more")
+    r = pr.review(root / ".leyline/leyline.db", root, "main")
+    assert [x["name"] for x in r["since_last_review"]["code"]["edited"]] == ["count"]
 
 
 def test_a_moved_checkout_maps_without_parsing_again(tmp_path):

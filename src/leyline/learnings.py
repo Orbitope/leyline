@@ -69,12 +69,24 @@ def path_for(root: Path) -> Path:
     return root / FILE_IN_OPENSPEC if (root / "openspec").is_dir() else root / FILE_AT_ROOT
 
 
-def _read(path: Path) -> list[dict]:
+class Unreadable(OSError):
+    """A learnings file that is there but cannot be read (a merge left conflict markers in it): it is not written over."""
+
+
+def _read(path: Path, strict: bool = False) -> list[dict]:
+    """The learnings in a file. `strict`, for a read that will be written back: a file that is there and cannot be
+    read raises Unreadable, so the decisions in it are not replaced by a file holding only the new one."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as e:
+        if strict:
+            raise Unreadable(f"{path} could not be read ({e}); fix it by hand, then decide again")
         return []
     items = data.get("learnings") if isinstance(data, dict) else None
+    if strict and not isinstance(items, list):
+        raise Unreadable(f"{path} could not be read (no list of learnings in it); fix it by hand, then decide again")
     return [x for x in items if isinstance(x, dict) and x.get("id")] if isinstance(items, list) else []
 
 
@@ -418,7 +430,7 @@ def on_finding(con, fid: str, reviewer: str, claim: str, evidence: list[str]) ->
         if m is None:
             return {}
         path, l, level, sim = m
-        items = _read(path)
+        items = _read(path, strict=True)
         mine = next((x for x in items if x["id"] == l["id"]), None)
         if mine is None:
             return {}
@@ -486,7 +498,7 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
         if root is None:
             return {"learning_note": "No learning was kept: the repository the evidence is in was not found."}
         path = path_for(root)
-        items = _read(path)
+        items = _read(path, strict=True)
         lid = "l-" + hashlib.sha1(f"{finding_id}|{row['claim']}".encode()).hexdigest()[:6]
         items = [x for x in items if x["id"] != lid]
         scope = scope_of(con, evidence)
