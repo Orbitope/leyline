@@ -2685,8 +2685,9 @@ class Indexer:
                     for base in self._chain(tid)[1:]:
                         if self.nodes[base].kind != "type" or base == self.nodes[tid].parent_id:
                             continue
+                        # Python has no overloads: a method replaces the base's of that name, whatever it takes
                         cands = [c for c in self.members.get(base, {}).get(name, [])
-                                 if c.attrs.get("argc_max") == impl.attrs.get("argc_max")]
+                                 if impl.language == "python" or c.attrs.get("argc_max") == impl.attrs.get("argc_max")]
                         if cands:
                             self.edges.append(Edge("overrides", impl.id, cands[0].id, "heuristic"))
                             self.implementers[cands[0].id].append(impl.id)

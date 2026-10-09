@@ -259,6 +259,23 @@ def test_two_systems_whose_anchors_share_a_name_stay_two(tmp_path):
     assert anchors == {"c:python:pkg.x.hub.Hub", "c:python:pkg.y.hub.Hub"}
 
 
+def test_a_python_override_with_other_parameters_still_overrides(tmp_path):
+    """Python has no overloads: a method of a subclass replaces the base's method of that name whatever its
+    parameters are, so a call through the base can land in it."""
+    root = tmp_path / "o"
+    root.mkdir()
+    (root / "repo.py").write_text(
+        "class Base:\n    def fetch(self, q):\n        return q\n\n\n"
+        "class Same(Base):\n    def fetch(self, q):\n        return q\n\n\n"
+        "class More(Base):\n    def fetch(self, q, limit=10):\n        return q[:limit]\n")
+    db = tmp_path / "o.db"
+    index(root, db, "o")
+    c = store.connect(db)
+    got = ids(c, "SELECT src_id FROM edges WHERE kind = 'overrides' AND dst_id = 'o:python:repo.Base.fetch'")
+    c.close()
+    assert got == {"o:python:repo.Same.fetch", "o:python:repo.More.fetch"}
+
+
 def test_change_assessment_and_saved_views(tmp_path):
     import shutil
 
