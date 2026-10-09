@@ -537,6 +537,8 @@ class _Walker:
             receiver, rtype = "." + inner, self.self_types.get(class_id or "", {}).get(inner)
         elif obj.type == "call":
             receiver, chain = "?", self._site(obj, cid, class_id, scope)
+            rtype = _class_name(obj.child_by_field_name("function"))   # Box().size: a Box
+            chain = None if rtype else chain
         else:
             receiver = "?"
         cur, up = node, parent
@@ -626,8 +628,9 @@ class _Walker:
                 rtype = self.self_types.get(class_id or "", {}).get(attr)
                 site = CallSite(cid, name, "." + attr, rtype, argc, line, class_id, col)
             elif obj is not None and obj.type == "call":
-                site = CallSite(cid, name, "?", None, argc, line, class_id, col,
-                                chain=self._site(obj, cid, class_id, scope))  # a.make().run()
+                inner = self._site(obj, cid, class_id, scope)   # a.make().run(): typed by what make returns
+                made = _class_name(obj.child_by_field_name("function"))   # Box().size(): a Box, __init__ or not
+                site = CallSite(cid, name, "?", made, argc, line, class_id, col, chain=None if made else inner)
             elif obj is not None and obj.type == "attribute":
                 # app.config.load(), flask.g.get(): typed by the attribute read in front, once that is resolved.
                 inner = self._callee(obj, -1, line, col, cid, class_id, scope)

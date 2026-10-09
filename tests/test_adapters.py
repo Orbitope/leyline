@@ -190,6 +190,32 @@ def test_python_functions_defined_under_if_try_and_with_at_the_top_of_a_module_o
         assert got[("pkg.compat.main", callee)] == "heuristic"
 
 
+def test_python_a_call_on_an_object_made_in_place_is_on_its_class(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/shapes.py": (
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass\n"
+            "class Box:\n"
+            "    w: int = 1\n"
+            "\n"
+            "    def size(self):\n"
+            "        return self.w\n"
+            "\n"
+            "class Other:\n"
+            "    w = 2\n"
+            "\n"
+            "    def size(self):\n"
+            "        return 2\n"
+            "\n"
+            "def main():\n"
+            "    Box().size()\n"
+            "    return Box(3).w\n"),
+    })
+    assert calls(con)[("pkg.shapes.main", "pkg.shapes.Box.size")] == "heuristic"
+    assert ("pkg.shapes.main", "pkg.shapes.Box.w") in edges(con, "reads")
+
+
 def test_typescript_an_overloaded_method_spans_its_implementation(tmp_path):
     con = _map(tmp_path, {
         "src/shape.ts": (
