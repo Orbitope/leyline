@@ -172,7 +172,8 @@ def test_serve_started_in_a_folder_inside_the_repository_reads_the_repositorys_s
     from leyline import server
     root = _repo(tmp_path / "repo")
     monkeypatch.chdir(root)
-    monkeypatch.delenv("LEYLINE_DB", raising=False)
+    monkeypatch.setenv("LEYLINE_DB", "")   # recorded, so the value serve sets is taken away after the test
+    monkeypatch.delenv("LEYLINE_DB")
     assert run("map")[0] == 0
     seen = []
     monkeypatch.setattr(server, "main", lambda: seen.append(os.environ["LEYLINE_DB"]))
@@ -186,6 +187,22 @@ def test_a_file_with_no_partners_reads_as_a_sentence():
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,
                          "min_together": 3, "min_confidence": 0.5})
     assert out.endswith("(at least 3 commits together, and 50% of its).") and "its's" not in out, out
+
+
+def test_a_sparse_checkout_does_not_review_the_files_it_left_out_as_removed(tmp_path, monkeypatch):
+    src = _origin(tmp_path)
+    root = tmp_path / "sparse"
+    git(tmp_path, "clone", "-q", str(src), str(root))
+    git(root, "sparse-checkout", "set", "pkg")
+    assert not (root / "tests/test_core.py").exists()
+    git(root, "switch", "-q", "-c", "feature")
+    (root / "pkg/core.py").write_text(CORE.replace("lower", "upper"))
+    monkeypatch.chdir(root)
+    code, out = run("pr", "--json")
+    assert code == 0, out
+    changed = json.loads(out)["changed"] if "changed" in json.loads(out) else json.loads(out)["facts"]["changed"]
+    assert [x["name"] for x in changed["removed"]] == [], changed["removed"]
+    assert changed["files"] == ["pkg/core.py"], changed["files"]
 
 
 def _graph(db) -> tuple[set, set]:

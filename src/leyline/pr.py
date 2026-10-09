@@ -19,6 +19,7 @@ worktrees are not touched), reusing the parse output of the checkout's map for e
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -156,6 +157,13 @@ def _export(root: Path, sha: str, into: Path) -> None:
                         pass
     finally:
         tmp.unlink()
+    # A sparse checkout leaves some of the commit's files out of the working tree (git marks them skip-worktree), and
+    # its map leaves them out: the base leaves out the same, or each would read as removed by the change.
+    for entry in _git(root, "ls-files", "-z", "-t", binary=True).split(b"\0"):
+        if entry.startswith(b"S "):
+            path = entry[2:].decode("utf-8", "surrogateescape")
+            if not os.path.lexists(root / path) and (into / path).is_file():
+                (into / path).unlink()
     # A repository of its own holding exactly the commit's files, so the map lists them as git lists the checkout's
     # (a tracked file that a .gitignore pattern would match stays in), and not by walking the directory.
     _git(into, "init", "-q")
