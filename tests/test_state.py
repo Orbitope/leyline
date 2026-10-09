@@ -22,6 +22,20 @@ def repo(tmp_path, monkeypatch):
     return work, ch, db
 
 
+def test_notes_above_a_page_cut_off_before_its_end_marker_are_kept(repo):
+    """A leyline.md whose generated block lost its end marker (a write cut off, a bad merge) still has the person's
+    notes above the block: the next plan replaces the block and keeps them."""
+    work, ch, db = repo
+    loop.plan(db, ch)
+    page = ch / "leyline.md"
+    text = page.read_text(encoding="utf-8")
+    page.write_text("My notes on this change.\n\n" + text[:len(text) // 2], encoding="utf-8")
+    loop.plan(db, ch)
+    again = page.read_text(encoding="utf-8")
+    assert again.startswith("My notes on this change.\n\n" + spec.BEGIN) and again.rstrip().endswith(spec.END)
+    assert again.count(spec.BEGIN) == 1
+
+
 def test_a_write_of_leyline_md_that_fails_leaves_the_page_as_it_was(repo, monkeypatch):
     """Writing the page in place empties it first: a write that fails part way (a full disk, a killed process) left
     half a page, or none, in a file that is committed."""
