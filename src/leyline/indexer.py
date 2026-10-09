@@ -1270,6 +1270,12 @@ class Indexer:
                         if (fid, xid) not in seen:
                             seen.add((fid, xid))
                             self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
+                    elif lang != "typescript" and not imp.target.startswith("."):
+                        # Go, Java, Rust...: the module or package path as written (go:example.com/app/store), not npm's.
+                        xid = self._external(lang, imp.target.strip("\"'<>` "), {"category": "package"}, _repo_of(fid))
+                        if (fid, xid) not in seen:
+                            seen.add((fid, xid))
+                            self.edges.append(Edge("imports", fid, xid, "exact", {"symbols": imp.symbols}))
                     elif not imp.target.startswith("."):
                         spec = imp.target[5:] if imp.target.startswith("node:") else imp.target
                         parts = spec.split("/")

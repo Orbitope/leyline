@@ -180,6 +180,27 @@ def test_python_and_csharp_the_route_that_names_more_of_the_path_wins(tmp_path):
     assert got["Api.Calls.Newest()"] == ("Api.OrdersController.Latest()", "GET /api/orders/latest")
 
 
+def test_an_outside_import_in_go_or_java_is_labelled_by_its_own_language_not_npm(tmp_path):
+    con = _map(tmp_path, {
+        "main.go": (
+            "package main\n"
+            "\n"
+            "import (\n"
+            "\t\"fmt\"\n"
+            "\t\"example.com/lib/store\"\n"
+            ")\n"
+            "\n"
+            "func main() { fmt.Println(store.New()) }\n"),
+        "src/app/Main.java": (
+            "package app;\n"
+            "import java.util.List;\n"
+            "public class Main { public static void main(String[] a) { } }\n"),
+    })
+    ext = {r[0].split(":ext:", 1)[1] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external'")}
+    assert {"go:fmt", "go:example.com/lib/store", "java:java.util.List"} <= ext
+    assert not any(x.startswith("npm:") for x in ext)
+
+
 def test_csharp_a_positional_record_without_a_body_has_its_properties(tmp_path):
     con = _map(tmp_path, {
         "App/App.csproj": CSPROJ,
