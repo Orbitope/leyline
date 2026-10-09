@@ -1222,7 +1222,11 @@ class _Walker:
         if receiver not in ("this", "base", "?") and not receiver.startswith(".") and rtype is None and chain is None:
             return   # an untyped local: nothing says what it is
         cur, up = node, parent
-        while up is not None and up.type in ("parenthesized_expression", "non_null_expression", "as_expression"):
+        # Through parentheses and casts, and out of a destructuring target: [this.a, this.b] = [b, a] assigns both.
+        while up is not None and (up.type in ("parenthesized_expression", "non_null_expression", "as_expression",
+                                              "array_pattern", "object_pattern")
+                                  or up.type == "pair_pattern" and _same(up.child_by_field_name("value"), cur)
+                                  or up.type == "assignment_pattern" and _same(up.child_by_field_name("left"), cur)):
             cur, up = up, up.parent
         access = "r"
         if up is not None:

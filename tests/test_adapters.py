@@ -307,6 +307,24 @@ def test_typescript_a_request_on_a_client_named_api_is_not_a_route(tmp_path):
     assert got["web.src.api.items"] == ("server.src.main.listItems", "GET /api/items")
 
 
+def test_typescript_fields_assigned_by_destructuring_are_written(tmp_path):
+    con = _map(tmp_path, {
+        "src/p.ts": (
+            "export class P {\n"
+            "  a = 1;\n"
+            "  b = 2;\n"
+            "  swap(): void { [this.a, this.b] = [1, 2]; }\n"
+            "  load(o: any): void { ({ a: this.a, b: this.b } = o); }\n"
+            "  sum(): number { return this.a + this.b; }\n"
+            "}\n"),
+    })
+    writes, reads = edges(con, "writes"), edges(con, "reads")
+    for fn in ("src.p.P.swap", "src.p.P.load"):
+        assert (fn, "src.p.P.a") in writes and (fn, "src.p.P.b") in writes
+        assert (fn, "src.p.P.a") not in reads
+    assert ("src.p.P.sum", "src.p.P.a") in reads
+
+
 def test_typescript_an_overloaded_method_spans_its_implementation(tmp_path):
     con = _map(tmp_path, {
         "src/shape.ts": (
