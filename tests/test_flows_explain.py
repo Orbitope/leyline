@@ -244,6 +244,12 @@ def test_a_step_declares_the_function_not_its_decorator(items):
     assert r["steps"][0]["declaration"] == "def show(item_id):", r["steps"][0]
 
 
+def test_a_route_a_named_function_serves_is_a_start(items):
+    r = explain.explain_path(items, "GET /items/<int:item_id>")
+    assert "error" not in r, r
+    assert [s["name"] for s in r["steps"]][:2] == ["show", "load"]
+
+
 def test_diagram_of_any_ids(notes):
     _, _, con = notes
     d = explain.diagram(con, ["storeNote", "nosuchthing"])

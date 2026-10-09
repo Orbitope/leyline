@@ -569,6 +569,11 @@ def _resolve(con, text: str) -> dict:
         return {"id": text}
     if re.match(r"[A-Z]+ /", text):   # a route, as its handler is named
         rows = con.execute("SELECT id FROM nodes WHERE kind = 'callable' AND name = ?", (text,)).fetchall()
+        if not rows:   # a route a named function serves (a decorator, an attribute): by its route, as find_flows reads it
+            rows = con.execute(
+                "SELECT id FROM nodes WHERE kind = 'callable' AND json_extract(attrs, '$.route') = ? UNION"
+                " SELECT dst_id FROM edges WHERE kind = 'communicates' AND json_extract(attrs, '$.channel') = 'http'"
+                " AND json_extract(attrs, '$.address') = ?", (text, text)).fetchall()
         if len(rows) == 1:
             return {"id": rows[0][0]}
     return query.resolve(con, text)
