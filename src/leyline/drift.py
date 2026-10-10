@@ -216,8 +216,8 @@ def read_file(openspec: Optional[Path]) -> tuple[dict, Optional[str]]:
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
         return dict(data.get("anchors") or {}), None
-    except (ValueError, AttributeError) as e:
-        return {}, f"{f} could not be read ({e}); its anchors were left out"
+    except (ValueError, AttributeError, RecursionError) as e:
+        return {}, f"{f} could not be read ({type(e).__name__}: {e}); its anchors were left out"
 
 
 def _write_file(openspec: Path, anchors: dict) -> Path:

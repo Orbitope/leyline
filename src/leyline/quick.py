@@ -202,7 +202,10 @@ def _old_source(con, cid: str):
     """path -> the file's text when the baseline was taken, or None: the copy kept then, else git's copy at the commit
     the repository was at, for a file that did not differ from it."""
     p = _src_path(con, cid)
-    kept = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {"texts": {}, "repos": {}}
+    try:
+        kept = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {"texts": {}, "repos": {}}
+    except (OSError, ValueError, RecursionError):
+        kept = {"texts": {}, "repos": {}}
     root_of = diff.roots(con)
 
     def read(path: str) -> Optional[str]:

@@ -78,7 +78,7 @@ def _read(path: Path, strict: bool = False) -> list[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return []
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         if strict:
             raise Unreadable(f"{path} could not be read ({e}); fix it by hand, then decide again")
         return []

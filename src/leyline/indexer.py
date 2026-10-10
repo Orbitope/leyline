@@ -370,7 +370,7 @@ def _jsonc(path: Path) -> Optional[dict]:
     text = re.sub(r'("(?:\\.|[^"\\])*")|,(\s*[}\]])', lambda m: m[1] or m[2], text)
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):   # nested past the recursion limit: Python before 3.13 raises this
         return None
     return data if isinstance(data, dict) else None
 
@@ -1278,7 +1278,7 @@ class Indexer:
                 if f.rsplit("/", 1)[-1] == "package.json":
                     try:
                         data = json.loads((self.repos[repo] / f).read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
+                    except (OSError, ValueError, RecursionError):   # RecursionError: nested past the limit
                         continue
                     if isinstance(data, dict) and data.get("name"):
                         self.packages[data["name"]] = {"dir": f.rpartition("/")[0], "exports": data.get("exports"), "repo": repo,

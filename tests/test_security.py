@@ -433,3 +433,55 @@ def test_learnings_a_pull_request_adds_or_changes_are_listed_not_applied(repo):
         con.close()
     assert [x["id"] for x in facts["learnings_that_apply"]] == ["l-kept"]
     assert {x["id"] for x in facts["learnings_not_applied"]} == {"l-moved", "l-new"}
+
+
+@pytest.fixture
+def recursing_json(monkeypatch):
+    """json.loads as Python before 3.13 has it: a file nested deeper than the recursion limit raises RecursionError,
+    not ValueError. (Python 3.13+ decodes any depth without recursing.) Uses the pure-Python scanner, which recurses
+    per level as the old C one did."""
+    import json
+    import json.scanner
+
+    def loads(s, *a, **kw):
+        d = json.JSONDecoder()
+        d.scan_once = json.scanner.py_make_scanner(d)
+        return d.decode(s if isinstance(s, str) else s.decode("utf-8"))
+    monkeypatch.setattr(json, "loads", loads)
+    return "[" * 5000 + "]" * 5000
+
+
+def test_deeply_nested_json_from_the_repository_is_reported_not_a_crash(repo, recursing_json, tmp_path):
+    from leyline import coverage, export, learnings
+    deep = '{"name": "pkg", "exports": ' + recursing_json + "}"
+    (repo / "package.json").write_text(deep)
+    (repo / "tsconfig.json").write_text('{"compilerOptions": {"paths": ' + recursing_json + "}}")
+    (repo / "web.ts").write_text("export function g() { return 1; }\n")
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db, page=False)                       # package.json, tsconfig.json
+    path = learnings.path_for(repo)
+    path.write_text('{"learnings": ' + recursing_json + "}")
+    assert learnings._read(path) == []
+    with pytest.raises(learnings.Unreadable):
+        learnings._read(path, strict=True)
+    (repo / "openspec").mkdir(exist_ok=True)
+    (repo / "openspec" / drift.ANCHOR_FILE).write_text('{"anchors": ' + recursing_json + "}")
+    assert drift.read_file(repo / "openspec")[1]                       # a problem, said
+    cov = tmp_path / "coverage-final.json"
+    cov.write_text('{"a": ' + recursing_json + "}")
+    con = store.connect(db)
+    try:
+        assert "error" in coverage.import_file(con, cov)
+    finally:
+        con.close()
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / agent_skills.MANIFEST).write_text(recursing_json)
+    assert agent_skills._manifest(skills) == {"skills": {}}
+    memory = tmp_path / "layout.json"
+    memory.write_text(recursing_json)
+    con = store.connect(db)
+    try:
+        export.graph(con, memory=memory)
+    finally:
+        con.close()
