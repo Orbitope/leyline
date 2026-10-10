@@ -217,3 +217,19 @@ def test_a_start_stopped_while_keeping_the_source_leaves_done_able_to_run(repo, 
     assert code == 0 and "still compares with the code as it was then" in page, page
     code, page = run("quick", "--done", "quick-make-the-retry-count-3", "--tests", "-", stdin=PASSING)
     assert "No caller left broken" in page, page
+
+
+def test_done_after_a_start_that_did_not_finish_says_to_start_again(repo, monkeypatch):
+    """A start stopped after it stored the change but before it marked it a quick change: `--done` answered "no quick
+    change X started here (there are: X)"."""
+    from leyline import spec
+
+    def dies(*a, **k):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(spec, "_crossings", dies)
+        with pytest.raises(KeyboardInterrupt):
+            quick.start(repo / ".leyline/leyline.db", "make the retry count 3", ["RETRIES"])
+    code, page = run("quick", "--done", "quick-make-the-retry-count-3")
+    assert code != 0 and "there are: quick-make-the-retry-count-3" not in page, page
+    assert "did not finish" in page, page
