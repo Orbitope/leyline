@@ -11,7 +11,7 @@ import datetime
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -38,7 +38,7 @@ def _readme(con, repo_id: str) -> Optional[str]:
         return None
     for name in ("README.md", "README.rst", "README.txt", "README"):
         p = Path(row[0]) / name
-        if p.is_file():
+        if p.is_file() and store.inside(p, row[0]):
             para: list[str] = []
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
@@ -57,14 +57,31 @@ def _readme(con, repo_id: str) -> Optional[str]:
     return None
 
 
+# How each language is written in a sentence: one name per language, as its own community writes it.
+LANGUAGE_NAMES = {"csharp": "C#", "python": "Python", "typescript": "TypeScript", "javascript": "JavaScript",
+                  "go": "Go", "rust": "Rust", "java": "Java", "kotlin": "Kotlin", "swift": "Swift", "c": "C",
+                  "cpp": "C++", "ruby": "Ruby", "php": "PHP", "scala": "Scala", "lua": "Lua", "elixir": "Elixir",
+                  "dart": "Dart", "zig": "Zig", "haskell": "Haskell", "ocaml": "OCaml", "julia": "Julia",
+                  "bash": "Bash", "gdscript": "GDScript"}
+
+
 def generate(con, repo_id: str) -> dict:
     """Write the orientation tour for a repo, replacing the previous one."""
     q = lambda sql, *a: con.execute(sql, a).fetchall()
     repo = q("SELECT id, name FROM nodes WHERE id = ? AND kind = 'repo'", repo_id)
     if not repo:
         return {"error": f"no repo {repo_id!r}"}
-    mods = {r["id"]: r for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ?", repo_id)}
+    # In id order, not the order the rows were written in: a module an incremental run adds is written last, and a
+    # tie between modules must be settled as a full run would settle it.
+    mods = {r["id"]: dict(r) for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY id", repo_id)}
+    named = Counter(m["name"] for m in mods.values())
+    for m in mods.values():   # two modules called lib (src/lib, scripts/lib) are told apart by their paths
+        if named[m["name"]] > 1 and m["path"]:
+            m["name"] = m["path"]
     if not mods:
+        with con:   # nothing to tour: the tour of an earlier map, which names modules that are gone, goes too
+            con.execute("DELETE FROM tour_stops WHERE tour_id = ?", (f"tour:orientation:{repo_id}",))
+            con.execute("DELETE FROM tours WHERE id = ?", (f"tour:orientation:{repo_id}",))
         return {"stops": 0}
     # The few module ids and kinds are one string each: every row read gives its own copy, and on a large
     # repository the copies were hundreds of MB.
@@ -84,9 +101,12 @@ def generate(con, repo_id: str) -> dict:
     flow_kind = {f["id"]: f["kind"] for f in flows}
     test_mods = {module.get(f["entry_id"]) for f in flows if flow_kind[f["id"]] == "test"} - {None}
 
+    # Tests kept beside the code they test (grocery.test.ts next to grocery.ts) do not make that code a test module.
+    test_files, mostly_tests = store.test_places(con)
+
     def side(m):  # samples, docs, benchmarks and test helpers: real code, but not the product
         return any(part.lower() in SIDE_DIRS or part.lower().startswith("test") for part in (mods[m]["path"] or "").split("/"))
-    core = [m for m in mods if m not in test_mods and not side(m)] or list(mods)
+    core = [m for m in mods if m not in mostly_tests and not side(m)] or list(mods)
     size = {r["m"]: (r["files"], r["loc"]) for r in q(
         "SELECT a.module_id AS m, COUNT(*) AS files, SUM(COALESCE(n.span_end, 0)) AS loc FROM nodes n"
         " JOIN ancestry a ON a.node_id = n.id WHERE n.kind = 'file' GROUP BY a.module_id")}
@@ -108,7 +128,7 @@ def generate(con, repo_id: str) -> dict:
 
     # 1. What it is.
     readme = _readme(con, repo_id)
-    lang_names = {"csharp": "C#", "python": "Python"}
+    lang_names = LANGUAGE_NAMES
     stop("What this repository is", "repo", repo_id,
          f"{repo[0]['name']} has {_plural(len(mods), 'module')} and {_plural(n_files, 'source file')}, written in "
          f"{_names([lang_names.get(x, x) for x in langs])}. "
@@ -241,7 +261,8 @@ def generate(con, repo_id: str) -> dict:
     n_tests = sum(1 for f in flows if flow_kind[f["id"]] == "test")
     if n_tests:
         tested = {r[0] for r in q(store.TESTED)}
-        fns = [r[0] for r in q("SELECT id FROM nodes WHERE kind = 'callable' AND repo_id = ?", repo_id) if module.get(r[0]) in core]
+        fns = [r[0] for r in q("SELECT id, path FROM nodes WHERE kind = 'callable' AND repo_id = ?", repo_id)
+               if module.get(r[0]) in core and r[1] not in test_files]
         on = sum(1 for i in fns if i in tested)
         home = sorted(test_mods, key=lambda m: -(size.get(m, (0, 0))[1] or 0))
         from . import coverage as measured

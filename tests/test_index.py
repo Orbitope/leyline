@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -234,6 +235,140 @@ def test_systems_are_proposed_and_named_through_annotations(tmp_path):
     assert stats["stale_annotations"] >= 1
 
 
+def test_two_systems_whose_anchors_share_a_name_stay_two(tmp_path):
+    """Two groups in one module can be anchored on types of the same name (a Hub in each of two subpackages). Each
+    is a system of its own: the second must not overwrite the first and take its members."""
+    root = tmp_path / "p"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/__init__.py").write_text("")
+    for side in ("x", "y"):
+        p = root / "pkg" / side
+        p.mkdir()
+        (p / "__init__.py").write_text("")
+        (p / "hub.py").write_text("class Hub:\n    def run(self):\n        return 1\n")
+        for i in range(7):
+            (p / f"m{i}.py").write_text(f"from .hub import Hub\n\n\nclass {side.upper()}{i}:\n    def go(self):\n        return Hub().run()\n")
+    db = tmp_path / "s.db"
+    stats = index(root, db, "c")
+    assert stats["systems"]["pkg"]["systems"] == 2
+    c = store.connect(db)
+    members = {r[0]: r[1] for r in c.execute("SELECT src_id, COUNT(*) FROM edges WHERE kind = 'groups' GROUP BY src_id")}
+    anchors = {json.loads(r[0])["anchor"] for r in c.execute("SELECT attrs FROM nodes WHERE kind = 'system'")}
+    c.close()
+    assert sorted(members.values()) == [8, 8]
+    assert anchors == {"c:python:pkg.x.hub.Hub", "c:python:pkg.y.hub.Hub"}
+
+
+def test_two_systems_whose_anchors_share_a_name_are_named_apart(tmp_path):
+    """The tour said "Clustering splits it into ...: _Walker group, _Walker group, _Walker group"."""
+    from leyline import tours
+    root = tmp_path / "p"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/__init__.py").write_text("")
+    for side in ("x", "y"):
+        p = root / "pkg" / side
+        p.mkdir()
+        (p / "__init__.py").write_text("")
+        (p / "hub.py").write_text("class Hub:\n    def run(self):\n        return 1\n")
+        for i in range(7):
+            (p / f"m{i}.py").write_text(f"from .hub import Hub\n\n\nclass {side.upper()}{i}:\n    def go(self):\n        return Hub().run()\n")
+    db = tmp_path / "s.db"
+    index(root, db, "c")
+    c = store.connect(db)
+    names = sorted(r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'system'"))
+    text = " ".join(s["narrative"] for s in tours.get(c, "tour:orientation:c")["stops"])
+    c.close()
+    assert names == ["Hub group (pkg/x/hub.py)", "Hub group (pkg/y/hub.py)"], names
+    assert "Hub group (pkg/x/hub.py), Hub group (pkg/y/hub.py)" in text, text
+
+
+def test_a_python_override_with_other_parameters_still_overrides(tmp_path):
+    """Python has no overloads: a method of a subclass replaces the base's method of that name whatever its
+    parameters are, so a call through the base can land in it."""
+    root = tmp_path / "o"
+    root.mkdir()
+    (root / "repo.py").write_text(
+        "class Base:\n    def fetch(self, q):\n        return q\n\n\n"
+        "class Same(Base):\n    def fetch(self, q):\n        return q\n\n\n"
+        "class More(Base):\n    def fetch(self, q, limit=10):\n        return q[:limit]\n")
+    db = tmp_path / "o.db"
+    index(root, db, "o")
+    c = store.connect(db)
+    got = ids(c, "SELECT src_id FROM edges WHERE kind = 'overrides' AND dst_id = 'o:python:repo.Base.fetch'")
+    c.close()
+    assert got == {"o:python:repo.Same.fetch", "o:python:repo.More.fetch"}
+
+
+def test_a_typescript_override_with_other_parameters_still_overrides(tmp_path):
+    """TypeScript has no overloads at run time either: a subclass's method of that name replaces the base's."""
+    root = tmp_path / "t"
+    root.mkdir()
+    (root / "repo.ts").write_text(
+        "export class Base {\n  fetch(q: string): string {\n    return q;\n  }\n}\n\n"
+        "export class Same extends Base {\n  fetch(q: string): string {\n    return q;\n  }\n}\n\n"
+        "export class More extends Base {\n  fetch(q: string, limit: number): string {\n    return q.slice(0, limit);\n  }\n}\n")
+    db = tmp_path / "t.db"
+    index(root, db, "t")
+    c = store.connect(db)
+    got = ids(c, "SELECT src_id FROM edges WHERE kind = 'overrides' AND dst_id = 't:typescript:repo.Base.fetch'")
+    c.close()
+    assert got == {"t:typescript:repo.Same.fetch", "t:typescript:repo.More.fetch"}
+
+
+def test_a_function_defined_twice_in_one_file_is_one_node_over_both(tmp_path):
+    """`if ...: def load()` / `else: def load()` (or try/except) defines one name twice; which runs is not known from
+    the text. It is one node whose span covers both definitions and lists each, whose text hash reads both bodies,
+    and whose calls come from both."""
+    root = tmp_path / "d"
+    root.mkdir()
+    src = ("import sys\n\n"
+           "if sys.platform == 'win32':\n"
+           "    def load(s):\n"
+           "        return first(s)\n"
+           "else:\n"
+           "    def load(s):\n"
+           "        return second(s)\n\n\n"
+           "def first(s):\n    return 1\n\n\n"
+           "def second(s):\n    return 2\n")
+    (root / "m.py").write_text(src)
+    db = tmp_path / "d.db"
+    index(root, db, "d")
+    c = store.connect(db)
+    rows = c.execute("SELECT span_start, span_end, content_hash, attrs FROM nodes WHERE id = 'd:python:m.load'").fetchall()
+    assert len(rows) == 1
+    start, end, before, attrs = rows[0]
+    assert (start, end) == (4, 8) and json.loads(attrs)["definitions"] == [[4, 5], [7, 8]]
+    assert calls(c, "d:python:m.load") == {"d:python:m.first", "d:python:m.second"}
+    c.close()
+    (root / "m.py").write_text(src.replace("return second(s)", "return second(s) + 1"))
+    index(root, db, "d")
+    c = store.connect(db)
+    assert c.execute("SELECT content_hash FROM nodes WHERE id = 'd:python:m.load'").fetchone()[0] != before
+    c.close()
+
+
+def test_a_function_that_is_both_an_entry_and_a_test_has_both_flows(tmp_path):
+    """A start can be both an entry point and a test ([Fact] static void Main()). Each is a flow of its own: the
+    entry keeps the usual id, the test's says its kind, and the counts match the rows."""
+    root = tmp_path / "b"
+    root.mkdir()
+    (root / "P.cs").write_text(
+        "public static class P\n{\n"
+        "    [Fact]\n    public static void Main() { Run(); }\n"
+        "    static void Run() { Step(); }\n"
+        "    static void Step() { }\n}\n")
+    db = tmp_path / "b.db"
+    index(root, db, "b")
+    c = store.connect(db)
+    main = next(r[0] for r in c.execute("SELECT id FROM nodes WHERE name = 'Main' AND kind = 'callable'"))
+    flows = {r[0]: json.loads(r[1])["kind"] for r in c.execute("SELECT id, attrs FROM flows")}
+    assert flows.get(f"flow:{main}") == "entry" and flows.get(f"flow:{main}#test") == "test"
+    counted = json.loads(c.execute("SELECT stats FROM extractor_coverage WHERE extractor = 'flows:static'").fetchone()[0])
+    assert counted["flows"] == len(flows)
+    assert counted["steps"] == c.execute("SELECT COUNT(*) FROM flow_steps").fetchone()[0]
+    c.close()
+
+
 def test_change_assessment_and_saved_views(tmp_path):
     import shutil
 
@@ -303,6 +438,63 @@ def test_rules_are_checked_against_the_graph(tmp_path):
     assert not r[bad["id"]]["passes"] and r[bad["id"]]["examples"]
     assert all(x["passes"] for x in r.values() if x["kind"] == "no_cycle")
     assert rules.confirm_rule(c, ok["id"])["status"] == "confirmed"
+
+
+def test_a_path_or_id_selector_is_a_prefix_as_written(tmp_path):
+    """`_` and `%` in a selector are characters of the path, not patterns, and case counts: `path:app/my_pkg` is not
+    `app/myXpkg`, and `path:App` is not `app`."""
+    from leyline import rules
+
+    root = tmp_path / "repo"
+    for f in ("app/my_pkg/a.py", "app/myXpkg/b.py", "app/other.py"):
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text("def f():\n    return 1\n")
+    db = tmp_path / "r.db"
+    index(root, db, "r")
+    c = store.connect(db)
+    paths = lambda sel: sorted({c.execute("SELECT path FROM nodes WHERE id = ?", (i,)).fetchone()[0] for i in rules._select(c, sel)} - {None})
+    assert paths("path:app/my_pkg") == ["app/my_pkg", "app/my_pkg/a.py"]
+    assert paths("path:App") == []
+    assert paths("path:app/my_pkg/a.py") == ["app/my_pkg/a.py"]
+    by_id = rules._select(c, "id:r:python:app.my_pkg")
+    assert by_id and not any("myXpkg" in i for i in by_id)
+    assert rules._select(c, "id:R:python:app") == set()
+    with c:
+        c.execute("INSERT INTO nodes (id, kind, name, source) VALUES ('r:ext:my_lib.io', 'external', 'my_lib.io', 't'),"
+                  " ('r:ext:myXlib.io', 'external', 'myXlib.io', 't')")
+    assert rules._select(c, "external:my_lib") == {"r:ext:my_lib.io"}
+    assert rules._select(c, "external:MY_LIB") == set()
+
+
+def test_a_rule_on_a_named_system_reads_the_same_on_a_snapshot(tmp_path):
+    """A system is named by a person or an agent (an annotation). `leyline pr` checks the rules on the base's snapshot
+    to tell a rule the branch broke from one that already failed: on the snapshot the name must select the same code,
+    or a rule failing before the branch reads as newly failing, and blocks the gate."""
+    from leyline import diff, rules
+
+    root = tmp_path / "repo"
+    for f, text in {"app/a.py": "from app.b import g\n\n\ndef f():\n    return g()\n",
+                    "app/b.py": "def g():\n    return 1\n"}.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    db = tmp_path / "r.db"
+    index(root, db, "r")
+    c = store.connect(db)
+    a = c.execute("SELECT id FROM nodes WHERE kind = 'file' AND path = 'app/a.py'").fetchone()[0]
+    with c:
+        c.execute("INSERT INTO nodes (id, kind, name, repo_id, layer, source) VALUES ('r:sys:front', 'system',"
+                  " 'f group', 'r', 'inferred', 't')")
+        store.insert_edges(c, [(None, "groups", "r:sys:front", a, "heuristic", "inferred", "t", None, None)])
+    store.annotate(c, "r:sys:front", "name", "Front", "intent", "t", None, [])
+    rid = rules.add_rule(c, "forbid", "system:Front", "path:app/b.py", status="confirmed")["id"]
+    now = {r["id"]: r for r in rules.check(c)["rules"]}
+    assert not now[rid]["passes"]
+    before = diff._open(diff.snapshot(c, "base"))
+    try:
+        was = {r["id"]: r for r in rules.check(before, rules_from=c)["rules"]}
+    finally:
+        before.close()
+    assert not was[rid]["passes"] and was[rid]["violations"] == now[rid]["violations"]
 
 
 def test_review_compares_an_implemented_change_with_its_proposal(tmp_path):
@@ -565,6 +757,32 @@ def test_scip_index_confirms_and_adds_python_links(tmp_path):
     assert dict(store.connect(plain).execute(q, (poke, child)).fetchall()) == {"guess": 1}
     assert dict(store.connect(db).execute(q, (poke, child)).fetchall()) == {"exact": 1}     # confirmed once; the mention is not a call
     assert stats["exact:scip"]["status"] == "ok" and stats["exact:scip"]["calls_confirmed"] == 1
+
+
+def test_scip_columns_after_characters_outside_ascii(tmp_path):
+    """A SCIP index counts columns in the code units its document says (UTF-16 for scip-python and scip-typescript,
+    UTF-8 for others). A call after an emoji, or after an accented letter in UTF-8, is still read as a call."""
+    pb = pytest.importorskip("leyline.scip_pb2")
+    from leyline import exact
+
+    src = 'def run():\n    return 1\n\n\ndef main():\n    print("\U0001F389 café"); return run()\n'
+    (tmp_path / "m.py").write_text(src, encoding="utf-8")
+    line = src.split("\n")[5]
+    sym = "scip-python python m 0 `m`/run()."
+    for encoding, units in ((2, lambda s: len(s.encode("utf-16-le")) // 2), (1, lambda s: len(s.encode("utf-8")))):
+        idx = pb.Index()
+        doc = idx.documents.add()
+        doc.relative_path, doc.position_encoding = "m.py", encoding
+        d = doc.occurrences.add()
+        d.symbol, d.symbol_roles = sym, 1
+        d.range.extend([0, 4, 7])
+        use = doc.occurrences.add()
+        use.symbol, use.symbol_roles = sym, 8
+        at = line.rindex("run")
+        use.range.extend([5, units(line[:at]), units(line[:at + 3])])
+        path = tmp_path / f"i{encoding}.scip"
+        path.write_bytes(idx.SerializeToString())
+        assert [r["k"] for r in exact.scip(path, tmp_path) if r["k"] != "file"] == ["call"], encoding
 
 
 def test_grade_reads_typed_ranges_impl_methods_and_macros(tmp_path):

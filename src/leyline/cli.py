@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__, query, store
+from .diff import READS
 from .indexer import index
 
 DEFAULT_DB = ".leyline/leyline.db"
@@ -47,9 +48,7 @@ def _spec(con, args) -> int:
     if args.action == "facts":
         _print(spec.review_facts(con, args.target, args.reviewer))
     elif args.action == "findings":
-        cid = "spec-" + Path(args.target).name
-        for f in spec.findings(con, cid)["findings"]:
-            print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+        _findings(con, "spec-" + Path(args.target).name)
     elif args.action in ("finding", "file"):   # `file` is the older name
         r = spec.add_finding(con, "spec-" + Path(args.target).name, args.reviewer or "", args.severity or "", args.claim or "",
                              args.evidence, args.proposal)
@@ -62,6 +61,15 @@ def _spec(con, args) -> int:
     elif args.action == "resolve":
         _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
     return 0
+
+
+def _findings(con, cid: str) -> None:
+    from . import spec
+    found = spec.findings(con, cid)["findings"]
+    for f in found:
+        print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+    if not found:
+        print(f"No findings filed for {cid}.")
 
 
 def _pr_spec(con, args) -> int:
@@ -77,8 +85,7 @@ def _pr_spec(con, args) -> int:
         _print(r)
         return 1 if "error" in r else 0
     if args.action == "findings":
-        for f in spec.findings(con, cid)["findings"]:
-            print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+        _findings(con, cid)
         return 0
     if args.action in ("finding", "file"):
         r = spec.add_finding(con, cid, args.reviewer or "", args.severity or "", args.claim or "", args.evidence, args.proposal)
@@ -165,8 +172,7 @@ def _quick(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It reads TAP, pytest -rA, or one PASS or FAIL line per test.",
-              file=sys.stderr)
+        print(f"leyline: found no test results in that output. It reads {READS}.", file=sys.stderr)
         return 2
     if args.done:
         r = quick.done(db, args.done if args.done.startswith("quick-") else "quick-" + args.done, results, args.coverage,
@@ -248,10 +254,12 @@ def _impact(con, args) -> int:
     print(f"{found['id']}\nreached by {_n(r['reached_by'], 'place')} within {_n(r['depth_limit'], 'call')}"
           + (", across modules" if r["crosses_module_boundary"] else "")
           + (", across repositories" if r["crosses_repo_boundary"] else ""))
+    verb = "used" if (query._node(con, found["id"]) or {"kind": ""})["kind"] == "field" else "called"
     for m in r["by_module"]:
         near = [_short(con, d) for d in m["direct"]]
         print(f"  {m['module']:<28} {m['count']:>5}"
-              + (f"   called directly by {', '.join(near[:5])}{' ...' if len(near) > 5 else ''}" if near else ""))
+              + (f"   {verb} directly by {', '.join(near[:5])}"
+                 f"{' ...' if len(near) > 5 else ''}" if near else ""))
     t = r["flows_through"]
     if t["total"]:
         print(f"flows through it: {t['total']}")
@@ -381,6 +389,20 @@ def _not_dirs(paths: list[str]) -> bool:
     return bool(bad)
 
 
+def _workspace_elsewhere(db: str) -> bool:
+    """Whether the store is a workspace of several repositories, none of them the current directory."""
+    if not Path(db).is_file():
+        return False
+    con = store.connect(db)
+    try:
+        if con.execute("SELECT 1 FROM meta WHERE key = 'workspace'").fetchone() is None:
+            return False
+        here = Path.cwd().resolve()
+        return all(Path(p).resolve() != here for p in store.roots(con).values())
+    finally:
+        con.close()
+
+
 def _loop(args) -> int:
     """map, plan and check: the short path."""
     from . import loop
@@ -388,10 +410,28 @@ def _loop(args) -> int:
         if len(args.path) > 1 and args.repo:
             print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
             return 2
-        if _not_dirs(args.path):
+        if args.forget:
+            if args.path:
+                print("leyline: --forget takes no repository to map: forget first, then map", file=sys.stderr)
+                return 2
+            db = args.db or str(loop.find_store(Path.cwd()) or DEFAULT_DB)
+            r = loop.forget(db, args.forget)
+            if "error" in r:
+                print(f"leyline: {r['error']}", file=sys.stderr)
+                return 1
+            print(r["said"] + ("\n" + loop.map_text(r) if r.get("repos") else ""))
+            return 0
+        paths = args.path or ["."]
+        if _not_dirs(paths):
             return 2
-        db = args.db or (str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB)
-        print(loop.map_text(loop.map_repos(args.path, db, args.repo, args.exact, args.scip, full=args.full)))
+        db = args.db or (str(Path(paths[0]) / DEFAULT_DB) if len(paths) == 1 else DEFAULT_DB)
+        if not args.path and not args.repo and _workspace_elsewhere(db):
+            paths = None   # the folder a workspace was mapped from: map its members again, not the folder itself
+        r = loop.map_repos(paths, db, args.repo, args.exact, args.scip, full=args.full)
+        if "error" in r:
+            print(f"leyline: {r['error']}", file=sys.stderr)
+            return 1
+        print(loop.map_text(r))
         return 0
     change = loop.find_change(args.change, args.db or DEFAULT_DB)
     if change is None:
@@ -408,8 +448,8 @@ def _loop(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, or one PASS or FAIL line per test"
-              " (`pytest -rA` prints them); other formats can go through the record_test_run MCP tool.", file=sys.stderr)
+        print(f"leyline: found no test results in that output. It reads {READS}; other formats can go through the"
+              " record_test_run MCP tool.", file=sys.stderr)
         return 2
     name = args.change
     if args.cmd == "plan":
@@ -423,6 +463,8 @@ def _loop(args) -> int:
     r = loop.check(db, change, results, args.coverage)
     if "error" in r:
         print(f"leyline: {r['error']}", file=sys.stderr)
+        for line in r.get("next") or []:
+            print(line, file=sys.stderr)
         return 1
     print(loop.check_text(r, name))
     return 0 if r["done_as_agreed"] else 1
@@ -449,8 +491,20 @@ def main(argv=None) -> int:
         except OSError:
             pass
         return 0
+    except store.UntrustedStore as e:
+        print(f"leyline: {e}", file=sys.stderr)
+        return 2
     except sqlite3.DatabaseError as e:
         print(f"leyline: {_store_problem(e)}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        import errno
+        if e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        # a repository that cannot be written to (read-only, or someone else's) can still be mapped and reported on
+        print(f"leyline: cannot write {e.filename or 'the store'} ({e.strerror}). To map a folder you cannot write to,"
+              " keep the store elsewhere: `leyline --db <writable folder>/leyline.db ...`, or set LEYLINE_DB.",
+              file=sys.stderr)
         return 2
     except MemoryError:
         print("leyline: ran out of memory. A repository this large needs more than this machine has free: close other"
@@ -462,7 +516,10 @@ def main(argv=None) -> int:
 
 def _store_problem(e: Exception) -> str:
     """What a person can do about an error from the store, in place of the traceback."""
+    from .diff import DamagedBaseline
     msg = str(e)
+    if isinstance(e, DamagedBaseline):
+        return msg
     if "locked" in msg or "busy" in msg:
         return ("the store is in use: another leyline run (a map, plan or check) is writing it. Try again when that"
                 " run finishes.")
@@ -484,24 +541,27 @@ def _main(argv=None) -> int:
     # The commands are listed by ABOUT and ADVANCED, so the usual three come first.
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command", help=argparse.SUPPRESS)
     p = sub.add_parser("map", description="Index one or more repositories, print a short overview, and write the map page.")
-    p.add_argument("path", nargs="*", default=["."], help="the repository; name several to map them together")
+    p.add_argument("path", nargs="*", default=[], help="the repository (default: the current directory, or the workspace"
+                                                      " mapped from it); name several to map them together")
     p.add_argument("--repo", help="repo id (defaults to the directory name; one repository only)")
     p.add_argument("--exact", choices=["auto", "off", "roslyn", "scip"], default="auto",
                    help="let a compiler overrule the syntax-based links (default: auto, whatever is available)")
     p.add_argument("--scip", action="append", default=[], metavar="FILE", help="a SCIP index to read (repeatable)")
     p.add_argument("--full", action="store_true", help="index everything again, not only what changed since the last map")
+    p.add_argument("--forget", action="append", metavar="ID", help="drop a repository from the store (a workspace member"
+                                                                " that is gone or no longer wanted) and map the rest again;"
+                                                                " repeatable")
     p = sub.add_parser("plan", description="Write and print the one-page plan (leyline.md) for an OpenSpec change folder,"
                                            " re-mapping first if the code changed. Exits 1 while something blocks implementation.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
     p.add_argument("--tests", metavar="FILE", help="test runner output from before the change (- for stdin), kept to compare"
-                                                  " with after; TAP, pytest -rA, or one PASS or FAIL line per test")
+                                                  " with after; " + READS)
     p.add_argument("--new-baseline", action="store_true",
                    help="compare from the code as it is now, forgetting the picture kept from the first plan")
     p = sub.add_parser("check", description="After the change is made: re-map, record the test output, and say whether the"
                                             " change was done as agreed. Exits 0 only when it was.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
-    p.add_argument("--tests", metavar="FILE", help="test runner output from after the change (- for stdin); one PASS or"
-                                                  " FAIL line per test, as pytest -rA prints")
+    p.add_argument("--tests", metavar="FILE", help="test runner output from after the change (- for stdin); " + READS)
     p.add_argument("--coverage", metavar="FILE", help="coverage measured on that same run (pytest --cov=<package>"
                                                      " --cov-context=test writes .coverage): says whether each scenario's"
                                                      " test ran the changed code")
@@ -513,7 +573,7 @@ def _main(argv=None) -> int:
     p = sub.add_parser("pr", description="Review a branch or pull request someone else wrote: map the commit it left"
                                          " its base at, compare it with the checkout, and print what the change reaches"
                                          " and did not change, with no spec needed. Findings are filed against pr-<id>.")
-    p.add_argument("base", nargs="?", help="the branch it will merge into (default: origin's default branch, or main)")
+    p.add_argument("base", nargs="?", help="the branch it will merge into (default: origin's default branch, else main, else master)")
     p.add_argument("--about", help="what the change says it does (its title and description); - reads stdin")
     p.add_argument("--about-file", metavar="FILE", help="the same, from a file")
     p.add_argument("--github", metavar="NUMBER", help="take the base, title and description from this GitHub pull request"
@@ -531,7 +591,7 @@ def _main(argv=None) -> int:
     p.add_argument("--about", nargs="+", metavar="NAME", help="the code it touches: `Owner.name`, `module.func`, a constant")
     p.add_argument("--done", metavar="ID", help="after the change: the quick-<slug> the first run printed")
     p.add_argument("--tests", metavar="FILE", help="test runner output (- for stdin): before the edit with the sentence,"
-                                                  " after it with --done; TAP, pytest -rA, or one PASS or FAIL line per test")
+                                                  " after it with --done; " + READS)
     p.add_argument("--coverage", metavar="FILE", help="with --done: coverage measured on that test run")
     p.add_argument("--id", help="name it quick-<id> (default: from the sentence)")
     p.add_argument("--to-spec", metavar="SPEC_ID", help="it grew: hand its baseline and test run to openspec/changes/<SPEC_ID>"
@@ -552,9 +612,9 @@ def _main(argv=None) -> int:
     p.add_argument("--force", action="store_true", help="install: replace a copy that was edited here")
     # Advanced commands: no help= keeps them out of the list at the top of --help; ADVANCED lists them.
     p = sub.add_parser("drift", description="Compare the code that the living specs (openspec/specs/) and finished changes"
-                                            " name in backticks with the map: what is gone, has moved, has changed signature"
-                                            " or could now be several things. Exits 1 when something is gone or changed"
-                                            " signature.")
+                                            " name in backticks with the map: what is gone, renamed, has moved, has changed"
+                                            " signature or could now be several things. Exits 1 when something is gone,"
+                                            " renamed or changed signature.")
     p.add_argument("path", nargs="?", default=".", help="the repository, or its openspec/ folder (default: here)")
     p.add_argument("--accept", action="store_true", help="the specs and the code agree as they are now: record that, in"
                                                          " openspec/leyline-anchors.json, to compare with later")
@@ -636,7 +696,7 @@ def _main(argv=None) -> int:
     p.add_argument("--no-sources", action="store_true", help="leave source text out of the page")
     p = sub.add_parser("record-tests", description="store a test run read from a test runner's output")
     p.add_argument("run", help="a label for the run, such as before or after")
-    p.add_argument("file", help="runner output (TAP, pytest -rA, or one PASS or FAIL line per test); - for stdin")
+    p.add_argument("file", help="runner output (" + READS + "); - for stdin")
     p = sub.add_parser("rules", description="check the architecture rules")
     p.add_argument("--confirm", type=int, metavar="ID", help="confirm a suggested rule")
     p = sub.add_parser("review", description="compare an implemented change with its proposal")
@@ -678,11 +738,11 @@ def _main(argv=None) -> int:
     p.add_argument("why", nargs="?", help="retire: why it no longer holds")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")
-    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report or Istanbul's"
-                                           " coverage-final.json")
+    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report, Istanbul's"
+                                           " coverage-final.json or an lcov file (lcov.info)")
     p.add_argument("--run", default="default", help="a name for this import")
     p.add_argument("--test", metavar="PATH", help="the one test file that ran, for a report with no per-test detail"
-                                                  " (Istanbul, Cobertura): ties what ran to that file")
+                                                  " (Istanbul, Cobertura, lcov with no TN: names): ties what ran to that file")
     p = sub.add_parser("state", description="fields assigned from outside the type that declares them")
     p.add_argument("scope", nargs="?", help="a module id or an id prefix")
     p = sub.add_parser("coupling", description="files that usually change in the same commits as a file (or, with no file,"
@@ -734,20 +794,37 @@ def _main(argv=None) -> int:
         _print(stats)
         return 0
     if args.cmd == "serve":
+        if not explicit:   # started in a folder inside the repository: the repository's store, as other commands
+            from .loop import find_store
+            args.db = str(find_store(Path.cwd()) or DEFAULT_DB)
         os.environ["LEYLINE_DB"] = args.db
         from .server import main as serve
         serve()
         return 0
     if args.cmd == "grade":
         from . import grade
+        if args.compiler != "roslyn" and not Path(args.compiler).is_file():   # before indexing the whole repository
+            print(f"leyline: no SCIP index at {args.compiler}: give a .scip file, or roslyn for C#.", file=sys.stderr)
+            return 2
         g = grade.grade(args.root, args.compiler, args.prefix, db=str(Path(args.db).with_suffix(".grade.db")))
         g.pop("_samples", None)
         _print(g)
         return 0
+    if not explicit:   # the repository's store, as --help says, from anywhere inside the repository
+        from .loop import find_store
+        args.db = str(find_store(Path.cwd()) or DEFAULT_DB)
     if not Path(args.db).exists():
         print(f"leyline: no store at {args.db}. Run `leyline map` first.", file=sys.stderr)
         return 2
     con = store.connect(args.db)
+    try:
+        return _with_store(args, con)
+    finally:
+        con.close()
+
+
+def _with_store(args, con) -> int:
+    """The commands that read or write one store, given open."""
     if args.cmd == "export":
         from . import export
         text = (export.fragment if args.fragment else export.page)(con, not args.no_sources)
@@ -760,7 +837,17 @@ def _main(argv=None) -> int:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # re-read the store on every load, so a re-index shows up on refresh
-                body = export.page(store.connect(args.db)).encode()
+                # Only a page opened as this machine: a web page whose name an attacker points at 127.0.0.1 (DNS
+                # rebinding) would otherwise be served the map, with every source file in it, as its own origin.
+                host = self.headers.get("Host") or ""
+                if host.rsplit(":", 1)[0] not in ("127.0.0.1", "localhost"):
+                    self.send_error(403, "the map is served to http://127.0.0.1 only")
+                    return
+                con = store.connect(args.db)
+                try:
+                    body = export.page(con).encode()
+                finally:
+                    con.close()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -838,6 +925,8 @@ def _main(argv=None) -> int:
         if args.confirm:
             _print(rules.confirm_rule(con, args.confirm))
         r = rules.check(con)
+        if not r["rules"]:
+            print("No rules yet; an agent adds one with the add_rule MCP tool, and `leyline rules --confirm ID` confirms it.")
         for x in r["rules"]:
             scope = x["from"] + (" -> " + x["to"] if x["to"] else "")
             print(f"{'ok  ' if x['passes'] else 'FAIL'}  #{x['id']} {x['kind']} {scope}  [{x['status']}]"
@@ -850,20 +939,28 @@ def _main(argv=None) -> int:
             _print(r)
         else:
             print(diff.review_text(r))
+        return 1 if "error" in r else 0
     elif args.cmd == "overview":
         o = query.overview(con)
         _print(o) if args.json else print(_summary(o))
     elif args.cmd == "expand":
-        _print(query.expand(con, args.node_id, args.limit))
+        r = query.expand(con, args.node_id, args.limit)
+        _print(r)
+        return 1 if "error" in r else 0
     elif args.cmd == "search":
         _print(query.search(con, args.text, args.kind, args.limit))
     elif args.cmd == "impact":
         return _impact(con, args)
     elif args.cmd == "neighbors":
-        _print(query.neighbors(con, args.node_id, args.direction, args.kinds))
+        r = query.neighbors(con, args.node_id, args.direction, args.kinds)
+        _print(r)
+        return 1 if "error" in r else 0
     elif args.cmd == "source":
         r = query.source(con, args.node_id)
-        print(r.get("text") or r.get("error"))
+        if "error" in r:
+            print(f"leyline: {r['error']}", file=sys.stderr)
+            return 1
+        print(r["text"])
     elif args.cmd in ("find-flows", "explain-path", "diagram"):
         from . import explain
         if args.cmd == "find-flows":

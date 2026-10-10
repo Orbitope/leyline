@@ -89,6 +89,28 @@ def test_page_carries_changes_and_workspaces(tmp_path):
     c.close()
 
 
+def test_source_text_cannot_end_or_swallow_the_data_script(tmp_path):
+    """`<!--` then `<script` in a source file put the browser's tokenizer in its double-escaped state, where the
+    real `</script>` after the data no longer ends it: the data ran on into the viewer's code and neither loaded."""
+    work = tmp_path / "web"
+    work.mkdir()
+    (work / "page.py").write_text('HEAD = "<!--<script>"\n\n\ndef render():\n    return HEAD + "</script>"\n')
+    db = tmp_path / "s.db"
+    index(work, db, "web")
+    c = store.connect(db)
+    page = export.page(c)
+    c.close()
+    data = re.search(r'<script id="leyline-data" type="application/json">(.*?)</script>', page, re.S).group(1)
+    assert "<" not in data                                          # nothing in it the tokenizer reads as markup
+    g = json.loads(data)
+    assert '"<!--<script>"' in g["sources"]["page.py"] and "</script>" in g["sources"]["page.py"]
+    html5lib = pytest.importorskip("html5lib")                     # as a browser parses it, when html5lib is here
+    doc = html5lib.parse(page, namespaceHTMLElements=False)
+    box = next(s for s in doc.iter("script") if s.get("id") == "leyline-data")
+    assert json.loads(box.text)["sources"]["page.py"] == g["sources"]["page.py"]
+    assert len(list(doc.iter("script"))) == page.count("</script>")
+
+
 def test_a_large_page_is_compressed(tmp_path, monkeypatch):
     db = tmp_path / "s.db"
     index(FIXTURE2, db, "f2")

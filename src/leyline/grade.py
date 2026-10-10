@@ -66,6 +66,7 @@ def compiler_sites(ix, scip_path: str, prefix: str = "") -> tuple[dict, set, set
             row, col, end = exact.occ_range(occ) or (len(lines), 0, 0)
             if row >= len(lines):
                 continue
+            col, end = (exact._chars(lines[row], c, doc.position_encoding) for c in (col, end))
             if sym.startswith("local "):
                 # A local the compiler could not tie to a declaration (often an import it failed to follow):
                 # a call through it is not judged either way.

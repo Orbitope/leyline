@@ -137,6 +137,22 @@ def test_entry_points_and_tests_come_with_the_flows_that_start_there(notes):
     assert main["reached_from"] and main["reached_from"][0]["flow"].startswith("flow:")
 
 
+def test_a_function_only_tests_reach_lists_those_tests(tmp_path, capsys):
+    """reached_from is entry-point flows only; a function no program reaches says which tests do."""
+    write(tmp_path, {"calc/tally.py": "def tally(xs):\n    return len(xs)\n",
+                     "calc/test_tally.py": "from tally import tally\n\n\ndef test_tally_counts_items():\n"
+                                           "    assert tally([1, 2]) == 2\n"})
+    db = tmp_path / ".leyline" / "leyline.db"
+    index(tmp_path, db, "calc")
+    con = store.connect(db)
+    c = next(c for c in explain.find_flows(con, "tally the items")["candidates"] if c["name"] == "tally")
+    assert c["flows"] == [] and c["reached_from"] == []
+    assert [x["flow"] for x in c["tests_reaching"]] == ["flow:" + node(con, "test_tally_counts_items")], c
+    con.close()
+    assert cli.main(["--db", str(db), "find-flows", "tally the items"]) == 0
+    assert "tests that reach it: flow:" in capsys.readouterr().out
+
+
 def test_nothing_to_look_for_is_an_error_and_unknown_words_find_nothing(notes):
     _, _, con = notes
     assert "error" in explain.find_flows(con, "how does it work")
@@ -207,6 +223,47 @@ def test_bad_starting_points_are_errors_with_candidates(notes):
     assert "nothing on the map" in explain.explain_path(con, "nosuchthing")["error"]
     assert explain.explain_path(con, "NoteEditor.onSave", to="nosuchthing")["error"].startswith("to:")
     assert explain._resolve(con, "PUT /api/notes/:id")["id"].endswith("route:PUT /api/notes/:id")
+
+
+ITEMS = {
+    "web/app.py": (
+        "class App:\n"
+        "    def route(self, path):\n"
+        "        return lambda f: f\n\n\n"
+        "app = App()\n\n\n"
+        "@app.route(\n"
+        '    "/items/<int:item_id>",\n'
+        ")\n"
+        "def show(item_id):\n"
+        "    return load(item_id)\n\n\n"
+        "def load(item_id):\n"
+        "    return item_id\n"),
+    "web/client.py": (
+        "def fetch(session):\n"
+        '    return session.get("/items/3")\n'),
+}
+
+
+@pytest.fixture(scope="module")
+def items(tmp_path_factory):
+    root = tmp_path_factory.mktemp("items")
+    write(root, ITEMS)
+    db = root / ".leyline" / "leyline.db"
+    index(root, db, "items")
+    con = store.connect(db)
+    yield con
+    con.close()
+
+
+def test_a_step_declares_the_function_not_its_decorator(items):
+    r = explain.explain_path(items, "show")
+    assert r["steps"][0]["declaration"] == "def show(item_id):", r["steps"][0]
+
+
+def test_a_route_a_named_function_serves_is_a_start(items):
+    r = explain.explain_path(items, "GET /items/<int:item_id>")
+    assert "error" not in r, r
+    assert [s["name"] for s in r["steps"]][:2] == ["show", "load"]
 
 
 def test_diagram_of_any_ids(notes):

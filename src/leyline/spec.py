@@ -25,20 +25,33 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
 from . import change, diff, rules, store
 from . import verdicts
 
-TASK = re.compile(r"^\s*[-*]\s*\[([^\]]*)\]\s*(\d+(?:\.\d+)*)?\.?\s*(.+?)\s*$")
+# A task's number ends at a dot, a colon, a bracket or a space: `2FA login` is text, not task 2.
+# matched against a line with its trailing spaces cut: a lazy text before \s*$ is quadratic in a run of spaces inside it
+TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*\[([^\]]*)\]\s*(?:(\d+(?:\.\d+)*)(?=[.:)\s])[.:)]?)?\s*(.+)$")
+# A scenario's step: `- **WHEN** ...`, also with the colon inside or after the bold (`**WHEN:**`, `**WHEN**:`).
+STEP = re.compile(r"^\s*[-*+]\s*\*\*(WHEN|GIVEN|AND|THEN)\s*:?\*\*:?\s*(.*)$")
 CODE = re.compile(r"`([^`\n]+)`")
 VERBS = (("add", ("add ", "create ", "introduce ", "new ", "implement ")), ("remove", ("remove ", "delete ", "drop ")),
          ("rename", ("rename ",)), ("signature", ("change the signature", "change signature", "add a parameter", "add parameter",
                                                   "remove a parameter", "change the return", "change return")))
 BEGIN, END = "<!-- leyline:begin -->", "<!-- leyline:end -->"
 REVIEWERS = ("logic", "performance")
+
+
+def action_of(lower: str) -> str:
+    """What a task (lower-cased) does to the code it names. "Add a parameter to `X`" changes X's signature: the longer
+    phrase wins over the "add " it starts with."""
+    if lower.startswith(dict(VERBS)["signature"]):
+        return "signature"
+    return next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)),
+                "behavior")
 
 
 def run_label(change_id: str, when: str) -> str:
@@ -64,6 +77,25 @@ def reviews(con, change_id: str) -> list[str]:
 
 
 # -- reading the folder ------------------------------------------------------------------------
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def unfenced(text: str) -> list[str]:
+    """The lines of Markdown outside fenced code (``` or ~~~): an example task or scenario in a fence is not one.
+    A fence closes on a line of the same character, at least as long, with nothing after it."""
+    out, fence = [], None
+    for line in text.splitlines():
+        m = FENCE.match(line)
+        if fence is None and m:
+            fence = m.group(1)
+        elif fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line.strip().strip(fence[0]):
+                fence = None
+        else:
+            out.append(line)
+    return out
+
+
 def parse(change_dir: str | Path) -> dict:
     """Read an OpenSpec change folder into its title, tasks, requirements and scenarios."""
     d = Path(change_dir)
@@ -71,9 +103,11 @@ def parse(change_dir: str | Path) -> dict:
         return {"error": f"no change folder at {d}"}
     out = {"id": d.name, "dir": str(d), "title": d.name.replace("-", " "), "why": "", "what": "", "tasks": [], "scenarios": [],
            "requirements": [], "problems": []}
+    # The repository the folder is in (above openspec/), else the folder: a file linked from outside it is not read.
+    top = next((p.parent for p in d.resolve().parents if p.name == "openspec"), d)
     proposal = d / "proposal.md"
-    if proposal.is_file():
-        text = proposal.read_text(encoding="utf-8", errors="replace")
+    if proposal.is_file() and store.inside(proposal, top):
+        text = proposal.read_text(encoding="utf-8-sig", errors="replace")
         m = re.search(r"^#\s+(.+)$", text, re.M)
         if m:
             out["title"] = re.sub(r"^(change|proposal)\s*:\s*", "", m.group(1).strip(), flags=re.I)
@@ -84,36 +118,48 @@ def parse(change_dir: str | Path) -> dict:
     else:
         out["problems"].append("proposal.md is missing")
     tasks = d / "tasks.md"
-    if tasks.is_file():
+    keys = Counter()   # numbering that restarts in each section (`1.` under two headings) still gives one key per task
+    if tasks.is_file() and store.inside(tasks, top):
         n = 0
-        for line in tasks.read_text(encoding="utf-8", errors="replace").splitlines():
-            m = TASK.match(line)
+        for line in unfenced(tasks.read_text(encoding="utf-8-sig", errors="replace")):
+            m = TASK.match(line.rstrip())
             if not m:
                 continue
             n += 1
             text = m.group(3)
             lower = text.lower().lstrip("`* ")
-            action = next((a for a, starts in VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)), "behavior")
-            out["tasks"].append({"key": m.group(2) or str(n), "text": text, "done": m.group(1).strip().lower() == "x",
-                                 "action": action, "names": CODE.findall(text)})
+            action = action_of(lower)
+            key = m.group(2) or str(n)
+            keys[key] += 1
+            out["tasks"].append({"key": key if keys[key] == 1 else f"{key} ({keys[key]})", "text": text,
+                                 "done": m.group(1).strip().lower() == "x", "action": action, "names": CODE.findall(text)})
     else:
         out["problems"].append("tasks.md is missing")
     for spec in sorted((d / "specs").rglob("spec.md")) if (d / "specs").is_dir() else []:
+        if not store.inside(spec, top):
+            continue
         capability = str(spec.parent.relative_to(d / "specs"))
         section = req = None
         cur = None
-        for line in spec.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in unfenced(spec.read_text(encoding="utf-8-sig", errors="replace")):
             if line.startswith("## "):
-                section = line[3:].strip().split()[0].upper()
+                section = (line[3:].split() or [""])[0].upper() or None   # `## ` alone names no section
             elif line.startswith("### Requirement:"):
                 req = line.split(":", 1)[1].strip()
                 out["requirements"].append({"capability": capability, "name": req, "kind": section or "ADDED"})
             elif line.startswith("#### Scenario:"):
-                cur = {"key": f"{capability}/{line.split(':', 1)[1].strip()}", "name": line.split(":", 1)[1].strip(),
+                name = line.split(":", 1)[1].strip()
+                key = f"{capability}/{name}"
+                keys[key] += 1
+                if keys[key] > 1:   # one test of that name would prove both
+                    out["problems"].append(f"{spec.relative_to(d)}: two scenarios are named \"{name}\"; a scenario is"
+                                           " proven by the test of its name, so give each its own")
+                    key += f" ({keys[key]})"
+                cur = {"key": key, "name": name,
                        "requirement": req, "capability": capability, "kind": section or "ADDED", "when": [], "then": []}
                 out["scenarios"].append(cur)
-            elif cur is not None and re.match(r"^\s*[-*]\s*\*\*(WHEN|GIVEN|AND|THEN)\*\*", line):
-                word = re.match(r"^\s*[-*]\s*\*\*(\w+)\*\*\s*(.*)$", line)
+            elif cur is not None and STEP.match(line):
+                word = STEP.match(line)
                 (cur["then"] if word.group(1) == "THEN" or (word.group(1) == "AND" and cur["then"]) else cur["when"]).append(word.group(2))
             elif re.match(r"^###\s+Scenario", line):
                 out["problems"].append(f"{spec.relative_to(d)}: a scenario heading needs four #, found three: {line.strip()}")
@@ -370,7 +416,8 @@ def _tests(con) -> dict:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower().replace("test_", "")).strip()
+    # `test_` only where a name starts: `test_shortest_path` is "shortest path", not "shorpath"
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"(?<![a-z0-9])test_", "", s.lower())).strip()
 
 
 def _result_keys(name: str) -> tuple[set, set]:
@@ -426,8 +473,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
     intent = parsed["what"] or parsed["why"] or parsed["title"]
     self_tests = _self_tests(con, [run_label(cid, "before"), run_label(cid, "after")])
     report = change.propose(con, intent, targets, parsed["title"], source="spec", change_id=cid,
-                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) if targets else {
-        "error": "no task names code that is on the map. Put code names in backticks in tasks.md."}
+                            keep_baseline=not new_baseline, test_entries={i: x["name"] for i, x in self_tests.items()}) \
+        if targets or parsed["tasks"] else {"error": "tasks.md has no tasks (`- [ ] 1.1 ...`)."}
+    # Tasks that name no code (docs, say) are for a person to check; the baseline still shows what else changed.
     tests = _tests(con)
     test_names = diff.TestNames(con)
     ran = _results_index(con.execute("SELECT name, status, message FROM test_results WHERE run = ?",
@@ -476,6 +524,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
         # A task that names no code (docs, a mutant list in a file the map does not read) is for the person to check.
         l["by_you"] = not (l["nodes"] or l["new"] or l["into"] or l["scenarios"])
     gaps += [f"must be edited but no task covers it: {m['name']} ({m.get('note', '')})" for m in uncovered]
+    if report.get("snapshot_error"):
+        gaps.append(f"the baseline of the code as it is now could not be kept ({report['snapshot_error']}), so `check`"
+                    " would have nothing to compare the change with: fix that, then plan again before changing the code")
     gaps += [f"scenario \"{s['name']}\" has no test of that name, and no task says it will add one"
              for s in scenarios if not s["test_exists"] and s["key"] not in planned]
     result = {"change_id": cid, "title": parsed["title"], "why": parsed["why"], "what": parsed["what"], "dir": parsed["dir"],
@@ -487,6 +538,7 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "shared_state": state, "left_alone": others, "patterns": patterns, "usually_changes_with": history,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
+              "learnings_unreadable": _learnings_unreadable(con),
               "baseline": report.get("snapshot"), "reviews": reviews(con, cid),
               "baseline_tests": con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1",
                                             (run_label(cid, "before"),)).fetchone() is not None,
@@ -506,7 +558,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
                          for l in links]
                         + [(cid, "scenario", s["key"], s["name"], s["kind"], json.dumps([s["test"]] if s["test"] else []),
                             json.dumps({"when": s["when"], "then": s["then"], "requirement": s["requirement"]})) for s in scenarios])
-    if write:
+    if write and (why := store.escapes(parsed["dir"])):
+        result["not_written"] = why
+    elif write:
         _write(Path(parsed["dir"]) / "leyline.md", brief_text(result))
         result["written"] = str(Path(parsed["dir"]) / "leyline.md")
     return result
@@ -536,8 +590,31 @@ def folder_gone(con, cid: str) -> bool:
     attrs = json.loads(row[0] or "{}") if row else {}
     if attrs.get("dir_repo"):
         root = store.roots(con).get(attrs["dir_repo"])
-        return root is not None and root.is_dir() and not (root / attrs["dir_rel"]).is_dir()
+        if root is None or not root.is_dir() or (root / attrs["dir_rel"]).is_dir():
+            return False
+        folder = root / attrs["dir_rel"]
+        archived = folder.parent / "archive"
+        if archived.is_dir() and any(f.is_dir() and f.name.endswith("-" + folder.name) for f in archived.iterdir()):
+            return True
+        # A folder committed on a branch that is not checked out is out of the working tree only until it is again.
+        return not _on_a_branch(root, attrs["dir_rel"])
     return bool(attrs.get("dir")) and not Path(attrs["dir"]).is_dir()
+
+
+def _on_a_branch(root: Path, rel: str) -> bool:
+    """True when the head of some local branch of the repository at `root` holds the folder `rel` (relative to root)."""
+    import subprocess
+    try:
+        git = lambda *a, **k: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=True,
+                                             **k).stdout
+        heads = git("for-each-ref", "--format=%(refname)", "refs/heads").split()
+        if not heads:
+            return False
+        path = git("rev-parse", "--show-prefix").strip() + rel   # as the commit names it: from the top of the repository
+        out = git("cat-file", "--batch-check", input="".join(f"{h}:{path}\n" for h in heads))
+    except (OSError, subprocess.CalledProcessError):   # not a git repository, or no git
+        return False
+    return any(line.split()[1:2] == ["tree"] for line in out.splitlines())   # "<oid> tree <size>", or "<name> missing"
 
 
 # -- channels and tests the map does not see as such -------------------------------------------------
@@ -895,13 +972,18 @@ def _patterns_touched(con, tasked: set) -> list[dict]:
 
 
 def _write(path: Path, body: str) -> None:
-    """Replace the generated block of a file, keeping anything a person wrote around it."""
+    """Replace the generated block of a file, keeping anything a person wrote around it. A block whose end marker
+    is missing (a write cut off, a merge gone wrong) runs to the end of the file. Written whole or not at all."""
     block = f"{BEGIN}\n{body.rstrip()}\n{END}\n"
     old = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-    if BEGIN in old and END in old:
-        path.write_text(old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"), encoding="utf-8")
+    start = old.find(BEGIN)
+    end = old.find(END, start) if start >= 0 else -1
+    if start < 0:
+        store.write_file(path, block)
+    elif end < 0:
+        store.write_file(path, old[:start] + block)
     else:
-        path.write_text(block, encoding="utf-8")
+        store.write_file(path, old[:start] + block + old[end + len(END):].lstrip("\n"))
 
 
 def _some(xs: list[str], n: int = 4) -> str:
@@ -948,7 +1030,10 @@ def brief_status(b: dict) -> dict:
     elif missing := [r for r in REVIEWERS if r not in done]:
         notes.append(f"No {' or '.join(missing)} review has run.")
     mine = [t["key"] for t in b["tasks"] if t.get("by_you")]
-    if mine:
+    if mine and len(mine) == len(b["tasks"]):
+        notes.append("No task names code that is on the map, so only you can check the tasks; `check` still says what"
+                     " else changed. Put code names in backticks in tasks.md if the change is to code.")
+    elif mine:
         notes.append(f"{'Task' if len(mine) == 1 else 'Tasks'} {', '.join(mine)} {'names' if len(mine) == 1 else 'name'} no code,"
                      " so you check {} yourself after the change; {} not hold up the verdict.".format(
                          "it" if len(mine) == 1 else "them", "it does" if len(mine) == 1 else "they do"))
@@ -979,7 +1064,9 @@ def _plain_summary(b: dict) -> str:
     if not imp.get("error"):
         s = imp["summary"]
         must = f"{_n(s['must_edit'], 'other place')} must be edited along with it" if s["must_edit"] else "Nothing else must be edited with it"
-        reach = (f"{_n(s['reached'], 'place')} in {_n(s['modules'], 'module')} {'runs' if s['reached'] == 1 else 'run'} into the "
+        # the modules the places that run into it are in, not every module the change touches
+        mods = sum(1 for g in imp.get("by_module") or [] if g.get("reached")) or s["modules"]
+        reach = (f"{_n(s['reached'], 'place')} in {_n(mods, 'module')} {'runs' if s['reached'] == 1 else 'run'} into the "
                  "changed code and may behave differently") if s["reached"] else "no other code runs into it"
         tests = (f"{_n(s['tests_to_run'], 'existing test')} already {'runs' if s['tests_to_run'] == 1 else 'run'} through it"
                  if s["tests_to_run"] else "no existing test runs through it")
@@ -1010,6 +1097,17 @@ def _past_decision(l: dict) -> str:
         return (f"Matches a past decision: {l['reason']} Whether its code changed since is not known: it was kept"
                 " before Leyline recorded that.")
     return f"Matches a past decision: {l['reason']}"
+
+
+def _learnings_unreadable(con) -> list[str]:
+    from . import learnings
+    return learnings.unreadable(con)
+
+
+def unreadable_lines(problems: Optional[list[str]]) -> list[str]:
+    """The page's word that past decisions could not be read, so their absence is not read as none applying."""
+    return ["", "Past decisions (learnings) were left out, so none are matched or listed here: "
+            + "; ".join(problems) + "."] if problems else []
 
 
 def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list[str]:
@@ -1163,6 +1261,7 @@ def brief_text(b: dict) -> str:
     else:
         L.append("No scenarios yet: nothing says what done means.")
     L += ["", "## Review findings", ""] + review_lines(b["findings"], b.get("reviews") or [])
+    L += unreadable_lines(b.get("learnings_unreadable"))
     st = brief_status(b)
     L += ["", "## Before implementation", ""]
     if st["blocking"]:
@@ -1238,7 +1337,7 @@ def near_change(con, change_id: str, evidence: list[str]) -> Optional[bool]:
 def findings(con, change_id: str) -> dict:
     from . import learnings
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
-    learned = learnings.by_finding(con)
+    learned = learnings.by_finding(con, change_id)
     out = []
     for r in con.execute("SELECT * FROM findings WHERE change_id = ? ORDER BY created", (change_id,)):
         ev = json.loads(r["evidence"] or "[]")
@@ -1252,15 +1351,28 @@ def findings(con, change_id: str) -> dict:
 
 
 # -- verification --------------------------------------------------------------------------------
-def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True) -> dict:
-    """After implementation and a re-index: was the change made as the spec says?"""
+def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True,
+           old_run: Optional[str] = None) -> dict:
+    """After implementation and a re-index: was the change made as the spec says? `old_run` names results left out
+    because the code changed after they ran: a scenario they carry has a test, whose results are out of date."""
     parsed = parse(change_dir)
     if "error" in parsed:
         return parsed
     cid = "spec-" + parsed["id"]
+    planned = con.execute("SELECT 1 FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    if planned and parsed["tasks"] and not con.execute("SELECT 1 FROM spec_items WHERE change_id = ? LIMIT 1", (cid,)).fetchone():
+        # The plan stored the change, and stopped before its tasks and scenarios: there is nothing to judge.
+        kept = diff.snapshot_path(con, cid).exists()
+        return {"error": f"the last plan of {parsed['id']} did not finish, so its tasks were not stored.",
+                "next": [f"Next: run `leyline plan {parsed['id']}` again" + (" (the baseline it took is kept)" if kept else
+                         " on the code as it was before the change") + ", then check it again."]}
     review = diff.review(con, cid, before_run, after_run)
     if "error" in review:
-        return {"error": review["error"] + (" Run `leyline plan` on the change before it is implemented."
+        if review["error"].startswith("No change"):   # never planned, or the plan stopped at an error
+            return {"error": f"{parsed['id']} has not been planned, so there is nothing to compare the code with.",
+                    "next": [f"Next: run `leyline plan {parsed['id']}` (the `plan` tool) on the code as it was before the"
+                             " change (undo the edits, or start from the commit before them), then check it again."]}
+        return {"error": review["error"] + (f" Run `leyline plan {parsed['id']}` on the change before it is implemented."
                                             if review["error"].startswith("No snapshot") else "")}
     names = _Names(con)
     g = review["graph"]["nodes"]
@@ -1276,10 +1388,12 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     test_names = diff.TestNames(con)
     results = {r["name"]: r for r in con.execute("SELECT * FROM test_results WHERE run = ?", (after_run,))} if after_run else {}
     index = _results_index(results.values())
+    older = _results_index(con.execute("SELECT * FROM test_results WHERE run = ?", (old_run,)).fetchall()) if old_run else None
     from . import coverage as measured
     own_checks = _self_tests(con, [r for r in (before_run, after_run) if r])
 
     scenarios, scenario_ran = [], {}
+    scenario_name = {s["key"]: s["name"] for s in parsed["scenarios"]}
     for s in parsed["scenarios"]:
         tid = tests.get(_norm(s["name"]))
         gen = None if tid else _generated(test_names, s["name"])
@@ -1287,6 +1401,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         scenario_ran[s["key"]] = bool(rows)
         failed = [r for r in rows if r["status"] == "fail"]
         state = ("fails" if failed else "passes" if any(r["status"] == "pass" for r in rows) else "skipped" if rows
+                 else "results older than the code" if older and _scenario_results(older, s["name"])
                  else "test exists, not run" if tid or gen else "no test")
         ran_change = None
         if tid and measured.has(con):
@@ -1333,10 +1448,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         unproven = []
         for key in extra.get("scenarios", []):       # a task to write a scenario's test is done when that test exists or ran
             want += 1
-            there = _norm(key.split("/", 1)[-1]) in tests or scenario_ran.get(key, False)
+            title = scenario_name.get(key, key.split("/", 1)[-1])
+            there = _norm(title) in tests or scenario_ran.get(key, False)
             got += there
             if not there:
-                unproven.append(f"a result for the test \"{key.split('/', 1)[-1]}\"")
+                unproven.append(f"a result for the test \"{title}\"")
         if not want and extra.get("into"):           # "add something to `Foo`": done when something inside Foo is new or edited
             want = 1
             files = {r[0] for i in extra["into"] for r in con.execute("SELECT node_id FROM ancestry WHERE file_id = ? OR module_id = ?", (i, i))}
@@ -1369,6 +1485,18 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     # New code a task named (`build_cases.case_x`, `func` in `file.py`) is the task's, found the way the plan found it.
     drift = [n for n in review["not_predicted"] if n not in tests_touched and not in_container(n["id"])
              and n["id"] not in declared and n["id"] not in named]
+    # Named code that is gone took what was inside it along (a class's members, a file's functions): not edits of their own.
+    gone_named = sorted(i for i in named if i not in names.by_id)
+    if gone_named and drift:
+        was = diff._open(diff.snapshot_path(con, cid))
+        try:
+            marks = ",".join("?" * len(gone_named))
+            went = {r[0] for r in was.execute(f"SELECT node_id FROM ancestry WHERE file_id IN ({marks}) OR module_id IN ({marks})",
+                                              gone_named + gone_named)}
+        finally:
+            was.close()
+        drift = [n for n in drift if not (n["id"] in removed and (n["id"] in went or any(
+            n["id"].startswith((i + ".", i + "/", i + "(")) for i in gone_named)))]
     # A new function that only code named in the spec calls is how a task got done, not a change of its own.
     in_spec = {t for t in touched if t not in {n["id"] for n in drift}} | named
     helpers = []
@@ -1415,6 +1543,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings),
                       "kinds": reviews(con, cid), "all": all_findings},
            "baseline": review.get("baseline"),
+           "baseline_other_version": review.get("baseline_other_version", False),
            "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results),
                            "skipped": sum(r["status"] == "skip" for r in results.values())} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
@@ -1423,7 +1552,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     out["how_it_runs"] = diagrams.safe(diagrams.for_snapshot, diff.snapshot_path(con, cid), con,
                                        [n["id"] for k in ("edited", "resigned", "added") for n in g[k]]
                                        or [n["id"] for n in g["types_edited"]], [n["id"] for n in g["removed"]])
-    if write:
+    if write and (why := store.escapes(parsed["dir"])):
+        out["not_written"] = why
+    elif write:
         path = Path(parsed["dir"]) / "leyline.md"
         body = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         head = body[body.index(BEGIN) + len(BEGIN):body.index(END)].strip() if BEGIN in body and END in body else ""
@@ -1432,14 +1563,21 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         head = re.sub(r"^\*\*State:.*$", lambda _: check_state(out), head, count=1, flags=re.M)
         _write(path, head + "\n\n" + verify_text(out))
         out["written"] = str(path)
+    # The latest check decides: the change is finished (verified) only while its last check found it done. Each check
+    # is kept in `checks`. Done, the baseline stays (it is small), so a later edit can be checked against the same
+    # start; it goes with `leyline spec forget`, or once the change folder is archived or removed.
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    attrs = json.loads(row[0] or "{}") if row else {}
+    at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    attrs["checks"] = (attrs.get("checks") or [])[-19:] + [{"at": at, "done": bool(out["done_as_agreed"])}]
     if out["done_as_agreed"]:
-        # Done. The baseline stays (it is small), so a later edit can be checked against the same start; it goes
-        # with `leyline spec forget`, or once the change folder is archived or removed.
-        row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
-        attrs = json.loads(row[0] or "{}") if row else {}
-        attrs["verified"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        with con:
-            con.execute("UPDATE change_proposals SET status = 'verified', attrs = ? WHERE id = ?", (json.dumps(attrs), cid))
+        attrs["verified"] = at
+    else:
+        attrs.pop("verified", None)
+    with con:
+        con.execute("UPDATE change_proposals SET status = ?, attrs = ? WHERE id = ?",
+                    ("verified" if out["done_as_agreed"] else "implemented", json.dumps(attrs), cid))
+    if out["done_as_agreed"]:
         from . import drift   # what each code name meant now that it is agreed: `leyline drift` compares later code with it
         out["anchors"] = drift.record(con, change_dir, write_file=write)
     return out
@@ -1473,6 +1611,9 @@ def verify_text(v: dict) -> str:
          " and each scenario from the test results.", "",
          "**Yes.** " + _yes(v) if v["done_as_agreed"]
          else "**Not yet:** " + "; ".join(v["why_not"]) + ".", "",
+         *(["*The baseline was taken by another version of Leyline (or one that did not record its version), which may"
+            " have read the same code differently: a change below that the diff does not show comes from that, not from"
+            " the edit.*", ""] if v.get("baseline_other_version") else []),
          "| Task | Result | Verdict | Missing |", "| --- | --- | --- | --- |"]
     for t in v["tasks"]:
         L.append(f"| {t['key']} {_clip(t['text'], 70).replace('|', '/')} | {t['state']} | {t.get('verdict', '')} | {', '.join(t['missing'])} |")
@@ -1622,6 +1763,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
     return {
         "change_id": b["change_id"], "title": b["title"],
         "learnings_that_apply": learnings.applying(con, b["change_id"], tasked),   # past decisions: read these first
+        "learnings_unreadable": learnings.unreadable(con),   # so an empty list above is not taken as "none apply"
         "related_changes": b.get("related_changes") or {},   # earlier changes to the same code
         "logic": {
             "must_edit_with_no_task": b["must_edit_uncovered"],

@@ -11,6 +11,7 @@ import functools
 import inspect
 import json
 import os
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -65,13 +66,41 @@ def _path() -> str:
     return os.environ.get("LEYLINE_DB") or ".leyline/leyline.db"
 
 
+_START = Path.cwd().resolve()   # where the server was started: the place of the first map
+
+
+def _outside(path, what: str) -> Optional[str]:
+    """An error when a path an agent passed is outside the repositories the store maps (before anything is mapped,
+    the directory the server started in). The agent may have read untrusted text naming the path (map ~/, plan a
+    folder elsewhere, import a file from anywhere); the person at the command line is not limited."""
+    allowed = []
+    if Path(_path()).is_file():
+        try:
+            allowed = [Path(r).resolve() for r in store.roots(_db()).values()]
+        except (sqlite3.Error, OSError):
+            allowed = []
+    allowed = allowed or [_START]
+    try:
+        p = Path(path).resolve()
+    except (OSError, RuntimeError):
+        return f"{what} {path!r} cannot be resolved."
+    if any(p == r or r in p.parents for r in allowed):
+        return None
+    return (f"{what} {path!r} ({p}) is outside the repositories this server maps ({', '.join(map(str, allowed))}):"
+            " a tool reads and writes only inside them. If the person wants it, they can run the `leyline` command"
+            " themselves, or start the server in that repository.")
+
+
 def _db() -> sqlite3.Connection:
     # The server may run each tool call on a different worker thread, and a SQLite connection
-    # belongs to the thread that opened it. Keep one per thread.
+    # belongs to the thread that opened it. Keep one per thread, for the store the path names now.
     con = getattr(_local, "con", None)
-    if con is None or getattr(_local, "gen", None) != _generation[0]:
+    where = str(Path(_path()).resolve())
+    if con is None or getattr(_local, "gen", None) != _generation[0] or getattr(_local, "where", None) != where:
+        if con is not None:
+            con.close()
         con = _local.con = store.connect(_path())
-        _local.gen = _generation[0]
+        _local.gen, _local.where = _generation[0], where
     return con
 
 
@@ -107,18 +136,27 @@ def _cap(x, n: int, keep: tuple = (), cut: Optional[dict] = None, path: str = ""
     return cut
 
 
-def _largest(x, path: str = "", best=None):
-    """The longest list (of more than 3 items) or string (over 1,000 characters) inside x, as
-    (size, holder, key, path)."""
+CUT_MARK = re.compile(r"\n\[\.\.\. cut here: ([\d,]+) characters in all\]$")
+
+
+def _uncut(s: str) -> tuple[str, int]:
+    """A string as it was before `_fit` cut it, as far as it is kept: (what is left of it, its whole length)."""
+    m = CUT_MARK.search(s)
+    return (s[:m.start()], int(m[1].replace(",", ""))) if m else (s, len(s))
+
+
+def _largest(x, path: str = "", best=None, floor: tuple = (3, 1000)):
+    """The longest list (of more than floor[0] items) or string (over floor[1] characters, not counting the mark of
+    an earlier cut) inside x, as (size, holder, key, path)."""
     items = x.items() if isinstance(x, dict) else enumerate(x) if isinstance(x, list) else ()
     for k, v in items:
         p = f"{path}.{k}" if isinstance(k, str) and path else (k if isinstance(k, str) else f"{path}[]")
-        if (isinstance(v, list) and len(v) > 3) or (isinstance(v, str) and len(v) > 1000):
+        if (isinstance(v, list) and len(v) > floor[0]) or (isinstance(v, str) and len(_uncut(v)[0]) > floor[1]):
             size = len(_dump(v))
             if best is None or size > best[0]:
                 best = (size, x, k, p)
         if isinstance(v, (dict, list)):
-            best = _largest(v, p, best)
+            best = _largest(v, p, best, floor)
     return best
 
 
@@ -128,25 +166,28 @@ MORE = ("Lists were cut to keep this answer short; `cut` says which (shown of to
 
 def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE) -> str:
     """The answer as compact JSON of at most about `limit` characters: the longest lists and strings are
-    shortened until it fits, and `cut` says what was cut."""
+    shortened until it fits (to 3 items and 1,000 characters, then, when that is not enough, to 1 item and 200
+    characters), and `cut` says what was cut."""
     text = _dump(out)
-    for _ in range(200):
-        if len(text) <= limit:
-            break
-        best = _largest(out)
-        if best is None:
-            break
-        size, holder, key, p = best
-        v, excess = holder[key], len(text) - limit + 200
-        if isinstance(v, list):
-            keep = max(3, min(len(v) - 1, len(v) - -(-excess * len(v) // max(size, 1))))
-            cut[p] = f"{keep} of {cut[p].split(' of ')[1] if p in cut else len(v)}"
-            holder[key] = v[:keep]
-        else:
-            keep = max(1000, len(v) - excess)
-            holder[key] = v[:keep] + f"\n[... cut here: {len(v):,} characters in all]"
-            cut[p] = f"{keep:,} of {len(v):,} characters"
-        text = _dump({**out, "cut": cut} if cut else out)
+    for floor in ((3, 1000), (1, 200)):
+        for _ in range(200):
+            if len(text) <= limit:
+                break
+            best = _largest(out, floor=floor)
+            if best is None:
+                break
+            size, holder, key, p = best
+            v, excess = holder[key], len(text) - limit + 200
+            if isinstance(v, list):
+                keep = max(floor[0], min(len(v) - 1, len(v) - -(-excess * len(v) // max(size, 1))))
+                cut[p] = f"{keep} of {cut[p].split(' of ')[1] if p in cut else len(v)}"
+                holder[key] = v[:keep]
+            else:
+                body, whole = _uncut(v)   # a string cut before is cut again from what is left, and keeps its length
+                keep = max(floor[1], len(body) - excess)
+                holder[key] = body[:keep] + f"\n[... cut here: {whole:,} characters in all]"
+                cut[p] = f"{keep:,} of {whole:,} characters"
+            text = _dump({**out, "cut": cut, "more": more} if cut else out)
     if cut:
         out["cut"], out["more"] = cut, more
         text = _dump(out)
@@ -166,6 +207,8 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
         try:
             why = _missing() if needs_store else None
             out = {"error": why} if why else fn(*args, **kwargs)
+        except store.UntrustedStore as e:
+            out = {"error": str(e)}
         except sqlite3.OperationalError as e:
             # A map running in another process holds the write lock, or changed the tables under this connection.
             _generation[0] += 1
@@ -191,8 +234,7 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
 NodeId = Annotated[str, Field(description="A node id exactly as `search`, `overview` or `expand` returned it.")]
 ChangeArg = Annotated[str, Field(description="The change: its folder (openspec/changes/<id>, absolute or relative to the"
                                              " server's directory) or just its id.")]
-TestOutput = Annotated[Optional[str], Field(description="The test runner's output as text: TAP (vitest --reporter=tap,"
-                                                        " node --test), `pytest -rA`, or one PASS or FAIL line per test."
+TestOutput = Annotated[Optional[str], Field(description="The test runner's output as text: " + diff.READS + "."
                                                         " Use this or test_results.")]
 
 
@@ -239,6 +281,8 @@ def _change(arg: str) -> tuple[Optional[Path], Optional[str]]:
     folder = loop.find_change(arg, _path())
     if folder is None and arg.startswith("spec-"):
         folder = loop.find_change(arg[5:], _path())
+    if folder is not None and (why := _outside(folder, "The change folder")):
+        return None, why
     if folder is None or not (folder / "tasks.md").is_file() and not (folder / "proposal.md").is_file():
         return None, (f"No change folder {arg!r}: looked for it as a path from {Path.cwd()} and under openspec/changes/"
                       " in the mapped repositories. Write the change first, as openspec/changes/<id>/ with proposal.md,"
@@ -263,8 +307,7 @@ def _results(test_output: Optional[str], test_results: Optional[list[dict]]):
         return None, None
     parsed = diff.parse_test_output(test_output)
     if not parsed:
-        return None, ("found no test results in test_output: it reads TAP (vitest --reporter=tap, node --test), pytest -rA,"
-                      " or one PASS or FAIL line per test. Pass other formats as test_results.")
+        return None, (f"found no test results in test_output: it reads {diff.READS}. Pass other formats as test_results.")
     return parsed, None
 
 
@@ -296,6 +339,9 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
     """Loop step 1: index the code into the store this server reads. Call it once, when a tool says nothing is
     mapped, or to add a repository. `plan` and `check` re-map changed code on their own. Returns what was found,
     the map page a person can open, and `next`."""
+    for p in paths or []:
+        if (why := _outside(p, "The directory")):
+            return {"error": why}
     bad = [p for p in paths or [] if not Path(p).is_dir()]
     if bad:
         return {"error": f"Not a directory: {', '.join(map(str, bad))}. Pass repository directories (relative paths are"
@@ -366,6 +412,8 @@ def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestR
     folder, err = _change(change)
     if err:
         return {"error": err}
+    if coverage_path and (why := _outside(coverage_path, "The coverage file")):
+        return {"error": why}
     results, err = _results(test_output, test_results)
     if err:
         return {"error": err}
@@ -548,11 +596,12 @@ def impact(node_id: NodeId,
     gives a fuller assessment and saves it as a view."""
     if (err := _known(node_id)):
         return err
-    r = query.impact(_db(), node_id, max_depth)
+    r = query.impact(_db(), node_id, max_depth, limit)
     mods = r["by_module"]
     for m in mods:
-        if len(m["direct"]) > 5:
-            m["direct"], m["direct_more"] = m["direct"][:5], len(m["direct"]) - 5
+        total = m.pop("direct_total", len(m["direct"]))
+        if total > 5:
+            m["direct"], m["direct_more"] = m["direct"][:5], total - 5
     r["by_module"] = {"total": len(mods), "items": mods[:limit]}
     r["flows_through"]["items"] = r["flows_through"]["items"][:limit]
     return r
@@ -618,8 +667,9 @@ def find_flows(description: Annotated[str, Field(min_length=1, description="What
     """Where a described behavior could start, best first: entry points, route handlers, UI event handlers, message
     handlers, commands, tests whose names state the behavior, and other functions, ranked by the words they share
     with the description (code names split, endings cut, a few synonyms such as save, write, persist). Each comes
-    with why it matched, its kind, file:line, the flows that start there or reach it. When `ambiguous` is true, show
-    the person the top few and ask which they mean. Then walk one with `explain_path`."""
+    with why it matched, its kind, file:line and `flows`, the flows that start there; one where none starts has
+    `reached_from`, the entry points' flows that reach it, and `tests_reaching`, the tests' flows that reach it. When
+    `ambiguous` is true, show the person the top few and ask which they mean. Then walk one with `explain_path`."""
     from . import explain
     return explain.find_flows(_db(), description, limit)
 
@@ -826,16 +876,24 @@ def change_coupling(path: Annotated[Optional[str], Field(description="A file: it
 @_tool(items=50)
 def coverage(node_id: Annotated[Optional[str], Field(description="A function: the tests under which it ran.")] = None,
              flow_id: Annotated[Optional[str], Field(description="A test's flow: its static path against what ran.")] = None,
-             import_path: Annotated[Optional[str], Field(description="A coverage.py data file or Cobertura XML report to"
-                                                                     " read into the store first.")] = None) -> dict:
+             import_path: Annotated[Optional[str], Field(description="A coverage.py data file, Cobertura XML report,"
+                                                                     " Istanbul coverage-final.json or lcov.info to"
+                                                                     " read into the store first.")] = None,
+             test: Annotated[Optional[str], Field(description="With import_path: the one test file that ran, for a"
+                                                              " report with no per-test detail (Istanbul, Cobertura,"
+                                                              " lcov with no TN: names);"
+                                                              " what ran is tied to that file.")] = None) -> dict:
     """Measured test coverage, as opposed to the static paths in `flows`. With no argument: per module, how many
     functions ran, how many are on a test's path but never ran, and how many ran through links the map does not
-    have."""
+    have. An Istanbul or Cobertura report covers a whole run: run one test file at a time and import each with
+    `test` naming that file."""
     out = {}
     if import_path:
+        if (why := _outside(import_path, "The coverage file")):
+            return {"error": why}
         if not Path(import_path).is_file():
             return {"error": f"No file at {import_path} (relative paths are from {Path.cwd()})."}
-        imported = measured.import_file(_db(), import_path)
+        imported = measured.import_file(_db(), import_path, test=test)
         if isinstance(imported, dict) and "error" in imported:
             return imported
         out["imported"] = imported
@@ -852,11 +910,13 @@ def coverage(node_id: Annotated[Optional[str], Field(description="A function: th
 def affected_tests(change: Annotated[str, Field(description="The change: its folder or id (a planned spec), or a review"
                                                             " id such as pr-123.")]) -> dict:
     """The tests to run for a change, each with why, and `commands` that run them (pytest node ids,
-    `npx vitest run <files>`, `npx jest <files>`, `go test -run`). With per-test coverage imported, the tests
+    `npx vitest run <files>`, `npx jest --runTestsByPath <files>`, `go test -run`). With per-test coverage imported, the tests
     measured running the changed or must-edit code; otherwise, and for changed code no measured test ran, the tests
     whose path on the map passes through it. Run these, then pass their output to `check`."""
     from . import affected
     folder = loop.find_change(change, _path())
+    if folder is not None and (why := _outside(folder, "The change folder")):
+        return {"error": why}
     with _lock:
         try:
             loop.refresh(_path())
@@ -900,7 +960,7 @@ def spec_review_facts(change: ChangeArg,
 @_tool(needs_store=False, items=20, keep=("next", "blocking"),
        more="Lists were cut to keep this answer short; `page` has the whole review page and `spec_review_facts` the facts.")
 def review_pr(base: Annotated[Optional[str], Field(description="The branch the change will merge into, or a commit."
-                                                             " Default: origin's default branch, else main.")] = None,
+                                                             " Default: origin's default branch, else main, else master.")] = None,
               about: Annotated[Optional[str], Field(description="What the change says it does: its title and"
                                                               " description. Default: its commit messages.")] = None,
               github: Annotated[Optional[str], Field(description="A GitHub pull request number: base, title and"
@@ -918,6 +978,8 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
     nothing does. Then run the adversarial review on the returned `change_id` with `spec_review_facts` and
     `spec_finding`, as for a spec."""
     from . import pr
+    if (why := _outside(path, "The checkout")):
+        return {"error": why}
     try:
         with _lock:
             try:
@@ -957,6 +1019,8 @@ def quick(what: Annotated[Optional[str], Field(description="Before the edit: the
     new test output: one verdict (`done`), each item proven, partial, contradicted, inconclusive or needs a person, the
     edits outside the named code and the callers left broken. When `grown` is not empty, write a spec and use `plan`."""
     from . import quick as quick_mod
+    if coverage_path and (why := _outside(coverage_path, "The coverage file")):
+        return {"error": why}
     results, err = _results(test_output, test_results)
     if err:
         return {"error": err}
@@ -1064,6 +1128,8 @@ def drift(path: Annotated[Optional[str], Field(description="The repository or it
     body (changed inside; not drift by itself) or ok. Re-maps changed code first. `fails` is true when something is
     gone, renamed or changed signature."""
     from . import drift as drift_mod
+    if path is not None and (why := _outside(path, "The path")):
+        return {"error": why}
     with _lock:
         try:
             r = drift_mod.run(_path(), path if path is not None else Path.cwd(), accept)

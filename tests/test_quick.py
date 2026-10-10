@@ -3,6 +3,7 @@ that run it. After: one verdict from the code and the test results, and the way 
 
 import io
 import json
+import os
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -89,6 +90,13 @@ def test_a_constant_and_its_caller(repo):
     assert "`test_get` passed" in page and "grown past" not in page
 
 
+def test_the_places_that_run_into_it_are_counted_in_their_own_modules(repo):
+    """count is in app; the one place that runs into it, test_count, is in tests: one module, not two."""
+    code, page = run("quick", "count lines", "--about", "app.use.count", "--tests", "-", stdin=PASSING)
+    assert code == 0, page
+    assert "Runs into it: 1 place in 1 module;" in page, page
+
+
 def test_an_edit_outside_the_named_code_is_partial_until_named(repo):
     run("quick", "make the retry count 3", "--about", "RETRIES", "--tests", "-", stdin=PASSING)
     edit(repo, "app/net.py", "RETRIES = 5", "RETRIES = 3")
@@ -141,6 +149,14 @@ def test_a_signature_change_that_leaves_a_caller_broken(repo):
     assert "| 1.1 " in out and "| 1.2 " in out and "not done" not in out.split("## 4.")[1].split("| Scenario")[0], out
 
 
+def test_adding_a_parameter_is_a_change_of_signature(repo):
+    """"add a parameter to `load`" was read as adding code, so the callers that must change with it were not named."""
+    assert quick._action("add a parameter `encoding` to `load`") == "signature"
+    code, page = run("quick", "add a parameter `encoding` to `load`", "--tests", "-", stdin=PASSING)
+    must = next(ln for ln in page.splitlines() if ln.startswith("Must edit with it"))
+    assert "first` (its call must change)" in must and "count` (its call must change)" in must, page
+
+
 def test_the_review_steps_take_a_quick_id(repo):
     run("quick", "make the retry count 3", "--about", "RETRIES", "fetch")
     edit(repo, "app/net.py", "RETRIES = 5", "RETRIES = 3")
@@ -178,3 +194,68 @@ def test_nothing_changed_is_inconclusive(repo):
     run("quick", "make the retry count 3", "--about", "RETRIES", "--tests", "-", stdin=PASSING)
     code, page = run("quick", "--done", "quick-make-the-retry-count-3", "--tests", "-", stdin=PASSING)
     assert code == 1 and "Edits stayed in the named code: inconclusive" in page
+
+
+def test_a_start_stopped_while_keeping_the_source_leaves_done_able_to_run(repo, monkeypatch):
+    """The text of the files a quick change will edit is kept beside its baseline. Written in place, a start stopped part
+    way (a full disk, a killed process) left half a JSON file, and every `--done` after it failed on it."""
+    import pathlib
+    real = pathlib.Path.write_text
+
+    def cut_off(self, data, *a, **k):
+        if self.name.endswith(".src.json"):
+            real(self, data[:20], *a, **k)
+            raise OSError(28, "No space left on device")
+        return real(self, data, *a, **k)
+
+    real_replace = os.replace
+
+    def fails_late(src, dst, *a, **k):
+        if str(dst).endswith(".src.json"):
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *a, **k)
+    with monkeypatch.context() as m:
+        m.setattr(pathlib.Path, "write_text", cut_off)
+        m.setattr("os.replace", fails_late)
+        with pytest.raises(OSError):
+            quick.start(repo / ".leyline/leyline.db", "make the retry count 3", ["RETRIES"])
+    edit(repo, "app/net.py", "def fetch(url, tries=RETRIES):", "def fetch(url, tries=RETRIES * 2):")
+    code, page = run("quick", "make the retry count 3", "--about", "RETRIES")   # started again: the first baseline stays
+    assert code == 0 and "still compares with the code as it was then" in page, page
+    code, page = run("quick", "--done", "quick-make-the-retry-count-3", "--tests", "-", stdin=PASSING)
+    assert "No caller left broken" in page, page
+
+
+def test_done_after_a_start_that_did_not_finish_says_to_start_again(repo, monkeypatch):
+    """A start stopped after it stored the change but before it marked it a quick change: `--done` answered "no quick
+    change X started here (there are: X)"."""
+    from leyline import spec
+
+    def dies(*a, **k):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(spec, "_crossings", dies)
+        with pytest.raises(KeyboardInterrupt):
+            quick.start(repo / ".leyline/leyline.db", "make the retry count 3", ["RETRIES"])
+    code, page = run("quick", "--done", "quick-make-the-retry-count-3")
+    assert code != 0 and "there are: quick-make-the-retry-count-3" not in page, page
+    assert "did not finish" in page, page
+
+
+def test_starting_again_after_a_constant_changed_keeps_the_first_tests_and_source(repo):
+    """An edit to a module-level constant only (the flagship "make the retry count 3") did not count as the code moving
+    on: starting the change again recorded the tests from the edited code as the "before" run, and kept the edited
+    file's text as the source from before."""
+    db = repo / ".leyline/leyline.db"
+    first = quick.start(db, "make the retry count 3", ["RETRIES"], diff.parse_test_output(PASSING))
+    assert first["tests_recorded"]
+    edit(repo, "app/net.py", "RETRIES = 5", "RETRIES = 3")
+    again = quick.start(db, "make the retry count 3", ["RETRIES"], diff.parse_test_output("FAIL test_get\nPASS test_count\n"))
+    assert again["baseline"] == "kept" and not again["tests_recorded"]
+    con = store.connect(db)
+    try:
+        assert [r[0] for r in con.execute("SELECT status FROM test_results WHERE run = ? AND name = 'test_get'",
+                                          ("before:" + first["change_id"],))] == ["pass"]
+        assert "RETRIES = 5" in quick._old_source(con, first["change_id"])("app/net.py")
+    finally:
+        con.close()

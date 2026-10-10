@@ -11,6 +11,7 @@ or the order of the spec commands. The CLI and the MCP server both call these.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -65,8 +66,13 @@ def _roots(con) -> dict[str, Path]:
 
 def changed_files(db: str | Path) -> list[str]:
     """Source files added, edited or deleted since the store was indexed. Cheap next to indexing: it only hashes."""
+    return _changes(db)[0]
+
+
+def _changes(db: str | Path) -> tuple[list[str], dict]:
+    """changed_files, and each repository's listing it read (an index run right after takes it, not listing again)."""
     from .adapters import BY_EXTENSION
-    from .indexer import list_files, read_source
+    from .indexer import read_source, scan
 
     con = store.connect(db)
     try:
@@ -75,12 +81,13 @@ def changed_files(db: str | Path) -> list[str]:
             "SELECT repo_id, path, content_hash FROM nodes WHERE kind = 'file' AND layer = 'fact'")}
     finally:
         con.close()
-    out = []
+    out, listings = [], {}
     for repo, root in roots.items():
         if not root.is_dir():
             continue
         now = set()
-        for f in list_files(root):
+        listings[repo] = listing = scan(root)
+        for f in listing.files:
             if "." + f.rsplit(".", 1)[-1] not in BY_EXTENSION:
                 continue
             now.add(f)
@@ -91,7 +98,7 @@ def changed_files(db: str | Path) -> list[str]:
             if data is None or known.get((repo, f)) != hashlib.sha1(data).hexdigest():
                 out.append(f)
         out += [p for (r, p) in known if r == repo and p not in now]
-    return sorted(set(out))
+    return sorted(set(out)), listings
 
 
 def made_by_another_version(db: str | Path) -> bool:
@@ -111,7 +118,8 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
     leyline.incremental; `full` does everything). Returns the index stats, or None."""
     from .indexer import index
 
-    if not force and not changed_files(db) and not made_by_another_version(db):
+    changed, listed = _changes(db) if not force else ([], {})
+    if not force and not changed and not made_by_another_version(db):
         return None
     con = store.connect(db)
     try:
@@ -124,11 +132,52 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
         return None
     if len(roots) == 1:   # the repo id may not be the directory name (--repo), so pass it
         (rid, root), = roots.items()
-        return index(root, db, rid, exact, full=full)
-    return index(list(roots.values()), db, None, exact, full=full)
+        return index(root, db, rid, exact, full=full, listed=listed)
+    return index(list(roots.values()), db, None, exact, full=full, listed=listed)
 
 
 # -- map ------------------------------------------------------------------------------------------
+def forget(db: str | Path, ids: list[str]) -> dict:
+    """Drop repositories from the store: their facts, where they were, and their place in the workspace. What the
+    others know is kept; they are mapped again in full, so no link into a dropped one is left. Notes and decisions
+    written about a dropped one's code (inferred and intent rows) are kept, as when code is deleted."""
+    if not Path(db).is_file():
+        return {"error": f"no store at {db}: nothing to forget"}
+    con = store.connect(db)
+    try:
+        held = sorted(set(store.roots(con)) | {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'repo'")})
+        unknown = [i for i in ids if i not in held]
+        if unknown:
+            return {"error": f"no repository {unknown[0]!r} in the store (it holds {', '.join(held) or 'none'})"}
+        row = con.execute("SELECT value FROM meta WHERE key = 'workspace'").fetchone()
+        members = [m for m in (json.loads(row[0]) if row else []) if m not in ids]
+        with con:
+            for rid in ids:
+                store.clear_facts(con, rid)
+                for prefix in ("root", "rel", "left_out", "timing", "first_commit"):
+                    con.execute("DELETE FROM meta WHERE key = ?", (f"{prefix}:{rid}",))
+                for table in ("coupling_runs", "coupling_files", "coupling_pairs", "coupling_dirs"):
+                    con.execute(f"DELETE FROM {table} WHERE repo_id = ?", (rid,))
+            if len(members) > 1:
+                con.execute("INSERT OR REPLACE INTO meta VALUES ('workspace', ?)", (json.dumps(members),))
+            else:
+                con.execute("DELETE FROM meta WHERE key = 'workspace'")
+        left = sorted(store.roots(con))
+    finally:
+        con.close()
+    said = f"Forgot {', '.join(ids)}."
+    if not left:
+        con = store.connect(db)
+        try:
+            with con:
+                store.rebuild_derived(con)
+        finally:
+            con.close()
+        return {"said": said + " Nothing else is mapped in this store."}
+    out = map_repos(None, db, full=True)
+    return {**out, "said": said} if "error" not in out else out
+
+
 def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str] = None, exact: str = "auto",
               scip: Optional[list[str]] = None, page: bool = True, full: bool = False) -> dict:
     """Index, write the browsable map page next to the store, and count what was found. With no paths, map
@@ -153,7 +202,7 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
             return {"error": "nothing is mapped in this store yet: name the repository directories"}
     ignore = Path(db).parent / ".gitignore"
     if Path(db).parent.name == ".leyline" and not ignore.exists():
-        ignore.write_text("# Leyline's map and baselines: local, rebuilt by `leyline map`.\n*\n", encoding="utf-8")
+        store.write_file(ignore, "# Leyline's map and baselines: local, rebuilt by `leyline map`.\n*\n")
     con = store.connect(db)
     try:
         prune_baselines(con)
@@ -178,7 +227,7 @@ def write_page(con, db: str | Path, open_change: Optional[str] = None, always: b
     path = Path(db).parent / "map.html"
     if not always and not path.is_file():
         return None
-    path.write_text(export.page(con, open_change=open_change), encoding="utf-8")
+    store.write_file(path, export.page(con, open_change=open_change))
     return path
 
 
@@ -269,6 +318,14 @@ def prune_baselines(con) -> list[str]:
     return gone
 
 
+def unmapped(con) -> Optional[dict]:
+    """An error when the store holds no repository (a first map stopped before it wrote anything, or a store a reader
+    created): planned against it, every name would read as new code and the baseline would be of nothing."""
+    if con.execute("SELECT 1 FROM nodes WHERE kind = 'repo' LIMIT 1").fetchone() is None:
+        return {"error": f"nothing is mapped in the store at {_show(diff.store_path(con))} yet: run `leyline map <repo>` first"}
+    return None
+
+
 # -- plan -----------------------------------------------------------------------------------------
 def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None, new_baseline: bool = False) -> dict:
     """Bring the map up to date, write the brief, and record the tests as they pass before the change."""
@@ -278,8 +335,15 @@ def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] =
         parsed = spec.parse(change_dir)
         if "error" in parsed:
             return parsed
+        if bad := unmapped(con):
+            return bad
         cid = "spec-" + parsed["id"]
         prune_baselines(con)
+        if not new_baseline and diff.lost(con, cid):
+            return {"error": f"the baseline of {parsed['id']} (.leyline/snapshots/{cid}.db) is gone, and was not forgotten"
+                             " with `leyline spec forget`: planning now would take the code as it is as the start, and"
+                             " check could no longer see what the change did. If the code is still as it was before the"
+                             f" change, or you mean to start over, run `leyline plan {parsed['id']} --new-baseline`."}
         # Results passed in are the start only while the code is as it was when first planned (or a new baseline is
         # taken now). They are recorded before the brief, which reads them to find tests the map does not know.
         kept = not new_baseline and diff.snapshot_path(con, cid).exists() and diff.moved_on(con, cid)
@@ -311,7 +375,7 @@ def plan_text(b: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if b.get("baseline") == "kept":
         L.append("The code has changed since the first plan; `leyline check` still compares with the code as it was then.")
-    L.append(f"Written to {_show(b['written'])}")
+    L.append(f"Written to {_show(b['written'])}" if b.get("written") else f"Not written: {b.get('not_written')}")
     if b.get("page"):
         L.append(f"Map page: {_show(b['page'])} (opens on this change)")
     L += ["", *next_after_plan(b, name)]
@@ -350,9 +414,9 @@ def next_after_plan(b: dict, name: str, for_agent: bool = False) -> list[str]:
                    " `leyline spec findings " + name + "` shows them in full.")
     if not b.get("baseline_tests") and b.get("baseline") != "kept":
         out.append("while the code is unchanged, run the tests and call `plan` again with their output as test_output"
-                   " (TAP, `pytest -rA`, or one PASS or FAIL line per test)." if for_agent else
+                   f" ({diff.READS})." if for_agent else
                    f"while the code is unchanged, record how the tests pass now: `<your test command> | leyline plan {name}"
-                   " --tests -`. TAP (vitest, node --test), `pytest -rA`, or one PASS or FAIL line per test.")
+                   f" --tests -`. It reads {diff.READS}.")
     st_missing = [r for r in spec.REVIEWERS if r not in (b.get("reviews") or [])]
     if not st["reviewed"] or st_missing:
         which = " and ".join(st_missing)
@@ -382,6 +446,8 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         parsed = spec.parse(change_dir)
         if "error" in parsed:
             return parsed
+        if bad := unmapped(con):
+            return bad
         cid = "spec-" + parsed["id"]
         before, after = spec.run_label(cid, "before"), spec.run_label(cid, "after")
         if coverage_file is not None:
@@ -389,16 +455,23 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
             imported = measured.import_file(con, coverage_file, run=after)
             if "error" in imported:
                 return {"error": f"cannot import the coverage file: {imported['error']}"}
+        code = diff._fingerprint(con)
         recorded = _record(con, after, results) if results is not None else None
+        if results is not None:
+            with con:   # the code these results ran against
+                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", ("tested:" + after, code))
         has = lambda run: con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1", (run,)).fetchone() is not None
         prune_baselines(con)
-        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) else None)
+        # Results recorded earlier describe code that has since changed: they prove nothing about it.
+        tested = con.execute("SELECT value FROM meta WHERE key = ?", ("tested:" + after,)).fetchone()
+        old = results is None and has(after) and (tested[0] != code if tested else bool(reindexed))
+        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None,
+                        old_run=after if old else None)
         if "error" in v:
             return v
         v["reindexed"] = bool(reindexed)
         v["tests_recorded"] = recorded
-        # Results recorded earlier describe code that has since changed.
-        v["tests_old"] = bool(reindexed) and results is None and has(after)
+        v["tests_old"] = old
         v["tests_missing"] = not has(after)
         page = write_page(con, db, v["change_id"])
         if page:
@@ -418,6 +491,8 @@ def check_text(v: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if v.get("written"):
         L.append(f"Written to {_show(v['written'])}")
+    elif v.get("not_written"):
+        L.append(f"Not written: {v['not_written']}")
     if (v.get("anchors") or {}).get("count"):
         a = v["anchors"]
         L.append(f"Recorded what the spec's {spec._n(a['count'], 'code name')} mean now"
@@ -445,10 +520,9 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
     out = []
     if v.get("tests_missing") or v.get("tests_old"):
         out.append(("the test results on record are from before the code last changed. " if v.get("tests_old") else "")
-                   + ("run the tests and call `check` again with their output as test_output (TAP, `pytest -rA`, or one"
-                      " PASS or FAIL line per test)." if for_agent else
+                   + (f"run the tests and call `check` again with their output as test_output ({diff.READS})." if for_agent else
                       f"run the tests and pass the output: `<your test command> | leyline check {name} --tests -`"
-                      " (TAP, `pytest -rA`, or one PASS or FAIL line per test)."))
+                      f" ({diff.READS})."))
     undone = [t for t in v["tasks"] if t["state"] in ("not done", "partly")]
     if undone:
         out.append(f"finish task{'s' if len(undone) > 1 else ''} " + ", ".join(

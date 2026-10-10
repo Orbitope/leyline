@@ -203,6 +203,90 @@ def test_affected_tests_from_the_map_then_from_what_ran(tmp_path, monkeypatch):
     assert "No change" in affected.select(con, "spec-nothing")["error"]
 
 
+def test_a_command_runs_the_tests_from_where_it_says_when_pytest_ran_from_a_folder_below(tmp_path):
+    """pytest run from `backend/` names its tests `tests/test_ops.py::...`; the command is run from the repository's
+    root, so it must name them by their path there."""
+    root = tmp_path / "mono"
+    write(root, {"backend/src/calc/__init__.py": "", "backend/src/calc/ops.py": OPS, "backend/tests/test_ops.py": TESTS})
+    ch = change(root)
+    db = root / ".leyline/leyline.db"
+    loop.map_repos([str(root)], db, exact="off", page=False)
+    assert "error" not in loop.plan(db, ch)
+    ops = root / "backend/src/calc/ops.py"
+    con = store.connect(db)
+    coverage.import_file(con, coverage_db(tmp_path / ".coverage", {ops: {
+        "tests/test_ops.py::test_scale_by_a_factor|run": [line(ops, "return x * k")]}}))
+    r = affected.select(con, "spec-clamp-scale")
+    assert [t["pytest"] for t in r["tests"]] == ["backend/tests/test_ops.py::test_scale_by_a_factor"]
+    assert r["commands"][0]["cwd"] == str(root)
+    assert r["commands"][0]["command"] == "pytest backend/tests/test_ops.py::test_scale_by_a_factor"
+    assert [t["pytest"] for t in affected.measured_tests(con, [n for n in affected.change_code(con, "spec-clamp-scale")[0]])] \
+        == ["backend/tests/test_ops.py::test_scale_by_a_factor"]
+
+
+def test_a_coverage_file_in_a_folder_named_like_a_url_is_read(tmp_path):
+    """The data file is opened read-only by URI: `#`, `?` and `%` in its folder's name are characters, not parts of
+    a URI (a `C#` folder)."""
+    root, ch, db = planned(tmp_path)
+    where = tmp_path / "C# work" / "50%25 done"
+    where.mkdir(parents=True)
+    con = store.connect(db)
+    r = coverage.import_file(con, measured_after(root, where / ".coverage"))
+    assert r["format"] == "coverage.py" and r["tests_matched_to_the_map"] == 3, r
+
+
+def test_a_jest_command_runs_each_test_file_by_its_path(tmp_path):
+    """`jest <args>` reads each argument as a regular expression matched against test paths (testPathPattern), so
+    `app/[id]/page.test.tsx` (a Next.js route) is a character class and matches nothing of that name, and `.` and `+`
+    match more than they say. `--runTestsByPath` takes each argument as the exact path."""
+    import re
+    import shlex
+    root = tmp_path / "web"
+    write(root, {"package.json": '{"devDependencies": {"jest": "29.7.0"}}'})
+    con = store.connect(tmp_path / "s.db")
+    with con:
+        con.execute("INSERT INTO meta (key, value) VALUES ('root:w', ?)", (str(root),))
+    paths = ["app/[id]/page.test.tsx", "app/(auth)/a+b.test.ts"]
+    [cmd] = affected.commands(con, [{"name": "t", "repo": "w", "path": p} for p in paths])
+    args = shlex.split(cmd["command"])
+    assert args[:3] == ["npx", "jest", "--runTestsByPath"] and args[3:] == paths, cmd
+    # what the arguments would have meant as patterns: neither file's own path matches its pattern
+    assert not any(re.search(p, str(root / p), re.I) for p in paths)
+
+
+def test_csharp_tests_run_by_dotnet_test_with_a_filter_per_test_project(tmp_path):
+    import shlex
+    root = tmp_path / "game"
+    write(root, {"Shop.Tests/Shop.Tests.csproj": "<Project/>", "Other.Tests/Other.Tests.csproj": "<Project/>"})
+    con = store.connect(tmp_path / "s.db")
+    with con:
+        con.execute("INSERT INTO meta (key, value) VALUES ('root:g', ?)", (str(root),))
+    tests = [{"name": "Total_adds", "repo": "g", "path": "Shop.Tests/Cart/CartTests.cs",
+              "id": "g:csharp:Shop.Tests::Shop.Tests.CartTests.Total_adds()"},
+             {"name": "Parses", "repo": "g", "path": "Shop.Tests/Cart/CartTests.cs",
+              "id": "g:csharp:Shop.Tests::Shop.Tests.CartTests.Parses(string,int)"},
+             {"name": "Works", "repo": "g", "path": "Other.Tests/OtherTests.cs",
+              "id": "g:csharp:Other.Tests::Other.Tests.OtherTests.Works()"}]
+    [cmd] = affected.commands(con, tests)
+    assert cmd["runner"] == "dotnet" and cmd["cwd"] == str(root) and cmd["tests"] == 3
+    other, shop = [shlex.split(c) for c in cmd["command"].split(" && ")]   # one per test project
+    assert shop == ["dotnet", "test", "Shop.Tests/Shop.Tests.csproj", "--filter",
+                    "FullyQualifiedName=Shop.Tests.CartTests.Parses|FullyQualifiedName=Shop.Tests.CartTests.Total_adds"], shop
+    assert other == ["dotnet", "test", "Other.Tests/Other.Tests.csproj", "--filter",
+                     "FullyQualifiedName=Other.Tests.OtherTests.Works"], other
+
+
+def test_tests_with_no_runner_are_counted_past_the_forty_kept(tmp_path):
+    con = store.connect(tmp_path / "s.db")
+    tests = [{"name": f"Test_{i:03}", "repo": "w", "path": "Shop.Tests/CartTests.cs"} for i in range(119)]
+    [cmd] = affected.commands(con, tests)
+    assert cmd["command"] is None and cmd["tests"] == 119
+    page = affected.text({"change_id": "c", "basis": "the map", "note": "",
+                          "tests": [{**t, "why": "its path on the map passes through the change"} for t in tests],
+                          "commands": [cmd]})
+    assert "No runner recognized for: Test_000, Test_001, Test_002, Test_003, Test_004, Test_005 and 113 more." in page, page
+
+
 def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     root = tmp_path / "js"
     ops = ("export function add(a: number, b: number): number {\n  return a + b;\n}\n\n"
@@ -242,6 +326,52 @@ def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     bad = tmp_path / "bad.json"
     bad.write_text('{"result": []}')
     assert "Istanbul" in coverage.import_file(con, bad)["error"]
+
+
+def test_the_coverage_tool_ties_an_istanbul_report_to_its_test_file(tmp_path, monkeypatch):
+    """The MCP tool takes `test` as the command takes `--test`: what a run-wide report saw ran under that file."""
+    from leyline import server
+    root = tmp_path / "js"
+    write(root, {"package.json": '{"devDependencies": {"vitest": "1.6.1"}}',
+                 "src/ops.ts": "export function scale(x: number, k: number): number {\n  return x * k;\n}\n",
+                 "src/scale.test.ts": 'import { it, expect } from "vitest";\nimport { scale } from "./ops";\n\n'
+                                      'it("scales by a factor", () => {\n  expect(scale(2, 3)).toBe(6);\n});\n'})
+    db = root / ".leyline/leyline.db"
+    loop.map_repos([str(root)], db, exact="off", page=False)
+    ops = str(root / "src/ops.ts")
+    smap = {str(i): {"start": {"line": i + 1, "column": 0}, "end": {"line": i + 1, "column": 9}} for i in range(3)}
+    f = root / "coverage" / "coverage-final.json"   # inside the repository: the server reads only there
+    f.parent.mkdir()
+    f.write_text(json.dumps({ops: {"path": ops, "statementMap": smap, "s": {"0": 1, "1": 1, "2": 1},
+                                   "fnMap": {"0": {"name": "scale", "loc": {"start": {"line": 1}, "end": {"line": 3}}}},
+                                   "f": {"0": 1}, "branchMap": {}, "b": {}}}))
+    monkeypatch.setenv("LEYLINE_DB", str(db))
+    r = json.loads(server.coverage(import_path=str(f), test=str(root / "src/scale.test.ts")))
+    assert r["imported"]["per"] == "test file" and r["imported"]["tests_matched_to_the_map"] == 1, r
+    tests = {t for (t,) in store.connect(db).execute("SELECT test FROM covered")}
+    assert {Path(t).name for t in tests} == {"scale.test.ts"}, tests
+
+
+def test_a_measured_test_that_is_also_an_entry_point_is_named_by_its_test_flow(tmp_path):
+    """Main is a program's entry point and a test ([Fact]): its test flow is flow:<Main>#test. A change it was
+    measured running, with no static path to it, names that flow, not the entry point's."""
+    from leyline import change
+    from leyline.indexer import index
+    root = tmp_path / "b"
+    write(root, {"P.cs": "public static class P\n{\n    [Fact]\n    public static void Main() { Run(); }\n"
+                         "    static void Run() { }\n    public static void Other() { }\n}\n"})
+    db = tmp_path / "b.db"
+    index(root, db, "b", exact="off")
+    con = store.connect(db)
+    main, other = (con.execute("SELECT id FROM nodes WHERE name = ? AND kind = 'callable'", (n,)).fetchone()[0]
+                   for n in ("Main", "Other"))
+    assert {r[0] for r in con.execute("SELECT id FROM flows")} >= {f"flow:{main}", f"flow:{main}#test"}
+    with con:
+        con.execute("INSERT INTO covered VALUES ('default', 'P.Main', ?, ?, 1)", (main, other))
+    r = change.assess(con, "touch Other", [{"id": other, "action": "behavior"}])
+    assert [(t["id"], t.get("flow")) for t in r["tests_to_run"] if t.get("measured")] == [(main, f"flow:{main}#test")], \
+        r["tests_to_run"]
+    con.close()
 
 
 def test_a_pull_request_lists_the_tests_measured_running_its_change(tmp_path, monkeypatch):

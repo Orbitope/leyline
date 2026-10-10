@@ -55,8 +55,7 @@ def names_in(about: str) -> list[str]:
 
 def _action(about: str) -> str:
     lower = re.sub(r"`", "", about.lower()).strip()
-    return next((a for a, starts in spec.VERBS if lower.startswith(starts) or any(s in lower for s in starts if len(s) > 12)),
-                "behavior")
+    return spec.action_of(lower)
 
 
 def _assignment(name: str):
@@ -195,7 +194,7 @@ def _keep_source(con, cid: str, files: set) -> dict:
     out = {"texts": texts, "repos": repos}
     p = _src_path(con, cid)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(out), encoding="utf-8")
+    store.write_file(p, json.dumps(out))
     return out
 
 
@@ -203,7 +202,10 @@ def _old_source(con, cid: str):
     """path -> the file's text when the baseline was taken, or None: the copy kept then, else git's copy at the commit
     the repository was at, for a file that did not differ from it."""
     p = _src_path(con, cid)
-    kept = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {"texts": {}, "repos": {}}
+    try:
+        kept = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {"texts": {}, "repos": {}}
+    except (OSError, ValueError, RecursionError):
+        kept = {"texts": {}, "repos": {}}
     root_of = diff.roots(con)
 
     def read(path: str) -> Optional[str]:
@@ -282,7 +284,9 @@ def start(db: str | Path, about: str, written: Optional[list[str]] = None, resul
                "must_edit": report["must_edit"], "reached": report["summary"]["reached"],
                "callers": [spec._label(names, m["id"]) for m in report["marks"] if m["role"] == "direct"],
                "reached_across": _across(names, report["channels"]),
-               "modules": report["summary"]["modules"], "channels": crossings, "must_agree": agree,
+               # the modules the code that runs into it is in
+               "modules": sum(1 for g in report["by_module"] if g["reached"]) or report["summary"]["modules"],
+               "channels": crossings, "must_agree": agree,
                "tests_to_run": [{**t, "name": spec._label(names, t["id"]) if t["id"] in names.by_id else t["name"]}
                                 for t in report["tests_to_run"]],
                "untested": report["untested"], "risks": report["risks"],
@@ -642,7 +646,13 @@ def done(db: str | Path, cid: str, results: Optional[list[dict]] = None, coverag
         a = stored(con, cid)
         snap = diff.snapshot_path(con, cid)
         if a is None or not snap.exists():
-            known = [r[0] for r in con.execute("SELECT id FROM change_proposals WHERE id LIKE 'quick-%' ORDER BY id")]
+            begun = con.execute("SELECT 1 FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+            if a is None and cid.startswith(PREFIX) and begun:
+                return {"error": f"the start of {cid} did not finish; start it again with the same words (`leyline quick"
+                                 " \"<what>\" --about <names>`)" + ("; the baseline it took is kept." if snap.exists() else
+                                                                       ", before editing.")}
+            known = [r[0] for r in con.execute("SELECT id FROM change_proposals WHERE id LIKE 'quick-%' ORDER BY id")
+                     if stored(con, r[0]) is not None and diff.snapshot_path(con, r[0]).exists()]
             return {"error": f"no quick change {cid!r} started here" + (f" (there are: {', '.join(known[:5])})" if known else "")
                              + "; start it with `leyline quick \"<what>\" --about <names>` before editing."}
         if more:
@@ -828,6 +838,7 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
         "changed": f["changed"], "size": f["size"],
         "house_rules_to_read_first": pr._house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
         "learnings_that_apply": learnings.applying(con, cid),
+        "learnings_unreadable": learnings.unreadable(con),
         "logic": {**{k: r[k] for k in ("signature_changed_callers_not_edited", "removed_but_still_called", "channels_crossed",
                                        "callers_left_alone", "state_shared_with_unchanged_code")},
                   "other_ends_of_those_channels_not_edited": r["other_ends_not_edited"],

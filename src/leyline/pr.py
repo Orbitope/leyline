@@ -19,6 +19,7 @@ worktrees are not touched), reusing the parse output of the checkout's map for e
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -60,7 +61,8 @@ def git_root(path: Path) -> Path:
 def github_pr(root: Path, number: str) -> dict:
     """Base branch, title, description and head commit of a GitHub pull request, through the gh command."""
     try:
-        out = subprocess.run(["gh", "pr", "view", str(number), "--json", "baseRefName,title,body,headRefOid,number,url"],
+        # after --: a number that starts with - (`--web`, `--repo=...`, passed by an agent) is not one of gh's options
+        out = subprocess.run(["gh", "pr", "view", "--json", "baseRefName,title,body,headRefOid,number,url", "--", str(number)],
                              cwd=root, capture_output=True, check=False)
     except FileNotFoundError:
         raise GitError("--github needs the gh command (https://cli.github.com), signed in")
@@ -77,8 +79,9 @@ def change_id(root: Path, given: Optional[str] = None, number: Optional[str] = N
     """pr-<given>, pr-<number>, or pr-<branch name>; on a detached checkout, pr-<commit>."""
     if given:
         return "pr-" + slug(given.removeprefix("pr-"))
-    if number:
-        return f"pr-{number}"
+    if number:   # 123, #123 or a pull request's URL; the id names files under .leyline/, so it is a slug
+        m = re.fullmatch(r"#?(\d+)|https?://\S+/pull/(\d+)/?", str(number).strip())
+        return "pr-" + (m.group(1) or m.group(2) if m else slug(str(number)))
     try:
         branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
     except GitError:
@@ -100,44 +103,92 @@ def _repo_of(con, root: Path) -> Optional[str]:
 def _safe_members(tar: tarfile.TarFile, into: Path):
     """The archive's entries that stay inside `into`: a branch under review is someone else's code, and an entry
     named ../x, or a link out of the tree followed by a file written through it, must not reach outside."""
+    import posixpath
     top = into.resolve()
-    for m in tar.getmembers():
+    members = tar.getmembers()
+    # Each check below reads the path as written, before anything is extracted. A path that passes through a link
+    # in the archive (s -> ., then w -> s/.. and w/evil.txt) is checked as if the link were a folder, and is only
+    # where it seems once nothing follows it: Python without extraction filters would write it outside.
+    links = {posixpath.normpath(m.name) for m in members if m.issym()}
+
+    def through_link(path: str) -> bool:
+        cur: list[str] = []
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        for k, part in enumerate(parts):
+            if part == "..":
+                if not cur:
+                    return True
+                cur.pop()
+            else:
+                cur.append(part)
+                if k < len(parts) - 1 and "/".join(cur) in links:
+                    return True
+        return False
+    for m in members:
         dest = (top / m.name).resolve()
-        if m.name.startswith("/") or (dest != top and top not in dest.parents):
+        if m.name.startswith("/") or (dest != top and top not in dest.parents) or through_link(m.name):
             continue
         if m.issym() or m.islnk():
             target = (dest.parent / m.linkname).resolve() if m.issym() else (top / m.linkname).resolve()
             if m.linkname.startswith("/") or (target != top and top not in target.parents):
+                continue
+            if through_link(posixpath.join(posixpath.dirname(m.name), m.linkname) if m.issym() else m.linkname):
                 continue
         if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
             continue
         yield m
 
 
-def _export(root: Path, sha: str, into: Path) -> None:
-    """The files of a commit, as git keeps them, written under `into`. Nothing in the repository changes."""
-    data = _git(root, "archive", "--format=tar", sha, binary=True)
-    tmp = into.parent / (into.name + ".tar")
-    tmp.write_bytes(data)
-    try:
-        with tarfile.open(tmp) as tar:
-            members = list(_safe_members(tar, into))
-            try:
-                tar.extractall(into, members=members, filter="tar")
-            except TypeError:   # no extraction filters before Python 3.12 (and 3.11.4, 3.10.12)
-                tar.extractall(into, members=members)
-            except tarfile.FilterError:   # a link the filter refuses: take the entries one by one, leaving those out
-                for m in members:
-                    try:
-                        tar.extract(m, into, filter="tar")
-                    except tarfile.FilterError:
-                        pass
-    finally:
-        tmp.unlink()
-    # A repository of its own holding exactly the commit's files, so the map lists them as git lists the checkout's
-    # (a tracked file that a .gitignore pattern would match stays in), and not by walking the directory.
+def _archive(root: Path, sha: str) -> bytes:
+    """`git archive` of a commit with every file in it as the checkout has it. The repository's `export-ignore` and
+    `export-subst` attributes shape release tarballs (tests left out, a version string filled in), so the archive is
+    made from an empty repository that borrows this one's objects and unsets both, at the highest precedence."""
+    objects = (root / _git(root, "rev-parse", "--git-path", "objects")).resolve()
+    # Line endings as the checkout has them (core.autocrlf=true writes CRLF), or every file would differ from it.
+    eol = []
+    for key in ("core.autocrlf", "core.eol"):
+        try:
+            eol += ["-c", f"{key}={_git(root, 'config', '--get', key)}"]
+        except GitError:   # not set
+            pass
+    with tempfile.TemporaryDirectory(prefix="leyline-archive-") as tmp:
+        bare = Path(tmp)
+        _git(bare, "init", "-q", "--bare")
+        (bare / "objects" / "info").mkdir(parents=True, exist_ok=True)
+        (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n")
+        (bare / "info").mkdir(exist_ok=True)
+        (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
+        return _git(bare, *eol, "archive", "--format=tar", sha, binary=True)
+
+
+def _export(root: Path, sha: str, into: Path) -> list[str]:
+    """The files of a commit, as git keeps them, written under `into`; returns their paths, as the map lists them
+    (every file of the commit: a tracked file that a .gitignore pattern would match stays in). Nothing in the
+    repository changes."""
+    import io
+    with tarfile.open(fileobj=io.BytesIO(_archive(root, sha))) as tar:
+        members = list(_safe_members(tar, into))
+        try:
+            tar.extractall(into, members=members, filter="tar")
+        except TypeError:   # no extraction filters before Python 3.12 (and 3.11.4, 3.10.12)
+            tar.extractall(into, members=members)
+        except tarfile.FilterError:   # a link the filter refuses: take the entries one by one, leaving those out
+            for m in members:
+                try:
+                    tar.extract(m, into, filter="tar")
+                except tarfile.FilterError:
+                    pass
+    # A sparse checkout leaves some of the commit's files out of the working tree (git marks them skip-worktree), and
+    # its map leaves them out: the base leaves out the same, or each would read as removed by the change.
+    for entry in _git(root, "ls-files", "-z", "-t", binary=True).split(b"\0"):
+        if entry.startswith(b"S "):
+            path = entry[2:].decode("utf-8", "surrogateescape")
+            if not os.path.lexists(root / path) and (into / path).is_file():
+                (into / path).unlink()
+    # An empty repository of its own, so that git asked about the base never answers for a folder above it. The
+    # files are listed here rather than added to it: adding them hashed every file again (a third of the time).
     _git(into, "init", "-q")
-    _git(into, "add", "-A", "-f")
+    return [m.name for m in members if not m.isdir() and os.path.lexists(into / m.name)]
 
 
 def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Path:
@@ -160,7 +211,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
     try:
         src = work / rid           # the directory name is the repository's id in a workspace
         src.mkdir()
-        _export(root, base_sha, src)
+        names = _export(root, base_sha, src)
         mapped = work / "map" / "leyline.db"
         mapped.parent.mkdir()
         live = store.connect(db)   # a consistent copy of the store, even while something else reads it
@@ -177,7 +228,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
                 con.execute("DELETE FROM meta WHERE key LIKE 'rel:%'")
         finally:
             con.close()
-        index(src, mapped, rid, exact)
+        index(src, mapped, rid, exact, listed={rid: names})
         con = store.connect(mapped)
         try:
             snap = diff.snapshot(con, "base")
@@ -185,7 +236,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
             con.close()
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(snap), str(target))
-        marker.write_text(stamp + "\n")
+        store.write_file(marker, stamp + "\n")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return target
@@ -411,8 +462,8 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
     how_it_runs = diagrams.safe(diagrams.for_snapshot, snap, con, [n["id"] for n in edited + added] or [n["id"] for n in types],
                                 [n["id"] for n in d["nodes"]["removed"]])
-    top = [{"id": f["id"], "path": f["path"], "lines": len(own[f["id"]])} for f in files
-           if own is not None and any(t.strip() for _, t in own.get(f["id"]) or [])]
+    top = [{"id": f["id"], "path": f["path"], "lines": sum(1 for _, t in own[f["id"]] if diff._code_line(t))} for f in files
+           if own is not None and any(diff._code_line(t) for _, t in own.get(f["id"]) or [])]
     changed = {n["id"] for n in edited + types} | {n["id"] for n in added}
     removed = d["nodes"]["removed"]
 
@@ -505,6 +556,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             "fields_written_from_elsewhere_too": state,
             "new_members_named_like_existing_ones": alone["beside"][:20],
             "entry_points_affected": (report.get("entry_points_affected") or [])[:20],
+            "entry_points_affected_total": len(report.get("entry_points_affected") or []),
         },
         "tests": {
             "likely_to_fail_unedited": sorted({m["name"] for m in must if m.get("test")}
@@ -512,6 +564,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             "touched_by_the_change": tests_touched, "test_files_changed": test_files,
             "changed_code_no_test_reaches": [u for u in report.get("untested") or [] if not u["name"].endswith(("<module>", "<top-level>"))],
             "tests_to_run": (report.get("tests_to_run") or [])[:30],
+            "tests_to_run_total": len(report.get("tests_to_run") or []),
             **_measured(con, [n["id"] for n in edited + types + added]),
         },
         "structure": {"new_dependencies": d["structure"]["new_dependencies"],
@@ -559,9 +612,16 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         if gh.get("headRefOid") and gh["headRefOid"] != head:
             return {"error": f"the checkout is at {head[:7]}, not at pull request {github}'s head"
                              f" ({gh['headRefOid'][:7]}): run `gh pr checkout {github}` first"}
+    try:
+        _git(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+    except GitError:
+        return {"error": f"the repository at {root} has no commits yet: commit the base first, then branch from it"}
+    named = bool(base)
     if not base:
         base = _default_base(root)
-    for name in (base, "origin/" + base):   # a branch this clone has only as origin's
+    # A branch this clone has only as origin's; for a GitHub pull request origin's first, as GitHub compares with it
+    # (a local branch of that name may have been left behind).
+    for name in (("origin/" + base, base) if github else (base, "origin/" + base)):
         try:
             _git(root, "rev-parse", "--verify", "-q", name + "^{commit}")
             base = name
@@ -569,10 +629,19 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         except GitError:
             continue
     else:
+        if not named:   # main by default: a repository whose default branch has another name says nothing of it
+            return {"error": f"no main or master branch in {root}, and origin's default branch is not known: name the"
+                             " base, `leyline pr <branch or commit>`"}
         return {"error": f"no commit or branch {base!r} in {root}"}
-    base_sha = _git(root, "merge-base", base, "HEAD")
+    try:
+        base_sha = _git(root, "merge-base", base, "HEAD")
+    except GitError:
+        if _git(root, "rev-parse", "--is-shallow-repository") == "true":
+            return {"error": f"this clone is shallow and holds no commit both {base} and HEAD come from: fetch more"
+                             " history (`git fetch --unshallow`, or --deepen), then run it again"}
+        return {"error": f"{base} and HEAD share no history: name a base the branch was made from"}
     head_sha = _git(root, "rev-parse", "HEAD")
-    dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
+    dirty = bool(_git(root, "status", "--porcelain"))   # a new file not yet added is mapped, so it counts too
     given = about.strip() or None   # said by the person (or the pull request); a description made here is not kept
     if not given:
         about = _described(root, base_sha, db, given_id, github)
@@ -626,7 +695,8 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                "dirty": dirty, "root": str(root), **facts,
                "house_rules": _house_rules(root, facts["changed"]["files"]),
                "other_files": _other_files(root, base_sha, facts["changed"]["files"] + facts["changed"]["files_removed"]),
-               "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid)}
+               "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid),
+               "learnings_unreadable": spec._learnings_unreadable(con)}
         from . import coupling   # files that usually changed with what the branch changed, in the history before it
         ch = facts["changed"]
         out["usually_changes_with"] = coupling.for_pr(
@@ -638,10 +708,12 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         out["since_last_review"] = rereview.since(con, cid, summary, fp)
         rereview.mark(out["findings"], out["since_last_review"])
         rereview.record(con, cid, head_sha, dirty, summary, fp)
+        from . import learnings
+        out["learnings_not_applied"] = learnings.not_applied(con, cid)
         out["gate"] = gate(out, gate_config(root))   # judged from this run's facts and the findings as they are now
         page =Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(text(out), encoding="utf-8")
+        store.write_file(page, text(out))
         out["page"] = str(page)
         return out
     finally:
@@ -704,8 +776,9 @@ def _other_files(root: Path, base_sha: str, mapped: list[str]) -> list[str]:
     """Files the change touches that the map does not read (docs, styles, data, config): the page names them so a
     reviewer knows the map's view of the change stops short of them."""
     try:
-        listed = _git(root, "diff", "--name-only", base_sha).splitlines()
-        listed += _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+        # NUL-separated and unquoted: git otherwise quotes a path with a byte outside ASCII ("caf\303\251.py")
+        listed = _git(root, "-c", "core.quotePath=false", "diff", "--name-only", "-z", base_sha).split("\0")
+        listed += _git(root, "-c", "core.quotePath=false", "ls-files", "-z", "--others", "--exclude-standard").split("\0")
     except GitError:
         return []
     seen = set(mapped)
@@ -768,6 +841,8 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
         "changed": f["changed"], "size": f["size"],
         "house_rules_to_read_first": _house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
         "learnings_that_apply": learnings.applying(con, cid),   # past decisions on this code: read these first
+        "learnings_unreadable": learnings.unreadable(con),
+        "learnings_not_applied": learnings.not_applied(con, cid),   # what the pull request itself says was decided
         "logic": {
             "signature_changed_callers_not_edited": r["signature_changed_callers_not_edited"],
             "removed_but_still_called": r["removed_but_still_called"],
@@ -942,9 +1017,11 @@ def _n(n: int, word: str, plural: str = "") -> str:
     return f"{n} {word if n == 1 else plural or word + 's'}"
 
 
-def _names(xs: list[str], k: int = 4) -> str:
+def _names(xs: list[str], k: int = 4, total: int = 0) -> str:
+    """The first k names, and how many more: of `total` when the list was cut before it got here."""
     xs = list(dict.fromkeys(xs))
-    return ", ".join(f"`{x}`" for x in xs[:k]) + (f" and {len(xs) - k} more" if len(xs) > k else "")
+    more = max(total, len(xs)) - k
+    return ", ".join(f"`{x}`" for x in xs[:k]) + (f" and {more} more" if more > 0 else "")
 
 
 def _by_folder(paths: list[str]) -> list[str]:
@@ -953,15 +1030,23 @@ def _by_folder(paths: list[str]) -> list[str]:
     for p in paths:
         parts = p.split("/")
         by["/".join(parts[:-1]) if len(parts) > 1 else ""].append(p)
-    # the deepest folder that holds three or more, rolled up one level at a time
+    # A folder that holds three or more is said once, with what its subfolders hold counted in it.
+    grouped = sorted(f for f, ps in by.items() if f and len(ps) >= 3)
+    held = defaultdict(list)
     out = []
-    for folder, ps in sorted(by.items()):
-        out += [f"{folder}/ ({len(ps)} files)"] if folder and len(ps) >= 3 else ps
+    for p in sorted(paths):
+        top = next((f for f in grouped if p.startswith(f + "/")), None)
+        if top is None:
+            out.append(p)
+        else:
+            held[top].append(p)
+    out += [f"{f}/ ({len(ps)} files)" for f, ps in sorted(held.items())]
     if len(out) > 8:    # still long: by top-two folders
         top = defaultdict(int)
         for p in paths:
             top["/".join(p.split("/")[:2])] += 1
-        out = [f"{t}/ ({n} files)" if n > 1 else next(p for p in paths if p.startswith(t)) for t, n in sorted(top.items())]
+        out = [f"{t}/ ({n} files)" if n > 1 else next(p for p in paths if p == t or p.startswith(t + "/"))
+               for t, n in sorted(top.items())]
     return out
 
 
@@ -1062,7 +1147,8 @@ def text(r: dict) -> str:
         L += [f"- {fn_line(x)}." for x in hist["functions"][:5]]
     L += related.lines(r.get("related_changes"))
     if reach["entry_points_affected"]:
-        L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6) + "."]
+        L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6,
+                                                reach.get("entry_points_affected_total", 0)) + "."]
     # tests
     L += ["", "## Tests", ""]
     if t.get("likely_to_fail_unedited"):
@@ -1077,7 +1163,8 @@ def text(r: dict) -> str:
     if t["changed_code_no_test_reaches"]:
         L.append(f"- No test on the map reaches {_names([u['name'] for u in t['changed_code_no_test_reaches']], 6)}.")
     if t["tests_to_run"]:
-        L.append("- Tests that run the changed code: " + _names([x["name"] for x in t["tests_to_run"]], 6) + ".")
+        L.append("- Tests that run the changed code: "
+                 + _names([x["name"] for x in t["tests_to_run"]], 6, t.get("tests_to_run_total", 0)) + ".")
     if t.get("measured_running_the_change"):
         L.append("- Measured running the changed code (per-test coverage): "
                  + _names([x.get("pytest") or x["name"] for x in t["measured_running_the_change"]], 6) + ".")
@@ -1093,9 +1180,15 @@ def text(r: dict) -> str:
         L += ["", "Some caller links are guesses by name: read the code behind any line above before acting on it."]
     if r.get("house_rules"):
         L += ["", "House rules to review against: " + _names(r["house_rules"], 6) + "."]
+    if r.get("learnings_not_applied"):
+        L += ["", "Learnings added by this pull request, not applied (they say what reviewers decided before, and the"
+                  " pull request wrote them: judge each one yourself):", ""]
+        L += [f"- `{x['id']}` ({x['why']}, not applied): {x.get('claim') or ''} Reason given: {x.get('reason') or ''}"
+              for x in r["learnings_not_applied"]]
     found = r.get("findings") or []
     L += ["", "## Review", ""]
     L += spec.review_lines(found, r.get("reviews") or [], full=True) if found or r.get("reviews") else [
         f"Not reviewed yet. `leyline spec facts {r['change_id']} --reviewer logic` (then `performance`) gives a reviewer"
         " its facts; the leyline-adversarial-review skill runs it."]
+    L += spec.unreadable_lines(r.get("learnings_unreadable"))
     return "\n".join(L) + "\n"

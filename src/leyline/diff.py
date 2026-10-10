@@ -100,10 +100,14 @@ def roots(con) -> dict[str, Path]:
     return store.roots(con)
 
 
-def source(con, repo: str, path: str, root_of: Optional[dict] = None) -> Optional[bytes]:
-    """A file's bytes as they are on disk now, if they are what the store indexed."""
+def source(con, repo: str, path: str, root_of: Optional[dict] = None, resolved: bool = False) -> Optional[bytes]:
+    """A file's bytes as they are on disk now, if they are what the store indexed. `resolved`: the roots in `root_of`
+    are real paths already."""
     root = (root_of if root_of is not None else roots(con)).get(repo)
     if root is None:
+        return None
+    from . import store
+    if not store.inside(root / path, root, resolved):   # a link out of the repository, checked out since it was mapped
         return None
     try:
         return (root / path).read_bytes()
@@ -117,8 +121,7 @@ def snapshot(con, name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".part")
     for p in (tmp, Path(str(tmp) + "-journal")):
-        if p.exists():
-            p.unlink()
+        p.unlink(missing_ok=True)   # a link to nothing too: SQLite would make the file it points at
     out = sqlite3.connect(str(tmp))
     out.executescript(_snapshot_schema())
     out.close()
@@ -156,15 +159,19 @@ def snapshot(con, name: str) -> Path:
                         " FROM main.flows x JOIN snap.keys f ON f.id = x.id LEFT JOIN snap.keys e ON e.id = x.entry_id")
             con.execute("INSERT OR IGNORE INTO snap.steps SELECT flow, seq, depth, callable, via, site_line, parent_seq"
                         " FROM main.steps")
+            # the names given to systems, which a rule's `system:Name` selects by
+            con.execute("INSERT INTO snap.annotations SELECT node_id, key, value FROM main.annotations WHERE key = 'name'")
             con.execute("INSERT INTO snap.meta SELECT key, value FROM main.meta WHERE key LIKE 'root:%'")
             con.execute("INSERT INTO snap.meta VALUES ('format', 'slim')")
+            from .incremental import code_version   # what read the code: another version may read it differently
+            con.execute("INSERT INTO snap.meta VALUES ('made_by', ?)", (code_version(),))
             where = {}
             for r in con.execute("SELECT repo_id, path, content_hash FROM main.nodes WHERE kind = 'file' AND layer = 'fact'"):
                 where[(r[0], r[1])] = r[2]
-            root_of = roots(con)
+            root_of = {r: p.resolve() for r, p in roots(con).items()}
             rows = []
             for (repo, path), sha in where.items():
-                data = source(con, repo, path, root_of)
+                data = source(con, repo, path, root_of, resolved=True)
                 if data is not None and hashlib.sha1(data).hexdigest() == sha:   # only text the store describes
                     rows.append((repo, path, _pack(line_hashes(data))))
             con.executemany("INSERT INTO snap.source_lines VALUES (?,?,?)", rows)
@@ -174,24 +181,41 @@ def snapshot(con, name: str) -> Path:
         if p.exists():
             p.unlink()
     tmp.replace(target)
+    with con:   # so a plan can tell a baseline deleted by hand from one never taken or forgotten (see lost)
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, 'taken')", ("baseline:" + name,))
     return target
 
 
 def drop_snapshot(con, name: str) -> bool:
-    """Forget a change's baseline. True when there was one."""
+    """Forget a change's baseline. True when there was one. The store notes that it was forgotten on purpose (see
+    lost), so a plan can tell it from a baseline deleted by hand."""
     target = snapshot_path(con, name)
     gone = False
     for p in (target, Path(str(target) + "-wal"), Path(str(target) + "-shm")):
         if p.exists():
             p.unlink()
             gone = True
+    with con:
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, 'forgotten')", ("baseline:" + name,))
     return gone
 
 
+def lost(con, name: str) -> bool:
+    """True when a baseline was taken for this change and is gone without being forgotten (deleted by hand, or with
+    .leyline/snapshots): a plan that took a new one now would take the changed code as the start. A store that did
+    not note it (one written before Leyline did) is given the benefit of the doubt."""
+    row = con.execute("SELECT value FROM meta WHERE key = ?", ("baseline:" + name,)).fetchone()
+    return row is not None and row[0] == "taken" and not snapshot_path(con, name).exists()
+
+
 def _fingerprint(con) -> str:
+    """The code as the map has it, in one hash: every type, function, field and test, and every source file. Files
+    count because code outside any function (a module's constant, a table, an import) has no node of its own in most
+    languages: without them "make the retry count 3" did not move the code on. An edited comment counts too."""
     h = hashlib.sha1()
-    for r in con.execute(f"SELECT id, content_hash FROM nodes WHERE layer = 'fact' AND kind IN ({','.join('?' * len(CODE_KINDS))})"
-                         " ORDER BY id", CODE_KINDS):
+    kinds = CODE_KINDS + ("file",)
+    for r in con.execute(f"SELECT id, content_hash FROM nodes WHERE layer = 'fact' AND kind IN ({','.join('?' * len(kinds))})"
+                         " ORDER BY id", kinds):
         h.update(f"{r[0]}\0{r[1]}\n".encode())
     return h.hexdigest()
 
@@ -208,9 +232,27 @@ def moved_on(con, name: str) -> bool:
         before.close()
 
 
+class DamagedBaseline(sqlite3.DatabaseError):
+    """A baseline (a snapshot) that SQLite cannot read: the store beside it is not the one damaged."""
+
+
 def _open(path: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
     con.row_factory = sqlite3.Row
+    try:   # told apart from damage to the store: not a database, or cut off short of the pages its header counts
+        con.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        pages, size = con.execute("PRAGMA page_count").fetchone()[0], con.execute("PRAGMA page_size").fetchone()[0]
+        short = Path(path).stat().st_size < pages * size and not Path(str(path) + "-wal").exists()   # pages in a WAL count too
+        ok = "cut off" if short else "ok"
+    except sqlite3.OperationalError:
+        con.close()
+        raise
+    except sqlite3.DatabaseError as e:
+        ok = str(e)
+    if ok != "ok":
+        con.close()
+        raise DamagedBaseline(f"the baseline kept at {path} is damaged ({ok}). Delete that file, then take a new baseline:"
+                              " plan the change again on the code as it was before it.")
     return con
 
 
@@ -288,12 +330,21 @@ def own_changes(before: sqlite3.Connection, after: sqlite3.Connection, ids: list
     return out
 
 
+COMMENT_LINE = re.compile(r"^(//|/\*|\*(\s|/|$)|#(\s|!|$)|--\s)")
+
+
+def _code_line(text: str) -> bool:
+    """A line that holds code: not blank, and not only a comment (`// ...`, `# ...`, a doc comment's `* ...`)."""
+    t = text.strip()
+    return bool(t) and not COMMENT_LINE.match(t)
+
+
 IMPORT = re.compile(r"^\s*(import\s|from\s+\S+\s+import\s|using\s|#include\s|use\s|require\(|const\s.*=\s*require\(|export\s.*\sfrom\s)")
 
 
 def explained(node: dict, spans: list[tuple[int, int]], names: set[str], reach: int = 2) -> bool:
     """Whether the changed lines a body holds around code a task covers (a module's top level, a class around a new
-    method) are all part of that work: blank, an import, next to (within `reach` lines of) that code, or in a run
+    method) are all part of that work: blank, a comment, an import, next to (within `reach` lines of) that code, or in a run
     of changed lines that names it (an entry in a registration table, up to 15 lines long). A function
     that holds no task code is never explained this way: its own lines are its own edit."""
     own = node.get("own") or []
@@ -315,7 +366,7 @@ def explained(node: dict, spans: list[tuple[int, int]], names: set[str], reach: 
         if len(run) <= 15 and any(names_code(text) for _, text in run):
             continue
         for ln, text in run:
-            if not text.strip() or (spans and IMPORT.match(text)) or any(a - reach <= ln <= b + reach for a, b in spans):
+            if not _code_line(text) or (spans and IMPORT.match(text)) or any(a - reach <= ln <= b + reach for a, b in spans):
                 continue
             return False
     return True
@@ -435,6 +486,9 @@ def compare(before: sqlite3.Connection, after: sqlite3.Connection) -> dict:
     }
 
 
+_SOURCE_FILE = re.compile(r"\.(?:[cm]?[jt]sx?|py|cs|go|rb|java|kt|rs|php|swift|scala|lua|gd|dart|ex|exs)$")
+
+
 def result_parts(name: str) -> dict:
     """A recorded result's name taken apart: the file, the suites around the test, the test's own name, and for a
     parametrized pytest test its function and parameter id. Names come as `file > suite > test` (TAP, vitest),
@@ -445,11 +499,15 @@ def result_parts(name: str) -> dict:
         out["file"], out["suites"], out["leaf"] = parts[0], parts[1:-1], parts[-1]
     elif " > " in name:
         segs = name.split(" > ")
-        if len(segs) > 1 and re.search(r"\.[A-Za-z]{1,5}$", segs[0]):
+        # A file has a path or a source file's extension; a suite named for what it tests (`Engine.start`) is not one.
+        if len(segs) > 1 and ("/" in segs[0] or "\\" in segs[0] or _SOURCE_FILE.search(segs[0])):
             out["file"], segs = segs[0], segs[1:]
         out["suites"], out["leaf"] = segs[:-1], segs[-1]
     m = re.match(r"^(.+?)\[(.*)\]$", out["leaf"])
     if m and out["file"] and out["file"].endswith(".py"):
+        out["func"], out["param"] = m.group(1), m.group(2)
+    m = re.match(r"^([A-Za-z_]\w*)\((.+)\)$", out["leaf"])
+    if m and not out["file"] and out["suites"] and "." in out["suites"][-1]:   # dotnet: a theory's row, Method(x: 1)
         out["func"], out["param"] = m.group(1), m.group(2)
     return out
 
@@ -493,7 +551,7 @@ class TestNames:
             chain = " > ".join(p["suites"])
             same = [t for t in cands if (t["full"] and t["full"].rsplit(" > ", 1)[0] in (chain, " > ".join(p["suites"][-1:])))
                     or (t["suite"] and t["suite"] in (chain, p["suites"][-1]))
-                    or ("." + p["suites"][-1] + "." in t["id"])]
+                    or re.search(r"[.:]" + re.escape(p["suites"][-1]) + r"\.", t["id"])]
             if same or not p["file"]:
                 cands = same
         return cands
@@ -502,7 +560,9 @@ class TestNames:
         """The id of the test node a result ran, or None when there is none or it could be more than one."""
         p = result_parts(name)
         leaf = p["func"] or p["leaf"]
-        cands = self._narrow(self.by_name.get(leaf, []), p)
+        # The map keeps a name as written in the source: a tab in the result is `\t` there.
+        written = leaf.translate({ord(c): "\\" + e for e, c in _TAP_CONTROL.items()})
+        cands = self._narrow(self.by_name.get(leaf, []) or self.by_name.get(written, []), p)
         if not cands:
             hits = [(size, t) for pattern, size, t in self.templates if pattern.match(leaf)]
             hits = [(size, t) for size, t in hits if t in self._narrow([t for _, t in hits], p)]
@@ -529,32 +589,90 @@ def record_tests(con, run: str, results: list[dict]) -> dict:
     return {"run": run, **counts, "matched_to_test_nodes": sum(1 for r in rows if r[2])}
 
 
-_PLAIN = re.compile(r"^\s*(PASS(?:ED)?|FAIL(?:ED)?|ERROR|SKIP(?:PED)?|XFAIL|XPASS)\b[\s:]*(.+?)\s*$")
-_POINT = re.compile(r"^(\s*)(not ok|ok)\b(?:\s+\d+)?(?:\s*-(?=\s|$))?\s*(.*?)\s*$")
-_SUBTEST = re.compile(r"^(\s*)# Subtest:\s*(.*?)\s*$")
+# Each is matched against a line with its trailing spaces cut (parse_test_output does): a lazy name followed by `\s*$`
+# tries every split of a long run of spaces inside the name, and a test that prints one line of a million spaces would
+# hold the parse for hours.
+_PLAIN = re.compile(r"^\s*(PASS(?:ED)?|FAIL(?:ED)?|ERROR|SKIP(?:PED)?|XFAIL|XPASS)\b[\s:]*(.+)$")
+_POINT = re.compile(r"^(\s*)(not ok|ok)\b(?:\s+\d+)?(?:\s*-(?=\s|$))?\s*(.*)$")
+_SUBTEST = re.compile(r"^(\s*)# Subtest:\s*(.*)$")
+_YAML_START = re.compile(r"^\s*---\s*$")
+# go test: `--- PASS: TestX/sub (0.00s)`, `=== RUN   TestX`, and a package's line `ok  \tpkg\t0.3s`, `FAIL\tpkg\t0.1s`,
+# `?   \tpkg\t[no test files]` or `FAIL\tpkg [build failed]`.
+# jest's default reporter: ` PASS  src/a.test.js (5.1 s)`, and with --verbose `✓ name (2 ms)`, `✕`, `○ skipped`, `✎ todo`
+# (√ and × on Windows).
+_JEST_FILE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+)(?:\s+\([\d.]+\s*m?s\))?$")   # and the file is JavaScript
+_JS_FILE = re.compile(r"\.[cm]?[jt]sx?$")
+_JEST_TEST = re.compile(r"^(\s*)(✓|✕|○|✎|√|×)\s+(.*)$")
+_JEST_TIME = re.compile(r"\(([\d.]+\s*m?s)\)$")   # `name (2 ms)`: searched from the `(`, so a long name costs nothing
+_GO_RESULT = re.compile(r"^(\s*)--- (PASS|FAIL|SKIP): (\S+) \([\d.]+m?s\)\s*$")
+# dotnet test with `--logger "console;verbosity=detailed"`: `  Passed Ns.Class.Method [3 ms]`, `  Failed ... [<1 ms]`,
+# then for a failure `  Error Message:` and the message on the lines below it.
+_DOTNET = re.compile(r"^\s*(Passed|Failed|Skipped)\s+(\S.*?)\s+\[[^\]]*\]\s*$")
+_GO_RUN = re.compile(r"^=== (?:RUN|CONT|PAUSE|NAME)\s+(\S+)\s*$")
+_GO_PACKAGE = re.compile(r"^(ok|FAIL|\?)\s+(\S+)(?:\t.*| \[(build failed|setup failed)\])$")
 
 
-def _tap_point(rest: str) -> tuple[str, str, bool]:
-    """A TAP test line after `ok N -`: (description, directive, opens a block of subtests)."""
-    opens = rest.endswith("{")
+_TAP_CONTROL = {"t": "\t", "n": "\n", "r": "\r", "b": "\b", "f": "\f", "v": "\v"}
+
+
+def _tap_unescape(text: str) -> str:
+    r"""A TAP name as the runner meant it: `\#` is `#`, `\\` a backslash, and (as node:test writes them) `\\t` and `\\n`
+    a tab and a newline."""
+    return re.sub(r"\\#|\\\\([tnrbfv])?",
+                  lambda m: "#" if m.group(0) == "\\#" else _TAP_CONTROL.get(m.group(1) or "", "\\"), text)
+
+
+def _tap_point(rest: str, can_open: bool = True) -> tuple[str, str, bool]:
+    """A TAP test line after `ok N -`: (description, directive, opens a block of subtests). A ` {` at the end opens a
+    block (vitest) only when `can_open`, the lines after it being the block's; else it is part of the name."""
+    opens = can_open and rest.endswith("{")
     if opens:
         rest = rest[:-1].rstrip()
     m = re.search(r"(?<!\\)\s#\s*(.*)$", rest)
     desc = rest[:m.start()] if m else rest
     directive = m.group(1).strip() if m else ""
-    return desc.strip().replace("\\#", "#").replace("\\\\", "\\"), directive, opens
+    return _tap_unescape(desc.strip()), directive, opens
+
+
+_COLLECTED = re.compile(r"^(\S+\.py) - (.+)$")
+
+
+def _outside_brackets(text: str, sep: str) -> int:
+    """Where `sep` first appears outside a pytest parameter's brackets (`test[a - b] - message`), or -1."""
+    depth = 0
+    for k, ch in enumerate(text):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+        elif not depth and text.startswith(sep, k):
+            return k
+    return -1
+
+
+# What parse_test_output reads, as the help, the tools and the next steps say it.
+READS = ('TAP (vitest --reporter=tap, node --test), pytest -rA, go test -v, jest --verbose,'
+         ' dotnet test --logger "console;verbosity=detailed", or one PASS or FAIL line per test')
 
 
 def parse_test_output(text: str) -> list[dict]:
     """Read test results from runner output. Understood: TAP 13 and 14 as vitest, node:test and tap print it, where
     nested subtests (indented, or opened with `{`) give names like `file > suite > test` and a suite is not a test of
-    its own; pytest -rA summaries (`PASSED path::test[param]`), kept whole so each parameter is one result; and any
+    its own; pytest -rA summaries (`PASSED path::test[param]`), kept whole so each parameter is one result; go test
+    (`--- PASS: TestX/sub`, read as `TestX > sub`; only -v prints the tests that pass); jest's default reporter (` PASS  file`,
+    the `✓`/`✕` tree that --verbose adds, and a `●` section per failure), named `file > describe > test`; dotnet test's
+    detailed console logger (`Passed Ns.Class.Method [3 ms]`); and any
     runner that prints one `PASS name` or `FAIL name: message` line per test. Other formats: pass results to
     record_tests directly."""
     out: dict[str, dict] = {}
     stack: list[dict] = []        # open suites: {indent, name, kind: header|brace, status, children, failed}
     last: Optional[dict] = None   # the result a YAML block that follows belongs to
     in_yaml = False
+    go_run: Optional[str] = None  # go -v: the test whose log lines follow (`=== RUN   TestX`)
+    go_after: Optional[int] = None   # go: the indent of the last `--- FAIL:`, whose log lines follow it
+    go_logs: dict[str, str] = {}  # go -v: a test's first log line, its message if it fails
+    go_tests: list[str] = []      # go: every result, to drop a parent that its subtests account for
+    jest: Optional[dict] = None   # jest: the file whose tests follow, its open describe blocks, a failure awaiting its message
 
     def emit(chain: list[str], status: str, message: Optional[str] = None) -> dict:
         for f in stack:
@@ -575,12 +693,14 @@ def parse_test_output(text: str) -> list[dict]:
             return None
         return emit([f["name"] for f in stack] + [frame["name"]], frame["status"])
 
-    for line in text.splitlines():
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    for k, line in enumerate(lines):
         if in_yaml:
             if re.match(r"^\s*\.\.\.\s*$", line):
                 in_yaml = False
             else:
-                m = re.match(r"^\s*message:\s*(.*)$", line)
+                # vitest nests `message:` under `error:`; node:test prints the message as `error:` itself
+                m = re.match(r"^\s*(?:message|error):\s*(?![|>][-+]?\s*$)(\S.*)$", line)
                 if m and last is not None and last["status"] == "fail" and not last["message"]:
                     msg = m.group(1).strip()
                     if len(msg) > 1 and msg[0] == msg[-1] == '"':
@@ -592,15 +712,82 @@ def parse_test_output(text: str) -> list[dict]:
                         msg = msg[1:-1].replace("''", "'")
                     last["message"] = msg
             continue
-        if re.match(r"^\s*---\s*$", line):
+        if _YAML_START.match(line):
             in_yaml = True
             continue
+        m = _GO_PACKAGE.match(line)
+        if m:   # go: one line per package after its tests, `ok  <pkg>\t0.1s`; not a test, unless it did not build
+            if m.group(3):
+                emit([m.group(2)], "fail", m.group(3))
+            go_run = None
+            continue
+        m = _GO_RUN.match(line)
+        if m:
+            go_run = m.group(1)
+            continue
+        m = _GO_RESULT.match(line)
+        if m:   # go: `--- FAIL: TestX/sub (0.00s)`; a subtest's name is its parent's, then its own
+            indent, word, name = len(m.group(1).expandtabs()), m.group(2), m.group(3)
+            status = {"PASS": "pass", "FAIL": "fail", "SKIP": "skip"}[word]
+            last = emit(name.split("/"), status, go_logs.get(name) if status == "fail" else None)
+            go_tests.append(last["name"])
+            go_after, go_run = indent, None
+            continue
+        if go_run is not None or go_after is not None:   # a test's log line: before its result (-v) or after it
+            m = re.match(r"^(\s+)(\S.*)$", line)
+            if m and go_run is not None:
+                go_logs.setdefault(go_run, m.group(2).strip())
+                continue
+            if m and len(m.group(1).expandtabs()) > go_after and last is not None and last["status"] == "fail":
+                last["message"] = last["message"] or m.group(2).strip()
+                continue
+            go_after = None
+        m = _JEST_FILE.match(line)
+        if m and _JS_FILE.search(m.group(1)):   # jest: ` PASS  src/a.test.js`, then (with --verbose) its tests as a tree, then a `●` section per failure
+            jest = {"file": m.group(1), "tree": [], "in_tree": True, "wait": None}
+            continue
+        if jest is not None:
+            if line.startswith("Test Suites:"):
+                jest = None
+                continue
+            m = re.match(r"^\s*●\s+(.*)$", line)
+            if m:
+                jest["in_tree"] = False
+                title = m.group(1)
+                chain = [] if title == "Test suite failed to run" else title.split(" › ")
+                jest["wait"] = last = emit([jest["file"]] + chain, "fail")
+                continue
+            if not line.strip():
+                continue
+            if jest["wait"] is not None:   # the first line of a failure's section says what failed
+                jest["wait"]["message"] = jest["wait"]["message"] or line.strip()
+                jest["wait"] = None
+                continue
+            m = _JEST_TEST.match(line)
+            if jest["in_tree"] and (m or line[:1].isspace()):
+                indent = len((m.group(1) if m else re.match(r"^\s*", line).group(0)).expandtabs())
+                while jest["tree"] and jest["tree"][-1][0] >= indent:
+                    jest["tree"].pop()
+                if not m:   # a describe block's name
+                    jest["tree"].append((indent, line.strip()))
+                    continue
+                status = {"✓": "pass", "√": "pass", "✕": "fail", "×": "fail"}.get(m.group(2), "skip")
+                name = m.group(3)
+                t = _JEST_TIME.search(name) if name.endswith(")") else None
+                if t and name[:t.start()][-1:].isspace() and name[:t.start()].strip():
+                    name = name[:t.start()].rstrip()
+                name = re.sub(r"^(?:skipped|todo)\s+", "", name) if status == "skip" else name
+                last = emit([jest["file"]] + [n for _, n in jest["tree"]] + [name], status)
+                continue
+            if not jest["in_tree"]:
+                continue
         m = _SUBTEST.match(line)
         if m:
             indent = len(m.group(1).expandtabs())
             while stack and stack[-1]["kind"] == "header" and stack[-1]["indent"] >= indent:
                 stack.pop()
-            stack.append({"indent": indent, "name": m.group(2), "kind": "header", "status": "pass", "children": 0, "failed": False})
+            name = _tap_unescape(m.group(2))   # escaped as on a test line
+            stack.append({"indent": indent, "name": name, "kind": "header", "status": "pass", "children": 0, "failed": False})
             continue
         if re.match(r"^\s*\}\s*$", line) and stack and stack[-1]["kind"] == "brace":
             frame = stack.pop()
@@ -609,7 +796,9 @@ def parse_test_output(text: str) -> list[dict]:
         m = _POINT.match(line)
         if m:
             indent = len(m.group(1).expandtabs())
-            desc, directive, opens = _tap_point(m.group(3))
+            after = next((lines[j] for j in range(k + 1, len(lines)) if lines[j].strip()), "")   # a block opened with ` {` is indented
+            deeper = len(after.expandtabs()) - len(after.expandtabs().lstrip()) > indent and not _YAML_START.match(after)
+            desc, directive, opens = _tap_point(m.group(3), can_open=deeper)
             word = directive.split()[0].upper() if directive else ""
             status = "skip" if word in ("SKIP", "TODO") else "fail" if m.group(2) == "not ok" else "pass"
             while stack and stack[-1]["kind"] == "header" and stack[-1]["indent"] > indent:
@@ -624,6 +813,18 @@ def parse_test_output(text: str) -> list[dict]:
             else:
                 last = emit([f["name"] for f in stack] + [desc], status)
             continue
+        m = _DOTNET.match(line)
+        if m:
+            full = m.group(2)
+            cut = full.find("(")
+            head, args = (full[:cut], full[cut:]) if cut > 0 else (full, "")
+            owner, _, method = head.rpartition(".")   # Ns.Class.Method: the class is its suite
+            last = emit([owner, method + args] if owner else [full],
+                        {"Passed": "pass", "Failed": "fail", "Skipped": "skip"}[m.group(1)])
+            continue
+        if re.match(r"^\s*Error Message:\s*$", line) and last is not None and last["status"] == "fail" and not last["message"]:
+            last["message"] = next((ln.strip() for ln in lines[k + 1:] if ln.strip()), None)
+            continue
         m = _PLAIN.match(line)
         if not m or m.group(2).startswith("["):   # pytest's `SKIPPED [1] file:line: reason` names no test
             continue
@@ -631,12 +832,24 @@ def parse_test_output(text: str) -> list[dict]:
         status = ("fail" if word.startswith(("FAIL", "ERROR")) else "skip" if word.startswith(("SKIP", "XFAIL"))
                   else "pass")
         name, message = rest, None
-        if status == "fail":
-            for sep in ((" - ", ": ") if "::" in rest else (": ", " - ")):
+        if "::" in rest:          # pytest: `path::test[a - b] - message`, and XFAIL and XPASS give a reason the same way
+            for sep in (" - ", ": "):
+                k = _outside_brackets(rest, sep)
+                if k >= 0:
+                    name, message = rest[:k], (rest[k + len(sep):] if status == "fail" else None)
+                    break
+        elif status == "fail" and _COLLECTED.match(rest):   # pytest: `ERROR tests/x.py - ImportError: ...`, a file that did not load
+            name, message = _COLLECTED.match(rest).groups()
+        elif status == "fail":
+            for sep in (": ", " - "):
                 if sep in rest:
                     name, message = rest.split(sep, 1)
                     break
         last = emit([name.strip()], status, message)
+    for parent in dict.fromkeys(go_tests):   # go: a test with subtests passes or fails with them, as a TAP suite does,
+        kids = [out[n] for n in go_tests if n.startswith(parent + " > ") and n in out]   # unless it failed on its own
+        if kids and parent in out and (out[parent]["status"] != "fail" or any(k["status"] == "fail" for k in kids)):
+            del out[parent]
     from . import props   # a failing property test's counterexample, from wherever in the text it was printed
     return props.annotate(list(out.values()), text)
 
@@ -745,6 +958,8 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
                          " nothing to compare with. Plan the change again to take a new one."}
     before = _open(snap)
     try:
+        from .incremental import code_version
+        made_by = before.execute("SELECT value FROM meta WHERE key = 'made_by'").fetchone()
         d = compare(before, con)
         # Today's rules, evaluated on the graph as it was: a rule added after the proposal still counts.
         rules_before = rules.check(before, rules_from=con)
@@ -785,7 +1000,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
     if own is not None:
         not_predicted += [{"id": f["id"], "name": "<top-level>", "kind": "file", "path": f["path"], "line": 1,
                            "end": f["span_end"], "why": "outside any function", "own": own[f["id"]]}
-                          for f in files if own.get(f["id"]) and any(text.strip() for _, text in own[f["id"]])]
+                          for f in files if own.get(f["id"]) and any(_code_line(text) for _, text in own[f["id"]])]
     new_declared, new_undeclared = [], []
     for n in d["nodes"]["added"]:
         (new_declared if segments(n["id"]) & declared_new else new_undeclared).append(n)
@@ -855,4 +1070,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
         extra={"review": {k: v for k, v in lean.items() if k not in ("as_predicted", "intent")}})
     report["view_id"] = saved.get("id")
     report["baseline"] = (row["base_commit"] or "")[:7] or None
+    # Taken by another version of Leyline (or one that did not say): what that version read differently (a name defined
+    # twice, an id it gave a file) shows as a change here, and is not one.
+    report["baseline_other_version"] = made_by is None or made_by[0] != code_version()
     return report

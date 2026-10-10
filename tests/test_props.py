@@ -54,6 +54,12 @@ def test_hypothesis_counterexamples_from_real_pytest_output(fixture):
     assert got["tests/test_ledger.py::test_plain_example"]["status"] == "pass"
 
 
+def test_hypothesis_counterexample_with_an_escaped_quote_in_a_string():
+    # repr() of a string holding both quotes escapes one: s='a\'b"c'. The escaped quote does not close the string.
+    text = "Falsifying example: test_quote(\n    s='a\\'b\"c',\n    n=1,\n)\n"
+    assert [c["example"] for c in props.counterexamples(text)] == ["s='a\\'b\"c', n=1"]
+
+
 def test_fast_check_counterexamples_from_real_vitest_tap():
     got = {r["name"].split(" > ")[-1]: r for r in diff.parse_test_output((OUT / "fastcheck_vitest_tap.txt").read_text())}
     assert got["Balance is never negative"]["message"].startswith("fails for 0, -1 (fast-check).\nProperty failed after 1 tests")
@@ -256,6 +262,18 @@ def test_remove_is_done_when_gone_and_no_longer_called(tmp_path):
     assert (t["state"], t["verdict"], t["verdict_why"]) == ("done", "proven", "`make_engine` is gone, and nothing still calls it")
 
 
+def test_a_removed_name_left_only_as_a_string_key_is_not_still_called(tmp_path):
+    work, ch, db, _ = _change(tmp_path, "- [ ] 1.1 Remove `make_engine`\n", "")
+    core, tests, init = work / "py/src/pkg/core.py", work / "py/tests/test_engine.py", work / "py/src/pkg/__init__.py"
+    after = [{"name": n, "status": "pass"} for n in ("test_start", "test_chain")]
+    edit(core, 'def make_engine():\n    return Engine("made")\n', "")
+    edit(tests, 'from pkg import make_engine\n', "")
+    edit(tests, 'assert make_engine().name == "made"', 'assert {"make_engine": 1}["make_engine"] == 1')
+    edit(init, "from .core import make_engine\n", "")
+    t = _verify(work, db, ch, after)["tasks"][0]
+    assert (t["state"], t["verdict"]) == ("done", "proven"), t["verdict_why"]
+
+
 def test_rename_needs_the_old_name_gone_the_new_there_and_its_callers_moved(tmp_path):
     work, ch, db, b = _change(tmp_path, "- [ ] 1.1 Rename `Engine.child` to `Engine.copy`\n", "")
     core, conf, tests = work / "py/src/pkg/core.py", work / "py/tests/conftest.py", work / "py/tests/test_engine.py"
@@ -276,3 +294,49 @@ def test_rename_needs_the_old_name_gone_the_new_there_and_its_callers_moved(tmp_
     edit(core, '    def copy(self) -> "Engine":\n        return Engine(self.name)\n', "")   # gone, and no copy either
     t = _verify(work, db, ch, after)["tasks"][0]
     assert (t["verdict"], t["verdict_why"]) == ("contradicted", "`Engine.child` is gone, but `Engine.copy` is not on the map")
+
+
+def test_a_removal_written_with_its_file_is_judged_by_what_is_left(tmp_path):
+    """`path/to/file.py: name` was read as a file's path, so the removal went unjudged and an edit counted as done."""
+    work, ch, db, _ = _change(tmp_path, "- [ ] 1.1 Remove `py/src/pkg/core.py: make_engine`\n", "")
+    edit(work / "py/src/pkg/core.py", 'return Engine("made")', 'return Engine("built")')   # edited, not removed
+    t = _verify(work, db, ch, [{"name": n, "status": "pass"} for n in ("test_start", "test_chain")])["tasks"][0]
+    assert t["verdict"] == "contradicted" and "still exists" in t["verdict_why"], t
+    edit(work / "py/src/pkg/core.py", 'def make_engine():\n    return Engine("built")\n', "")   # gone; a test still calls it
+    t = _verify(work, db, ch, [{"name": n, "status": "pass"} for n in ("test_start", "test_chain")])["tasks"][0]
+    assert t["verdict"] == "partial" and "test_made" in t["verdict_why"], t
+
+
+@pytest.mark.parametrize("task, gone", [("Remove the class `core.Journal`", "core.Journal"),
+                                        ("Delete `py/web/client.py`", "py/web/client.py")])
+def test_what_a_removal_takes_with_it_is_not_an_edit_outside_the_spec(tmp_path, task, gone):
+    """A class's members and a file's functions went with it, and were each listed as an edit outside the spec, so a
+    clean removal was never done as agreed."""
+    work, ch, db, _ = _change(tmp_path, f"- [ ] 1.1 {task}\n", "")
+    if gone.endswith(".py"):
+        (work / gone).unlink()
+    else:
+        core = work / "py/src/pkg/core.py"
+        core.write_text(core.read_text().split("class Journal")[0])
+    v = _verify(work, db, ch, [{"name": n, "status": "pass"} for n in ("test_start", "test_made", "test_chain")])
+    assert v["tasks"][0]["verdict"] == "proven" and v["drift"] == [] and v["done_as_agreed"], v["why_not"]
+
+
+@pytest.mark.parametrize("path", ["src/engine.py", "packages/@scope/engine.py"])
+def test_git_says_when_a_name_came_in_for_a_path_with_an_at_sign(tmp_path, path):
+    """git's log was split on `@`, which a scoped package's path has too, so git could not say a name was new there."""
+    from leyline import renames
+
+    def git(*args):
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=tmp_path, check=True,
+                       capture_output=True)
+    f = tmp_path / path
+    f.parent.mkdir(parents=True)
+    f.write_text("def start():\n    return 1\n\n\ndef other():\n    return 2\n")
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("commit", "-qm", "one")
+    f.write_text("def begin():\n    return 1\n\n\ndef other():\n    return 2\n")
+    git("commit", "-qam", "rename start to begin")
+    g = renames.Git([tmp_path])
+    assert g.was_new(path, "start", "begin") is True       # begin came in while start was there

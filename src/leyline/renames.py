@@ -92,9 +92,10 @@ class Git:
                 continue
             if not _word(new).search(head):
                 return True
-            log = _git(root, "log", "--follow", "-M", "-S", new, "--format=@%H", "--name-status", "HEAD", "--",
+            # Each commit opens with a NUL, which no path has (a scoped package's path has `@`).
+            log = _git(root, "log", "--follow", "-M", "-S", new, "--format=%x00%H", "--name-status", "HEAD", "--",
                        f"{prefix}{path}") or ""
-            blocks = [b.strip().splitlines() for b in log.split("@") if b.strip()]
+            blocks = [b.strip().splitlines() for b in log.split("\0") if b.strip()]
             if not blocks:
                 return None
             first = blocks[-1]                    # the oldest commit that changed how often it is written
@@ -121,7 +122,7 @@ def _baseline_has(m, key: Optional[str], node_id: str) -> Optional[bool]:
     when there is no such baseline (a living spec's anchors, or a change that was forgotten)."""
     if not key or key.startswith("specs/"):
         return None
-    snaps = m.__dict__.setdefault("_snaps", {})
+    snaps = m._snaps   # closed with the map (drift._Map.close)
     if key not in snaps:
         from . import diff
         p = diff.snapshot_path(m.con, "spec-" + key)

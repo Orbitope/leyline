@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -84,10 +85,12 @@ def _named(names, folder: Path) -> set:
 
 
 def _verdict(folder: Path) -> Optional[str]:
-    """The date `leyline check` last wrote a verdict on this folder's page, or None."""
+    """The date `leyline check` last found this folder's change done, from its page, or None."""
     page = folder / "leyline.md"
     try:
-        if "## 4. Was it done as agreed" in page.read_text(encoding="utf-8", errors="replace"):
+        text = page.read_text(encoding="utf-8", errors="replace")
+        verdict = text.split("## 4. Was it done as agreed", 1)[1] if "## 4. Was it done as agreed" in text else ""
+        if re.search(r"^\*\*Yes\.\*\*", verdict, re.M):
             return datetime.date.fromtimestamp(page.stat().st_mtime).isoformat()
     except OSError:
         pass
@@ -110,12 +113,14 @@ def index(con, names) -> list[dict]:
         for folder, state in folders:
             key = drift.DATED.sub("", folder.name)
             cid = "spec-" + key
-            row = con.execute("SELECT attrs, intent FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+            row = con.execute("SELECT attrs, intent, status FROM change_proposals WHERE id = ?", (cid,)).fetchone()
             attrs = json.loads(row[0] or "{}") if row else {}
             if state == "archived":
                 date = folder.name[:10] if drift.DATED.match(folder.name) else (attrs.get("verified") or "")[:10]
             else:
-                date = (attrs.get("verified") or "")[:10] or _verdict(folder)
+                # Finished while its last check found it done: one that failed since, or was planned again, is not.
+                # A folder the store does not know is read from its page.
+                date = ((attrs.get("verified") or "")[:10] if row[2] == "verified" else "") if row else _verdict(folder)
                 if not date:
                     continue   # still being worked on: not an earlier change
             nodes = _stored_nodes(con, cid)

@@ -146,6 +146,21 @@ class _Lines:
         text = " ".join(lines[n - 1].split())
         return text if len(text) <= 160 else text[:157] + "..."
 
+    def declaration(self, node_id: str, path: Optional[str], n: Optional[int]) -> Optional[str]:
+        """The line that declares a node whose span starts at line n: past its decorators or attributes
+        (`@app.route(...)`, `[HttpGet]`), which may run over several lines."""
+        lines = self.get(node_id, path)
+        if not n or not (0 < n <= len(lines)):
+            return None
+        k, depth = n, 0
+        while k <= min(len(lines), n + 30):
+            s = lines[k - 1].strip()
+            if not (depth > 0 or s.startswith(("@", "["))):
+                return self.line(node_id, path, k)
+            depth = max(0, depth + s.count("(") + s.count("[") - s.count(")") - s.count("]"))
+            k += 1
+        return self.line(node_id, path, n)
+
 
 COMMENT = re.compile(r"^\s*(//+|#+|/\*+|\*+/?|<!--|--)\s?")
 
@@ -356,11 +371,11 @@ def _matches(ix: Index, t: dict) -> dict[str, float]:
     return out
 
 
-def _flows_through(con, nid: str, most: int = 2) -> list[dict]:
-    """Entry-point flows that pass a function, shortest way in first."""
+def _flows_through(con, nid: str, most: int = 2, kind: str = "entry") -> list[dict]:
+    """Flows of one kind (entry, or test) that pass a function, shortest way in first."""
     rows = con.execute("SELECT f.id, f.name, s.depth FROM flow_steps s JOIN flows f ON f.id = s.flow_id WHERE"
-                       " s.callable_id = ? AND json_extract(f.attrs, '$.kind') = 'entry' AND f.entry_id != ?"
-                       " ORDER BY s.depth, f.id LIMIT ?", (nid, nid, most)).fetchall()
+                       " s.callable_id = ? AND json_extract(f.attrs, '$.kind') = ? AND f.entry_id != ?"
+                       " ORDER BY s.depth, f.id LIMIT ?", (nid, kind, nid, most)).fetchall()
     return [{"flow": r[0], "depth": r[2]} for r in rows]
 
 
@@ -447,8 +462,9 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
             kind_word += f" ({row['address']})"
         item = {"id": nid, "name": row["label"], "kind": kind_word, "at": f"{row['path']}:{row['line']}",
                 "score": round(score, 2), "why": why, "flows": ix.flows_from.get(nid, [])[:3]}
-        if not item["flows"]:
+        if not item["flows"]:   # no flow starts here: the entry points' flows that reach it, and the tests'
             item["reached_from"] = _flows_through(con, nid)
+            item["tests_reaching"] = _flows_through(con, nid, 3, "test")
         out.append(item)
     # Close: another of the first four, in another file, scores near the first.
     ambiguous = any(sc >= 0.7 * picked[0][0] and ix.rows[k]["path"] != ix.rows[picked[0][1]]["path"]
@@ -479,8 +495,11 @@ def find_text(r: dict) -> str:
         L.append(f"      matched: {'; '.join(c['why'])}")
         if c["flows"]:
             L.append(f"      flows that start here: {', '.join(c['flows'])}")
-        elif c.get("reached_from"):
-            L.append(f"      reached from: {', '.join(x['flow'] for x in c['reached_from'])}")
+        else:
+            if c.get("reached_from"):
+                L.append(f"      reached from: {', '.join(x['flow'] for x in c['reached_from'])}")
+            if c.get("tests_reaching"):
+                L.append(f"      tests that reach it: {', '.join(x['flow'] for x in c['tests_reaching'])}")
     L += ["", r["note"]]
     if r.get("next"):
         L.append("Next: leyline explain-path " + json.dumps(r["candidates"][0]["id"]))
@@ -554,6 +573,11 @@ def _resolve(con, text: str) -> dict:
         return {"id": text}
     if re.match(r"[A-Z]+ /", text):   # a route, as its handler is named
         rows = con.execute("SELECT id FROM nodes WHERE kind = 'callable' AND name = ?", (text,)).fetchall()
+        if not rows:   # a route a named function serves (a decorator, an attribute): by its route, as find_flows reads it
+            rows = con.execute(
+                "SELECT id FROM nodes WHERE kind = 'callable' AND json_extract(attrs, '$.route') = ? UNION"
+                " SELECT dst_id FROM edges WHERE kind = 'communicates' AND json_extract(attrs, '$.channel') = 'http'"
+                " AND json_extract(attrs, '$.address') = ?", (text, text)).fetchall()
         if len(rows) == 1:
             return {"id": rows[0][0]}
     return query.resolve(con, text)
@@ -753,7 +777,7 @@ def explain_path(con, frm: str, to: Optional[str] = None, through: Optional[str]
                 step["call_line"] = f"{pn.get('path')}:{line}"
             if call:
                 step["call"] = call
-        decl = lines.line(s["id"], n["path"], n["span_start"]) if n.get("name") not in TOP else None
+        decl = lines.declaration(s["id"], n["path"], n["span_start"]) if n.get("name") not in TOP else None
         if decl:
             step["declaration"] = decl
         if s["via"] in ELSEWHERE:

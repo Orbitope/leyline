@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leyline-code"
-version = "0.8.0"
+version = "0.8.1"
 description = "Map a codebase so a person can plan a change, have an agent write the code, and check that it was done as agreed."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,3 +45,5 @@ packages = ["src/leyline"]
 testpaths = ["tests"]
 norecursedirs = ["fixture", "fixture2", "fixture3", "fixture4", "fixture5", "fixture6", "fixture_ws"]
 python_files = ["test_*.py"]
+# A connection left for the garbage collector fails the test that left it (tests/conftest.py closes the tests' own).
+filterwarnings = ["error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning"]

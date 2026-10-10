@@ -33,6 +33,9 @@ CALLABLE_DECLS = {
 }
 ACCESS = ("public", "private", "protected", "internal")
 LAMBDAS = ("lambda_expression", "anonymous_method_expression")
+# `this` and `base` as the grammar names them: this_expression in older releases, this from 0.23 on.
+THIS = ("this_expression", "this")
+BASE = ("base_expression", "base")
 
 
 LITERALS = {"integer_literal": "int", "real_literal": "double", "boolean_literal": "bool", "character_literal": "char",
@@ -44,7 +47,9 @@ HTTP_CLIENT = {"GetAsync": "GET", "GetStringAsync": "GET", "GetFromJsonAsync": "
                "GetByteArrayAsync": "GET", "PostAsync": "POST", "PostAsJsonAsync": "POST", "PutAsync": "PUT",
                "PutAsJsonAsync": "PUT", "DeleteAsync": "DELETE", "PatchAsync": "PATCH"}
 HTTP_MAP = {"MapGet": "GET", "MapPost": "POST", "MapPut": "PUT", "MapDelete": "DELETE", "MapPatch": "PATCH"}
-HTTP_ATTR = re.compile(r"\[\s*(Http(Get|Post|Put|Delete|Patch)|Route)\s*\(\s*\"([^\"]*)\"")
+# An attribute with a template, first in its list or after another: [HttpGet("x")], [Authorize, HttpPost("x")].
+HTTP_ATTR = re.compile(r"[\[,]\s*(Http(Get|Post|Put|Delete|Patch)|Route)\s*\(\s*\"([^\"]*)\"")
+HTTP_BARE = re.compile(r"\[\s*(?:[^\]]*,\s*)?Http(Get|Post|Put|Delete|Patch)\s*(?:\(\s*\)\s*)?[\],]")
 FILE_CALL = re.compile(r"(?:^|\.)(File|Directory|FileAccess)\.(\w+)$")
 
 
@@ -316,6 +321,7 @@ class _Walker:
         self.file_id = file_id
         self.module = module
         self.res = FileResult()
+        self.src = src   # spans are offsets into the file; the root node starts after a byte order mark
         self.tree = _parser.parse(src)
         self.field_types: dict[str, dict[str, str]] = {}  # type id -> member name -> type name
         self.redirect: dict[tuple, str] = {}  # lambda span -> node its body's calls belong to
@@ -399,7 +405,7 @@ class _Walker:
                    "visibility": _visibility(mods, "internal" if parent_id == self.file_id else "private"),
                    "is_abstract": "abstract" in mods or native == "interface",
                    "is_static": "static" in mods, "is_partial": "partial" in mods,
-                   "signature": _squash(self.tree.root_node.text[node.start_byte:head_end].decode("utf8", "replace"))}))
+                   "signature": _squash(self.src[node.start_byte:head_end].decode("utf8", "replace"))}))
         base_list = _child(node, "base_list")
         if base_list is not None:
             for b in base_list.children:
@@ -411,15 +417,16 @@ class _Walker:
         self.field_types.setdefault(tid, {})
         if native == "delegate":
             return
-        if body is None:
-            return
-        # Record primary-constructor parameters as fields (records).
+        # Record primary-constructor parameters as fields (records), with a body or without: record Item(int Id);
+        # A class's or struct's (C# 12: class Svc(ILogger logger)) are parameters it captures, not properties.
         plist = _child(node, "parameter_list")
-        if plist is not None:
+        if plist is not None and native == "record":
             for p in plist.children:
                 if p.type == "parameter":
                     self._field_node(tid, _text(p.child_by_field_name("name")), p.child_by_field_name("type"),
                                      p, ["public"], "property")
+        if body is None:
+            return
         for m in body.children:
             mt = m.type
             if mt in TYPE_DECLS:
@@ -525,7 +532,7 @@ class _Walker:
         self.res.nodes.append(Node(
             id=cid, kind="callable", name=name, parent_id=parent_id, language=LANGUAGE, path=self.path,
             span_start=node.start_point[0] + 1, span_end=node.end_point[0] + 1,
-            attrs={"signature": _squash(self.tree.root_node.text[node.start_byte:head_end].decode("utf8", "replace")).rstrip(";"),
+            attrs={"signature": _squash(self.src[node.start_byte:head_end].decode("utf8", "replace")).rstrip(";"),
                    "visibility": "public" if in_interface else _visibility(mods, "private"),
                    "is_static": "static" in mods, "is_async": "async" in mods,
                    "is_virtual": in_interface or any(m in mods for m in ("virtual", "abstract", "override")),
@@ -550,18 +557,26 @@ class _Walker:
                 self.res.type_refs.append(TypeRef(cid, names, "return", ret.start_point[0] + 1))
         attrs_text = " ".join(_text(a) for a in node.children if a.type == "attribute_list")
         prefix = _controller_prefix(node, name)
+        # [HttpGet] with no template: the verb of the action's own [Route("...")], else of the controller's route.
+        bare = [m.group(1).upper() for m in HTTP_BARE.finditer(attrs_text)]
+        routed = False
         for m in HTTP_ATTR.finditer(attrs_text):
             path = m.group(3)
             if prefix is not None and not path.startswith(("/", "~")):   # [Route("api/[controller]")] on the class
                 path = f"{prefix}/{path}" if path else prefix
             path = path.lstrip("~")
-            self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + path.lstrip("/"), node.start_point[0] + 1,
-                                               m.group(2).upper() if m.group(2) else None))
-        if prefix is not None:   # [HttpGet] with no template: the action answers at the controller's own route
-            for m in re.finditer(r"\[\s*(?:[^\]]*,\s*)?Http(Get|Post|Put|Delete|Patch)\s*(?:\(\s*\)\s*)?[\],]", attrs_text):
+            routed = routed or not m.group(2)
+            for method in [m.group(2).upper()] if m.group(2) else bare or [None]:
+                self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + path.lstrip("/"), node.start_point[0] + 1,
+                                                   method))
+        if prefix is not None and not routed:   # the action answers at the controller's own route
+            for method in bare:
                 self.res.endpoints.append(Endpoint("http", "serve", cid, "/" + prefix.lstrip("/"), node.start_point[0] + 1,
-                                                   m.group(1).upper()))
-        found = set(re.findall(r"[A-Za-z_]+", attrs_text)) & TEST_ATTRIBUTES
+                                                   method))
+        # The attributes' own names ([Xunit.Fact], [TestCase(1)]), not words in their arguments ([Description("Test")]).
+        found = {re.sub(r"Attribute$", "", _text(a.child_by_field_name("name")).rsplit(".", 1)[-1])
+                 for al in node.children if al.type == "attribute_list"
+                 for a in al.named_children if a.type == "attribute"} & TEST_ATTRIBUTES
         if found:
             self.res.nodes[-1].attrs["is_test"] = True
             self.res.nodes[-1].attrs["framework"] = sorted(found)[0]
@@ -592,6 +607,8 @@ class _Walker:
             return
         if t in TYPE_DECLS:
             return
+        if t == "invocation_expression" and _text(node.child_by_field_name("function")) == "nameof":
+            return   # nameof(_repo) is the name, read when compiling: nothing in it runs
         if t == "variable_declaration":
             tnode = node.child_by_field_name("type")
             declared = _outer_type(tnode) if tnode is not None and _text(tnode) != "var" else None
@@ -725,6 +742,10 @@ class _Walker:
                     return
             if same(parent.child_by_field_name("type"), node) or same(parent.child_by_field_name("name"), node) and pt != "argument":
                 return  # a type name, or the name being declared
+            if pt == "argument" and same(parent.child_by_field_name("name"), node) and any(_text(c) == ":" for c in parent.children):
+                return  # the label of a named argument: Take(count: 5)
+            if pt == "anonymous_object_creation_expression" and node.next_sibling is not None and node.next_sibling.type == "=":
+                return  # a member an anonymous object declares: new { Name = x }
             if pt == "assignment_expression" and parent.parent is not None and parent.parent.type == "initializer_expression" \
                     and same(parent.child_by_field_name("left"), node):
                 made = parent.parent.parent
@@ -735,7 +756,9 @@ class _Walker:
                 return
         # Read or write: look at what the expression sits in.
         cur, up = node, parent
-        while up is not None and up.type == "parenthesized_expression":
+        # Through parentheses, and out of a tuple: (_name, _age) = (name, age) assigns both.
+        while up is not None and (up.type in ("parenthesized_expression", "tuple_expression") or up.type == "argument"
+                                  and up.parent is not None and up.parent.type == "tuple_expression"):
             cur, up = up, up.parent
         access = "r"
         if up is not None:
@@ -769,7 +792,7 @@ class _Walker:
             return scope.get(_text(expr) + "[]") or own.get(_text(expr) + "[]")
         if expr.type == "member_access_expression":
             inner = expr.child_by_field_name("expression")
-            if inner is not None and inner.type == "this_expression":
+            if inner is not None and inner.type in THIS:
                 return own.get(_text(expr.child_by_field_name("name")) + "[]")
         return None
 
@@ -800,7 +823,7 @@ class _Walker:
             if n.type == "member_access_expression":
                 expr = n.child_by_field_name("expression")
                 name = _text(n.child_by_field_name("name"))
-                if expr is not None and expr.type == "this_expression":
+                if expr is not None and expr.type in THIS:
                     return self.field_types.get(type_id or "", {}).get(name)
         return None
 
@@ -963,9 +986,9 @@ class _Walker:
             return None, None
         t = expr.type
         own = self.field_types.get(type_id or "", {})
-        if t == "this_expression":
+        if t in THIS:
             return "this", None
-        if t == "base_expression":
+        if t in BASE:
             return "base", None
         if t == "identifier":
             nm = _text(expr)
@@ -976,7 +999,7 @@ class _Walker:
         if t == "member_access_expression":
             inner = expr.child_by_field_name("expression")
             nm = _text(expr.child_by_field_name("name"))
-            if inner is not None and inner.type == "this_expression":
+            if inner is not None and inner.type in THIS:
                 return nm, own.get(nm)
             # a.b.Call(): the receiver is member b of something; mark it as chained.
             return "." + nm, None

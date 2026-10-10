@@ -172,6 +172,22 @@ def test_a_field_only_a_reader_of_every_field_shares_is_left_out():
     assert {"zero", "adjust", "delta", "warn"} <= words and not {"walk", "effect", "change"} & words
 
 
+def test_no_rules_and_no_findings_are_said_not_left_blank(tmp_path, capsys):
+    root = write(tmp_path / "repo", NESTED)
+    db = str(tmp_path / "s.db")
+    index(root, db, "n")
+    capsys.readouterr()
+    assert main(["--db", db, "rules"]) == 0
+    assert capsys.readouterr().out.startswith("No rules yet; an agent adds one with the add_rule MCP tool")
+    ch = root / "openspec" / "changes" / "c1"
+    ch.mkdir(parents=True)
+    (ch / "tasks.md").write_text("- [ ] 1.1 Change `validateEntity` to warn\n")
+    assert main(["--db", db, "spec", "findings", str(ch)]) == 0
+    assert capsys.readouterr().out == "No findings filed for spec-c1.\n"
+    assert main(["--db", db, "spec", "findings", "pr-feature"]) == 0
+    assert capsys.readouterr().out == "No findings filed for pr-feature.\n"
+
+
 def test_impact_and_spec_finding_from_the_command_line(tmp_path, capsys):
     root = write(tmp_path / "repo", NESTED)
     db = str(tmp_path / "s.db")
@@ -199,6 +215,23 @@ def test_impact_and_spec_finding_from_the_command_line(tmp_path, capsys):
     c.close()
 
 
+def test_impact_of_a_field_is_its_readers_and_writers_and_their_callers(tmp_path, capsys):
+    root = write(tmp_path / "repo", {
+        "app/__init__.py": "",
+        "app/box.py": "class Box:\n    def __init__(self):\n        self.items = []\n\n\n"
+                      "def fill(b: Box, x):\n    b.items = [x]\n\n\ndef count(b: Box):\n    return len(b.items)\n\n\n"
+                      "def report(b: Box):\n    return count(b)\n"})
+    db = str(tmp_path / "s.db")
+    index(root, db, "f")
+    c = store.connect(db)
+    r = query.impact(c, "f:python:app.box.Box.items")
+    c.close()
+    reached = {i.rsplit(".", 1)[-1] for g in r["by_module"] for i in g["direct"]}
+    assert {"fill", "count"} <= reached and r["reached_by"] >= 3, r     # report, through count
+    assert main(["--db", db, "impact", "Box.items"]) == 0
+    assert "used directly by" in capsys.readouterr().out
+
+
 def test_search_puts_what_the_text_names_exactly_first(tmp_path):
     files = {f"src/{n}.ts": f"export function {n}Thing(): number {{ return 1; }}\n"
              for n in ("localization", "localeCatalog", "localStore", "localCache")}
@@ -222,6 +255,21 @@ def test_fields_that_read_the_same_name_their_file(tmp_path):
     c = store.connect(db)
     names = sorted(f["name"] for f in query.shared_state(c)["fields"])
     assert names == ["Builder.notes (a/build_ink.py)", "Builder.notes (a/build_yarn.py)"]
+    c.close()
+
+
+def test_a_field_changed_in_place_from_outside_is_shared_state(tmp_path):
+    # The README: a call such as items.append(x) is a read and a write; shared_state's note must say the same.
+    src = ("class Journal:\n    def __init__(self):\n        self.items = []\n\n"
+           "class Writer:\n    def __init__(self, j: Journal):\n        self.j = j\n\n"
+           "    def put(self, x):\n        self.j.items.append(x)\n")
+    root = write(tmp_path / "repo", {"a/journal.py": src})
+    db = tmp_path / "s.db"
+    index(root, db, "d")
+    c = store.connect(db)
+    r = query.shared_state(c)
+    assert [f["name"] for f in r["fields"]] == ["Journal.items"]
+    assert "are not seen" not in r["note"], r["note"]
     c.close()
 
 
@@ -288,3 +336,44 @@ def test_a_long_builder_chain_is_mapped_in_linear_time(tmp_path):
     run(200)   # warm up the parsers
     small, large = run(1000), run(4000)
     assert large < 8 * small + 1.0, (small, large)   # quadratic would be about 16 times
+
+
+def test_a_typescript_import_inside_a_dot_directory(tmp_path):
+    """Files under a directory whose name starts with a dot (.storybook, .vitepress) import each other like any other."""
+    root = write(tmp_path / "dots", {
+        ".storybook/helper.ts": "export function helper(): number {\n  return 1;\n}\n",
+        ".storybook/main.ts": 'import { helper } from "./helper";\n\nexport function main(): number {\n  return helper();\n}\n',
+    })
+    db = tmp_path / "d.db"
+    index(root, db, "d")
+    con = store.connect(db)
+    assert {r[0] for r in con.execute("SELECT dst_id FROM edges WHERE kind = 'imports' AND src_id = 'd:file:.storybook/main.ts'")} \
+        == {"d:file:.storybook/helper.ts"}
+    assert {r[0] for r in con.execute("SELECT dst_id FROM calls WHERE src_id LIKE 'd:typescript:%main.main'")} \
+        == {"d:typescript:.storybook.helper.helper"}
+    con.close()
+
+
+def test_two_files_that_differ_only_in_extension_both_stay_on_the_map(tmp_path):
+    """a.js beside a.ts (or a.c beside a.h) would name their contents alike. The first by path keeps the usual ids;
+    the other keeps its extension in them, so neither file's functions are lost and each call stays in its file."""
+    root = write(tmp_path / "ext", {
+        "src/a.js": "export function one() {\n  return two();\n}\n\nexport function two() {\n  return 2;\n}\n",
+        "src/a.ts": "export function one(): number {\n  return 1;\n}\n\nexport function three(): number {\n  return one();\n}\n",
+        "c/m.c": "int f(void) { return g(); }\nint g(void) { return 1; }\n",
+        "c/m.h": "static int f(void) { return 2; }\n",
+    })
+    db = tmp_path / "e.db"
+    index(root, db, "e")
+    con = store.connect(db)
+    rows = {r[0]: r[1] for r in con.execute("SELECT id, path FROM nodes WHERE kind = 'callable' AND name IN ('one', 'two', 'three')")}
+    assert rows == {"e:typescript:src.a.one": "src/a.js", "e:typescript:src.a.two": "src/a.js",
+                    "e:typescript:src.a.ts.one": "src/a.ts", "e:typescript:src.a.ts.three": "src/a.ts"}
+    assert {r[0] for r in con.execute("SELECT path FROM nodes WHERE kind = 'callable' AND name = 'f'")} == {"c/m.c", "c/m.h"}
+    assert con.execute("SELECT COUNT(*) FROM nodes WHERE id LIKE 'e:c:c.m.f%'").fetchone()[0] \
+        == con.execute("SELECT COUNT(*) FROM nodes WHERE id LIKE 'e:c:c.m.h.f%'").fetchone()[0]
+    assert con.execute("SELECT COUNT(*) FROM nodes GROUP BY id HAVING COUNT(*) > 1").fetchall() == []
+    calls = {(r[0], r[1]) for r in con.execute("SELECT src_id, dst_id FROM calls")}
+    assert ("e:typescript:src.a.ts.three", "e:typescript:src.a.ts.one") in calls
+    assert ("e:typescript:src.a.one", "e:typescript:src.a.two") in calls
+    con.close()
