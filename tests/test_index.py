@@ -259,6 +259,29 @@ def test_two_systems_whose_anchors_share_a_name_stay_two(tmp_path):
     assert anchors == {"c:python:pkg.x.hub.Hub", "c:python:pkg.y.hub.Hub"}
 
 
+def test_two_systems_whose_anchors_share_a_name_are_named_apart(tmp_path):
+    """The tour said "Clustering splits it into ...: _Walker group, _Walker group, _Walker group"."""
+    from leyline import tours
+    root = tmp_path / "p"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg/__init__.py").write_text("")
+    for side in ("x", "y"):
+        p = root / "pkg" / side
+        p.mkdir()
+        (p / "__init__.py").write_text("")
+        (p / "hub.py").write_text("class Hub:\n    def run(self):\n        return 1\n")
+        for i in range(7):
+            (p / f"m{i}.py").write_text(f"from .hub import Hub\n\n\nclass {side.upper()}{i}:\n    def go(self):\n        return Hub().run()\n")
+    db = tmp_path / "s.db"
+    index(root, db, "c")
+    c = store.connect(db)
+    names = sorted(r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'system'"))
+    text = " ".join(s["narrative"] for s in tours.get(c, "tour:orientation:c")["stops"])
+    c.close()
+    assert names == ["Hub group (pkg/x/hub.py)", "Hub group (pkg/y/hub.py)"], names
+    assert "Hub group (pkg/x/hub.py), Hub group (pkg/y/hub.py)" in text, text
+
+
 def test_a_python_override_with_other_parameters_still_overrides(tmp_path):
     """Python has no overloads: a method of a subclass replaces the base's method of that name whatever its
     parameters are, so a call through the base can land in it."""

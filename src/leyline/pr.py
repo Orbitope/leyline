@@ -1028,15 +1028,23 @@ def _by_folder(paths: list[str]) -> list[str]:
     for p in paths:
         parts = p.split("/")
         by["/".join(parts[:-1]) if len(parts) > 1 else ""].append(p)
-    # the deepest folder that holds three or more, rolled up one level at a time
+    # A folder that holds three or more is said once, with what its subfolders hold counted in it.
+    grouped = sorted(f for f, ps in by.items() if f and len(ps) >= 3)
+    held = defaultdict(list)
     out = []
-    for folder, ps in sorted(by.items()):
-        out += [f"{folder}/ ({len(ps)} files)"] if folder and len(ps) >= 3 else ps
+    for p in sorted(paths):
+        top = next((f for f in grouped if p.startswith(f + "/")), None)
+        if top is None:
+            out.append(p)
+        else:
+            held[top].append(p)
+    out += [f"{f}/ ({len(ps)} files)" for f, ps in sorted(held.items())]
     if len(out) > 8:    # still long: by top-two folders
         top = defaultdict(int)
         for p in paths:
             top["/".join(p.split("/")[:2])] += 1
-        out = [f"{t}/ ({n} files)" if n > 1 else next(p for p in paths if p.startswith(t)) for t, n in sorted(top.items())]
+        out = [f"{t}/ ({n} files)" if n > 1 else next(p for p in paths if p == t or p.startswith(t + "/"))
+               for t, n in sorted(top.items())]
     return out
 
 

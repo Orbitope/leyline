@@ -389,9 +389,42 @@ def _js_runner(root: Path, path: str) -> tuple[Optional[str], Path]:
         here = here.parent
 
 
+CS_TEST = re.compile(r"\.cs$")
+
+
+def _csproj(root: Path, path: str) -> Optional[str]:
+    """The test project a C# test file is in: the nearest folder above it with a .csproj, relative to the root."""
+    d = (root / path).parent
+    while True:
+        found = sorted(d.glob("*.csproj")) if d.is_dir() else []
+        if found:
+            return str(found[0].relative_to(root)).replace("\\", "/")
+        if d == root or root not in d.parents:
+            return None
+        d = d.parent
+
+
+def _dotnet_name(t: dict) -> tuple[str, str]:
+    """("FullyQualifiedName", Ns.Class.Method) from the test's id, or ("Name", Method) when it has none."""
+    i = t.get("id") or ""
+    if ":csharp:" in i:
+        return ("FullyQualifiedName", i.split("::")[-1].split("(")[0])
+    return ("Name", t["name"].split("(")[0])
+
+
+def _dotnet_filter(names) -> str:
+    """`dotnet test --filter`: one test by name each, joined by |; the filter's own operators escaped."""
+    esc = lambda v: re.sub(r"([\\(),|&=!~])", r"\\\1", v)
+    if len(names) > 200:   # too long for one command line: run their classes
+        names = {("FullyQualifiedName~" if k == "FullyQualifiedName" else "Name~", v.rsplit(".", 1)[0] if k == "FullyQualifiedName" else v)
+                 for k, v in names}
+        return "|".join(k + esc(v) for k, v in sorted(names))
+    return "|".join(f"{k}={esc(v)}" for k, v in sorted(names))
+
+
 def commands(con, tests: list[dict]) -> list[dict]:
     """One command per runner and directory: pytest node ids, `npx vitest run <files>`, `npx jest --runTestsByPath <files>`, `go test
-    -run`. Tests no runner was recognized for are listed by name instead."""
+    -run`, `dotnet test <project> --filter`. Tests no runner was recognized for are listed by name instead."""
     roots = store.roots(con)
     groups: dict[tuple, list] = defaultdict(list)
     other = []
@@ -404,6 +437,12 @@ def commands(con, tests: list[dict]) -> list[dict]:
             groups[("pytest", str(root))].append(t.get("pytest") or path)
         elif GO_TEST.search(path):
             groups[("go", str(root))].append((str(Path(path).parent), t["name"]))
+        elif CS_TEST.search(path):
+            proj = _csproj(Path(root), path)
+            if proj is None:
+                other.append(f"{t['name']} ({path})")
+            else:
+                groups[("dotnet", str(root))].append((proj, _dotnet_name(t)))
         elif JS_TEST.search(path):
             runner, cwd = _js_runner(Path(root), path)
             if runner:
@@ -422,6 +461,12 @@ def commands(con, tests: list[dict]) -> list[dict]:
             cmd = "pytest " + " ".join(shlex.quote(i) for i in items)
         elif runner == "vitest":
             cmd = "npx vitest run " + " ".join(shlex.quote(i) for i in items)
+        elif runner == "dotnet":
+            by_proj = defaultdict(set)
+            for proj, name in items:
+                by_proj[proj].add(name)
+            cmd = " && ".join("dotnet test " + shlex.quote(proj) + " --filter " + shlex.quote(_dotnet_filter(names))
+                              for proj, names in sorted(by_proj.items()))
         elif runner == "jest":
             # by path: jest reads a plain argument as a pattern (`[id].test.tsx` is a character class)
             cmd = "npx jest --runTestsByPath " + " ".join(shlex.quote(i) for i in items)

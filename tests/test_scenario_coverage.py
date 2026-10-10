@@ -254,6 +254,28 @@ def test_a_jest_command_runs_each_test_file_by_its_path(tmp_path):
     assert not any(re.search(p, str(root / p), re.I) for p in paths)
 
 
+def test_csharp_tests_run_by_dotnet_test_with_a_filter_per_test_project(tmp_path):
+    import shlex
+    root = tmp_path / "game"
+    write(root, {"Shop.Tests/Shop.Tests.csproj": "<Project/>", "Other.Tests/Other.Tests.csproj": "<Project/>"})
+    con = store.connect(tmp_path / "s.db")
+    with con:
+        con.execute("INSERT INTO meta (key, value) VALUES ('root:g', ?)", (str(root),))
+    tests = [{"name": "Total_adds", "repo": "g", "path": "Shop.Tests/Cart/CartTests.cs",
+              "id": "g:csharp:Shop.Tests::Shop.Tests.CartTests.Total_adds()"},
+             {"name": "Parses", "repo": "g", "path": "Shop.Tests/Cart/CartTests.cs",
+              "id": "g:csharp:Shop.Tests::Shop.Tests.CartTests.Parses(string,int)"},
+             {"name": "Works", "repo": "g", "path": "Other.Tests/OtherTests.cs",
+              "id": "g:csharp:Other.Tests::Other.Tests.OtherTests.Works()"}]
+    [cmd] = affected.commands(con, tests)
+    assert cmd["runner"] == "dotnet" and cmd["cwd"] == str(root) and cmd["tests"] == 3
+    other, shop = [shlex.split(c) for c in cmd["command"].split(" && ")]   # one per test project
+    assert shop == ["dotnet", "test", "Shop.Tests/Shop.Tests.csproj", "--filter",
+                    "FullyQualifiedName=Shop.Tests.CartTests.Parses|FullyQualifiedName=Shop.Tests.CartTests.Total_adds"], shop
+    assert other == ["dotnet", "test", "Other.Tests/Other.Tests.csproj", "--filter",
+                     "FullyQualifiedName=Other.Tests.OtherTests.Works"], other
+
+
 def test_tests_with_no_runner_are_counted_past_the_forty_kept(tmp_path):
     con = store.connect(tmp_path / "s.db")
     tests = [{"name": f"Test_{i:03}", "repo": "w", "path": "Shop.Tests/CartTests.cs"} for i in range(119)]

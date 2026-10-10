@@ -831,3 +831,64 @@ def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
     assert ("pkg.tool.run", "pkg.core.Engine") in used
     assert ("pkg.tool.run", "pkg.core.Field") not in used
     assert ("pkg.tool.run", "pkg.core.Engine.start") in calls(con)
+
+
+RULES_CS = '''namespace Game;
+public interface IRule { bool Bites(int x); }
+public sealed class A : IRule { public bool Bites(int x) => x > 1; }
+public sealed class B : IRule { public bool Bites(int x) => x > 2; }
+public sealed class C : IRule { public bool Bites(int x) => x > 3; }
+public sealed class Rulebook
+{
+    public IRule[] Rules { get; }
+    public Rulebook(IRule[] rules) { Rules = rules; }
+    public static Rulebook Default() => new(new IRule[]
+    {
+        new A(), new B(),
+        new C(),
+    });
+    public static IRule Pick(string kind)
+    {
+        switch (kind)
+        {
+            case "a": return new A();
+            case "b": return new B();
+            default: return new C();
+        }
+    }
+    public static void Wire(Rulebook book, string kind)
+    {
+        var table = new System.Collections.Generic.Dictionary<string, System.Func<IRule>>
+        {
+            ["a"] = () => new A(),
+            ["b"] = () => new B(),
+        };
+        Use(table[kind]());
+    }
+    public static IRule Arm(string kind) => kind switch
+    {
+        "a" => new A(),
+        _ => new B(),
+    };
+    static void Use(IRule r) { }
+}
+'''
+
+
+def test_a_function_that_builds_every_kind_is_not_said_to_choose_one(tmp_path):
+    from leyline import patterns
+    con = _map(tmp_path, {"Game/Game.csproj": CSPROJ, "Game/Rules.cs": RULES_CS,
+                          "py/shapes.py": "class Shape:\n    def area(self):\n        return 0\n\n\n"
+                                          "class Box(Shape):\n    pass\n\n\nclass Disc(Shape):\n    pass\n\n\n"
+                                          "def make(kind):\n    if kind == 'box':\n        return Box()\n"
+                                          "    return Disc()\n\n\n"
+                                          "def everything():\n    return [Box(), Disc()]\n"})
+    said = {p["roles"]["factory"][0]["id"]: p["rationale"]
+            for p in patterns.listing(con, pattern="factory", include_tests=True)["patterns"]}
+    default = next(v for k, v in said.items() if k.endswith("Rulebook.Default()"))
+    assert "decides which" not in default and "every one" in default, default
+    assert "returns it as IRule" in next(v for k, v in said.items() if k.endswith("Rulebook.Pick(string)"))
+    assert "decides which" in next(v for k, v in said.items() if k.endswith("Rulebook.Wire(Rulebook,string)"))
+    assert "every one" not in next(v for k, v in said.items() if k.endswith("shapes.make"))
+    assert "every one" in next(v for k, v in said.items() if k.endswith("shapes.everything"))
+    assert "every one" not in next(v for k, v in said.items() if k.endswith("Rulebook.Arm(string)"))

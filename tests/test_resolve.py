@@ -172,6 +172,22 @@ def test_a_field_only_a_reader_of_every_field_shares_is_left_out():
     assert {"zero", "adjust", "delta", "warn"} <= words and not {"walk", "effect", "change"} & words
 
 
+def test_no_rules_and_no_findings_are_said_not_left_blank(tmp_path, capsys):
+    root = write(tmp_path / "repo", NESTED)
+    db = str(tmp_path / "s.db")
+    index(root, db, "n")
+    capsys.readouterr()
+    assert main(["--db", db, "rules"]) == 0
+    assert capsys.readouterr().out.startswith("No rules yet; an agent adds one with the add_rule MCP tool")
+    ch = root / "openspec" / "changes" / "c1"
+    ch.mkdir(parents=True)
+    (ch / "tasks.md").write_text("- [ ] 1.1 Change `validateEntity` to warn\n")
+    assert main(["--db", db, "spec", "findings", str(ch)]) == 0
+    assert capsys.readouterr().out == "No findings filed for spec-c1.\n"
+    assert main(["--db", db, "spec", "findings", "pr-feature"]) == 0
+    assert capsys.readouterr().out == "No findings filed for pr-feature.\n"
+
+
 def test_impact_and_spec_finding_from_the_command_line(tmp_path, capsys):
     root = write(tmp_path / "repo", NESTED)
     db = str(tmp_path / "s.db")

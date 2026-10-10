@@ -438,6 +438,19 @@ def test_the_tour_tells_two_modules_of_the_same_name_apart(tmp_path):
     assert "Module: lib " not in text and "The foundation: lib " not in text, text
 
 
+def test_the_tour_writes_each_language_by_its_own_name(tmp_path):
+    from leyline import tours
+    con = _map(tmp_path, {
+        "a/one.py": "def one():\n    return 1\n", "a/two.py": "def two():\n    return 2\n",
+        "b/three.ts": "export function three(): number {\n  return 3;\n}\n",
+        "c/four.go": "package c\n\nfunc Four() int {\n\treturn 4\n}\n",
+    })
+    repo = con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchone()[0]
+    first = tours.get(con, f"tour:orientation:{repo}")["stops"][0]["narrative"]
+    assert "written in Python, " in first and "TypeScript" in first and "Go" in first, first
+    assert "typescript" not in first and " go" not in first, first
+
+
 def test_state_counts_writers_in_code_with_its_tests_beside_it(tmp_path):
     from leyline import query
     con = _map(tmp_path, {
