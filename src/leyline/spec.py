@@ -1546,14 +1546,21 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         head = re.sub(r"^\*\*State:.*$", lambda _: check_state(out), head, count=1, flags=re.M)
         _write(path, head + "\n\n" + verify_text(out))
         out["written"] = str(path)
+    # The latest check decides: the change is finished (verified) only while its last check found it done. Each check
+    # is kept in `checks`. Done, the baseline stays (it is small), so a later edit can be checked against the same
+    # start; it goes with `leyline spec forget`, or once the change folder is archived or removed.
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    attrs = json.loads(row[0] or "{}") if row else {}
+    at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    attrs["checks"] = (attrs.get("checks") or [])[-19:] + [{"at": at, "done": bool(out["done_as_agreed"])}]
     if out["done_as_agreed"]:
-        # Done. The baseline stays (it is small), so a later edit can be checked against the same start; it goes
-        # with `leyline spec forget`, or once the change folder is archived or removed.
-        row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
-        attrs = json.loads(row[0] or "{}") if row else {}
-        attrs["verified"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        with con:
-            con.execute("UPDATE change_proposals SET status = 'verified', attrs = ? WHERE id = ?", (json.dumps(attrs), cid))
+        attrs["verified"] = at
+    else:
+        attrs.pop("verified", None)
+    with con:
+        con.execute("UPDATE change_proposals SET status = ?, attrs = ? WHERE id = ?",
+                    ("verified" if out["done_as_agreed"] else "implemented", json.dumps(attrs), cid))
+    if out["done_as_agreed"]:
         from . import drift   # what each code name meant now that it is agreed: `leyline drift` compares later code with it
         out["anchors"] = drift.record(con, change_dir, write_file=write)
     return out

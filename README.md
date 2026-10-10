@@ -514,6 +514,8 @@ Both `leyline pr` and `leyline plan` list **Earlier changes to this code**: up t
 (archived, or checked) and earlier pull request reviews that touched the same functions or types, newest first, with
 the names they share; the facts carry them as `related_changes`. A repository with no such history gets the commits
 before the change that changed the same files instead (of the last 500 that touched them), most overlap first.
+"Checked" means its latest check found it done as agreed: a check that fails after one that passed makes it unfinished
+again, and so does planning it again (it is then reopened; the store keeps each check's time and verdict).
 
 ### Learning from rejected findings
 

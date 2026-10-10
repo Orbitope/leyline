@@ -281,3 +281,58 @@ def test_a_scenario_whose_results_are_older_than_the_code_is_not_said_to_have_no
     s = v["scenarios"][0]
     assert v["tests_old"] and s["state"] == "results older than the code", s
     assert "older than the code" in s["verdict_why"]
+
+
+def _finished(db):
+    from leyline import related, store
+    con = store.connect(db)
+    try:
+        return {x["change_id"] for x in related.index(con, spec._Names(con))}
+    finally:
+        con.close()
+
+
+def _attrs(db):
+    import json
+    from leyline import store
+    con = store.connect(db)
+    try:
+        row = con.execute("SELECT status, attrs FROM change_proposals WHERE id = 'spec-report-queued'").fetchone()
+        return row[0], json.loads(row[1])
+    finally:
+        con.close()
+
+
+def test_a_check_that_fails_after_one_that_passed_is_not_finished(repo):
+    """A change checked done and then broken by a later edit kept `verified`, so it was listed as a finished
+    earlier change while its last check failed."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    assert "spec-report-queued" in _finished(db)
+    core = work / "srv" / "core.py"
+    core.write_text(core.read_text().replace("    def queued(self, items):", "    def queued_items(self, items):"))
+    assert not loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    status, attrs = _attrs(db)
+    assert status != "verified" and "verified" not in attrs and [c["done"] for c in attrs["checks"]] == [True, False]
+    assert "spec-report-queued" not in _finished(db)
+
+
+def test_planning_again_after_a_passing_check_reopens_the_change(repo):
+    """Planning a checked change again (the spec changed) reset its status and dropped when it was checked: the
+    history went, and a reopened change still read as finished from its page."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    loop.plan(db, ch)
+    status, attrs = _attrs(db)
+    assert status == "reopened" and attrs["checks"][-1]["done"] and attrs.get("reopened")
+    assert "spec-report-queued" not in _finished(db)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    assert _attrs(db)[0] == "verified" and "spec-report-queued" in _finished(db)
