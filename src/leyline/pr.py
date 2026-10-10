@@ -465,8 +465,8 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
     how_it_runs = diagrams.safe(diagrams.for_snapshot, snap, con, [n["id"] for n in edited + added] or [n["id"] for n in types],
                                 [n["id"] for n in d["nodes"]["removed"]])
-    top = [{"id": f["id"], "path": f["path"], "lines": len(own[f["id"]])} for f in files
-           if own is not None and any(t.strip() for _, t in own.get(f["id"]) or [])]
+    top = [{"id": f["id"], "path": f["path"], "lines": sum(1 for _, t in own[f["id"]] if diff._code_line(t))} for f in files
+           if own is not None and any(diff._code_line(t) for _, t in own.get(f["id"]) or [])]
     changed = {n["id"] for n in edited + types} | {n["id"] for n in added}
     removed = d["nodes"]["removed"]
 
@@ -559,6 +559,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             "fields_written_from_elsewhere_too": state,
             "new_members_named_like_existing_ones": alone["beside"][:20],
             "entry_points_affected": (report.get("entry_points_affected") or [])[:20],
+            "entry_points_affected_total": len(report.get("entry_points_affected") or []),
         },
         "tests": {
             "likely_to_fail_unedited": sorted({m["name"] for m in must if m.get("test")}
@@ -566,6 +567,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
             "touched_by_the_change": tests_touched, "test_files_changed": test_files,
             "changed_code_no_test_reaches": [u for u in report.get("untested") or [] if not u["name"].endswith(("<module>", "<top-level>"))],
             "tests_to_run": (report.get("tests_to_run") or [])[:30],
+            "tests_to_run_total": len(report.get("tests_to_run") or []),
             **_measured(con, [n["id"] for n in edited + types + added]),
         },
         "structure": {"new_dependencies": d["structure"]["new_dependencies"],
@@ -1013,9 +1015,11 @@ def _n(n: int, word: str, plural: str = "") -> str:
     return f"{n} {word if n == 1 else plural or word + 's'}"
 
 
-def _names(xs: list[str], k: int = 4) -> str:
+def _names(xs: list[str], k: int = 4, total: int = 0) -> str:
+    """The first k names, and how many more: of `total` when the list was cut before it got here."""
     xs = list(dict.fromkeys(xs))
-    return ", ".join(f"`{x}`" for x in xs[:k]) + (f" and {len(xs) - k} more" if len(xs) > k else "")
+    more = max(total, len(xs)) - k
+    return ", ".join(f"`{x}`" for x in xs[:k]) + (f" and {more} more" if more > 0 else "")
 
 
 def _by_folder(paths: list[str]) -> list[str]:
@@ -1133,7 +1137,8 @@ def text(r: dict) -> str:
         L += [f"- {fn_line(x)}." for x in hist["functions"][:5]]
     L += related.lines(r.get("related_changes"))
     if reach["entry_points_affected"]:
-        L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6) + "."]
+        L += ["", "Reached from: " + _names([e["name"] for e in reach["entry_points_affected"]], 6,
+                                                reach.get("entry_points_affected_total", 0)) + "."]
     # tests
     L += ["", "## Tests", ""]
     if t.get("likely_to_fail_unedited"):
@@ -1148,7 +1153,8 @@ def text(r: dict) -> str:
     if t["changed_code_no_test_reaches"]:
         L.append(f"- No test on the map reaches {_names([u['name'] for u in t['changed_code_no_test_reaches']], 6)}.")
     if t["tests_to_run"]:
-        L.append("- Tests that run the changed code: " + _names([x["name"] for x in t["tests_to_run"]], 6) + ".")
+        L.append("- Tests that run the changed code: "
+                 + _names([x["name"] for x in t["tests_to_run"]], 6, t.get("tests_to_run_total", 0)) + ".")
     if t.get("measured_running_the_change"):
         L.append("- Measured running the changed code (per-test coverage): "
                  + _names([x.get("pytest") or x["name"] for x in t["measured_running_the_change"]], 6) + ".")

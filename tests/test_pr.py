@@ -431,3 +431,31 @@ def test_a_caller_linked_only_by_a_guess_does_not_block(tmp_path, monkeypatch):
     monkeypatch.chdir(sure)
     code, out = run("pr", "main", "--gate")
     assert code == 1 and "`use.py.run` calls code whose signature changed" in gate_of(out)
+
+
+def test_a_comment_edited_outside_any_function_is_not_code_outside_any_function(branch, monkeypatch):
+    other = branch / "app/other.py"
+    other.write_text("# Kept for the old importer.\n" + other.read_text())
+    git(branch, "commit", "-qam", "Say why other stays")
+    monkeypatch.chdir(branch)
+    code, page = run("pr", "main")
+    assert "Outside any function" not in page, page
+
+
+def test_the_tests_that_run_the_change_are_counted_past_the_thirty_listed(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    (root / "app").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "app/core.py").write_text("def helper(x):\n    return x\n")
+    (root / "tests/test_many.py").write_text("from app.core import helper\n\n" + "".join(
+        f"\ndef test_n{i}():\n    assert helper({i}) == {i}\n" for i in range(40)))
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    (root / "app/core.py").write_text("def helper(x):\n    return x + 0\n")
+    git(root, "commit", "-qam", "Add zero")
+    monkeypatch.chdir(root)
+    code, out = run("pr", "main")
+    line = next(x for x in out.splitlines() if x.startswith("- Tests that run the changed code:"))
+    assert line.endswith(" and 34 more."), line

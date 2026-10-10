@@ -140,9 +140,11 @@ def _label(con, i: str) -> str:
     return f"{n['owner']}.{n['name']}" if n["owner_kind"] in ("type", "callable") else n["name"]
 
 
-def _some(xs: list[str], k: int = 3) -> str:
+def _some(xs: list[str], k: int = 3, total: int = 0) -> str:
+    """The first k, and how many more: of `total` when the list was cut before it got here."""
     xs = sorted(xs)
-    return ", ".join(xs[:k]) + (f" and {len(xs) - k} more" if len(xs) > k else "")
+    more = max(total, len(xs)) - k
+    return ", ".join(xs[:k]) + (f" and {more} more" if more > 0 else "")
 
 
 def _taken_before(con, run: Optional[str], change_id: str) -> bool:
@@ -457,6 +459,6 @@ def text(r: dict) -> str:
             L.append(f"  cd {_quote(c['cwd'])} && {c['command']}")
     for c in r["commands"]:
         if not c["command"]:
-            L += ["", "No runner recognized for: " + _some(c["unrecognized"], 6) + "."]
+            L += ["", "No runner recognized for: " + _some(c["unrecognized"], 6, c["tests"]) + "."]
     L += ["", r["note"]]
     return "\n".join(L)

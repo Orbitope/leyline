@@ -88,7 +88,8 @@ You tell your agent: "engine names should come back in upper case, and add a `sh
 
 and two scenarios, `Start` and `Shout`, in `specs/engine/spec.md`. Then you plan it, passing the tests'
 output from before any code changes so that `check` can tell a test the change breaks from one that
-already failed (TAP from vitest, node --test or tap, `pytest -rA`, `go test -v`, `jest --verbose`, or any runner
+already failed (TAP from vitest, node --test or tap, `pytest -rA`, `go test -v`, `jest --verbose`,
+`dotnet test --logger "console;verbosity=detailed"`, or any runner
 that prints one PASS or FAIL line per test):
 
 ```bash
@@ -1055,7 +1056,8 @@ outcomes are counted per run:
 - **unresolved**: the name exists in the workspace but the receiver's type is unknown
 
 A call on a receiver of unknown type is linked by name only when exactly one declaration of that
-name is visible and the name was never seen on an outside type. Those links are stored with
+name is visible and the name was never seen on an outside type. In Python it is linked only to a method, and
+never by a name the built-in types have (`add`, `get`, `close`, `split`). Those links are stored with
 precision `guess`, not `heuristic`, and the map draws them differently.
 
 ### Channels

@@ -676,3 +676,158 @@ def test_typescript_an_anonymous_default_class_is_a_class_with_its_methods(tmp_p
     got = calls(con)
     assert ("src.widget.default.render", "src.widget.default.label") in got
     assert ("src.page.show", "src.widget.default.render") in got
+
+
+def test_python_a_call_on_a_module_imported_from_outside_is_not_guessed_onto_ours(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/store.py": (
+            "import sqlite3\n"
+            "\n"
+            "def connect(path):\n"
+            "    return sqlite3.connect(path)\n"),
+        "pkg/use.py": (
+            "import os.path\n"
+            "from json import decoder as dec\n"
+            "from pkg import store\n"
+            "\n"
+            "def join(a):\n"
+            "    return a\n"
+            "\n"
+            "def a(p):\n"
+            "    return os.path.join(p, 'x'), dec.connect(p)\n"
+            "\n"
+            "def b(p):\n"
+            "    return store.connect(p)\n"),
+    })
+    got = calls(con)
+    assert ("pkg.store.connect", "pkg.store.connect") not in got
+    assert ("pkg.use.a", "pkg.use.join") not in got
+    assert ("pkg.use.a", "pkg.store.connect") not in got
+    assert got[("pkg.use.b", "pkg.store.connect")] == "heuristic"
+
+
+def test_state_counts_an_append_on_a_field_as_a_write_and_says_so(tmp_path):
+    from leyline import query
+    con = _map(tmp_path, {
+        "pkg/box.py": (
+            "class Box:\n"
+            "    def __init__(self):\n"
+            "        self.items = []\n"
+            "\n"
+            "class Packer:\n"
+            "    def pack(self, box: Box, x):\n"
+            "        box.items.append(x)\n"),
+    })
+    got = query.shared_state(con)
+    assert [f["name"] for f in got["fields"]] == ["Box.items"]
+    assert "not assignments" not in got["note"] and "append" in got["note"]
+
+
+def test_python_a_call_on_an_object_is_not_guessed_onto_a_nested_or_module_function(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/parse.py": (
+            "def parse(text):\n"
+            "    def finish(frame):\n"
+            "        return frame\n"
+            "    return finish(text)\n"
+            "\n"
+            "def tokens(text):\n"
+            "    return text\n"),
+        "pkg/use.py": (
+            "from pkg import parse\n"
+            "\n"
+            "class Session:\n"
+            "    def reset(self):\n"
+            "        return 0\n"
+            "\n"
+            "def run(con, words, s):\n"
+            "    con.finish()\n"
+            "    words.tokens()\n"
+            "    s.reset()\n"
+            "    return parse.tokens('x')\n"),
+    })
+    got = calls(con)
+    assert ("pkg.use.run", "pkg.parse.parse.finish") not in got
+    assert got[("pkg.use.run", "pkg.use.Session.reset")] == "guess"         # a method is still guessed by its name
+    # parse.tokens('x') is linked through the module; words.tokens() is not guessed onto it
+    assert [r[0] for r in con.execute("SELECT precision FROM calls WHERE dst_id LIKE '%pkg.parse.tokens'")] == ["heuristic"]
+
+
+def test_python_a_built_in_method_on_an_unknown_receiver_is_not_guessed_onto_ours(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/out.py": (
+            "class Out:\n"
+            "    def add(self, x):\n"
+            "        return x\n"
+            "\n"
+            "    def close(self):\n"
+            "        return 0\n"
+            "\n"
+            "    def emit(self, x):\n"
+            "        return x\n"),
+        "pkg/walk.py": (
+            "from pkg.out import Out\n"
+            "\n"
+            "class Walker:\n"
+            "    def __init__(self):\n"
+            "        self.ids = set()\n"
+            "\n"
+            "    def visit(self, x, con, sink):\n"
+            "        self.ids.add(x)\n"
+            "        con.close()\n"
+            "        sink.emit(x)\n"
+            "\n"
+            "    def typed(self, out: Out):\n"
+            "        out.add(1)\n"),
+    })
+    got = calls(con)
+    assert ("pkg.walk.Walker.visit", "pkg.out.Out.add") not in got
+    assert ("pkg.walk.Walker.visit", "pkg.out.Out.close") not in got
+    assert got[("pkg.walk.Walker.visit", "pkg.out.Out.emit")] == "guess"    # a name of its own is still guessed
+    assert got[("pkg.walk.Walker.typed", "pkg.out.Out.add")] == "heuristic"
+
+
+def test_state_tells_apart_two_writing_types_of_the_same_name(tmp_path):
+    from leyline import query
+    walker = "from pkg.model import Result\n\nclass Walker:\n    def run(self, r: Result):\n        r.calls = []\n"
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/model.py": "class Result:\n    def __init__(self):\n        self.calls = None\n",
+        "pkg/py.py": walker,
+        "pkg/ts.py": walker,
+    })
+    [f] = query.shared_state(con)["fields"]
+    assert f["written_from"] == ["Walker (pkg/py.py)", "Walker (pkg/ts.py)"], f
+
+
+def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/core.py": (
+            "class Engine:\n"
+            "    def start(self):\n"
+            "        return 1\n"
+            "\n"
+            "class Field:\n"
+            "    def strip(self):\n"
+            "        return 2\n"),
+        "pkg/tool.py": (
+            "from typing import Annotated, Literal\n"
+            "from pkg.core import Engine, Field\n"
+            "\n"
+            "def search(text: Annotated[str, Field(description='such as `Engine start`')],\n"
+            "           mode: Literal['Engine', 'Other'] = 'Engine'):\n"
+            "    return text.strip()\n"
+            "\n"
+            "def run(e: Annotated[Engine, 'the Field to use']):\n"
+            "    return e.start()\n"),
+    })
+    used = edges(con, "uses_type")
+    assert ("pkg.tool.search", "pkg.core.Engine") not in used
+    assert ("pkg.tool.search", "pkg.core.Field") not in used
+    assert calls(con).get(("pkg.tool.search", "pkg.core.Field.strip")) != "heuristic"   # text is a str
+    assert ("pkg.tool.run", "pkg.core.Engine") in used
+    assert ("pkg.tool.run", "pkg.core.Field") not in used
+    assert ("pkg.tool.run", "pkg.core.Engine.start") in calls(con)

@@ -292,12 +292,21 @@ def own_changes(before: sqlite3.Connection, after: sqlite3.Connection, ids: list
     return out
 
 
+COMMENT_LINE = re.compile(r"^(//|/\*|\*(\s|/|$)|#(\s|!|$)|--\s)")
+
+
+def _code_line(text: str) -> bool:
+    """A line that holds code: not blank, and not only a comment (`// ...`, `# ...`, a doc comment's `* ...`)."""
+    t = text.strip()
+    return bool(t) and not COMMENT_LINE.match(t)
+
+
 IMPORT = re.compile(r"^\s*(import\s|from\s+\S+\s+import\s|using\s|#include\s|use\s|require\(|const\s.*=\s*require\(|export\s.*\sfrom\s)")
 
 
 def explained(node: dict, spans: list[tuple[int, int]], names: set[str], reach: int = 2) -> bool:
     """Whether the changed lines a body holds around code a task covers (a module's top level, a class around a new
-    method) are all part of that work: blank, an import, next to (within `reach` lines of) that code, or in a run
+    method) are all part of that work: blank, a comment, an import, next to (within `reach` lines of) that code, or in a run
     of changed lines that names it (an entry in a registration table, up to 15 lines long). A function
     that holds no task code is never explained this way: its own lines are its own edit."""
     own = node.get("own") or []
@@ -319,7 +328,7 @@ def explained(node: dict, spans: list[tuple[int, int]], names: set[str], reach: 
         if len(run) <= 15 and any(names_code(text) for _, text in run):
             continue
         for ln, text in run:
-            if not text.strip() or (spans and IMPORT.match(text)) or any(a - reach <= ln <= b + reach for a, b in spans):
+            if not _code_line(text) or (spans and IMPORT.match(text)) or any(a - reach <= ln <= b + reach for a, b in spans):
                 continue
             return False
     return True
@@ -459,6 +468,9 @@ def result_parts(name: str) -> dict:
     m = re.match(r"^(.+?)\[(.*)\]$", out["leaf"])
     if m and out["file"] and out["file"].endswith(".py"):
         out["func"], out["param"] = m.group(1), m.group(2)
+    m = re.match(r"^([A-Za-z_]\w*)\((.+)\)$", out["leaf"])
+    if m and not out["file"] and out["suites"] and "." in out["suites"][-1]:   # dotnet: a theory's row, Method(x: 1)
+        out["func"], out["param"] = m.group(1), m.group(2)
     return out
 
 
@@ -501,7 +513,7 @@ class TestNames:
             chain = " > ".join(p["suites"])
             same = [t for t in cands if (t["full"] and t["full"].rsplit(" > ", 1)[0] in (chain, " > ".join(p["suites"][-1:])))
                     or (t["suite"] and t["suite"] in (chain, p["suites"][-1]))
-                    or ("." + p["suites"][-1] + "." in t["id"])]
+                    or re.search(r"[.:]" + re.escape(p["suites"][-1]) + r"\.", t["id"])]
             if same or not p["file"]:
                 cands = same
         return cands
@@ -555,6 +567,9 @@ _JS_FILE = re.compile(r"\.[cm]?[jt]sx?$")
 _JEST_TEST = re.compile(r"^(\s*)(✓|✕|○|✎|√|×)\s+(.*)$")
 _JEST_TIME = re.compile(r"\(([\d.]+\s*m?s)\)$")   # `name (2 ms)`: searched from the `(`, so a long name costs nothing
 _GO_RESULT = re.compile(r"^(\s*)--- (PASS|FAIL|SKIP): (\S+) \([\d.]+m?s\)\s*$")
+# dotnet test with `--logger "console;verbosity=detailed"`: `  Passed Ns.Class.Method [3 ms]`, `  Failed ... [<1 ms]`,
+# then for a failure `  Error Message:` and the message on the lines below it.
+_DOTNET = re.compile(r"^\s*(Passed|Failed|Skipped)\s+(\S.*?)\s+\[[^\]]*\]\s*$")
 _GO_RUN = re.compile(r"^=== (?:RUN|CONT|PAUSE|NAME)\s+(\S+)\s*$")
 _GO_PACKAGE = re.compile(r"^(ok|FAIL|\?)\s+(\S+)(?:\t.*| \[(build failed|setup failed)\])$")
 
@@ -602,7 +617,8 @@ def parse_test_output(text: str) -> list[dict]:
     nested subtests (indented, or opened with `{`) give names like `file > suite > test` and a suite is not a test of
     its own; pytest -rA summaries (`PASSED path::test[param]`), kept whole so each parameter is one result; go test
     (`--- PASS: TestX/sub`, read as `TestX > sub`; only -v prints the tests that pass); jest's default reporter (` PASS  file`,
-    the `✓`/`✕` tree that --verbose adds, and a `●` section per failure), named `file > describe > test`; and any
+    the `✓`/`✕` tree that --verbose adds, and a `●` section per failure), named `file > describe > test`; dotnet test's
+    detailed console logger (`Passed Ns.Class.Method [3 ms]`); and any
     runner that prints one `PASS name` or `FAIL name: message` line per test. Other formats: pass results to
     record_tests directly."""
     out: dict[str, dict] = {}
@@ -753,6 +769,18 @@ def parse_test_output(text: str) -> list[dict]:
                 last = None
             else:
                 last = emit([f["name"] for f in stack] + [desc], status)
+            continue
+        m = _DOTNET.match(line)
+        if m:
+            full = m.group(2)
+            cut = full.find("(")
+            head, args = (full[:cut], full[cut:]) if cut > 0 else (full, "")
+            owner, _, method = head.rpartition(".")   # Ns.Class.Method: the class is its suite
+            last = emit([owner, method + args] if owner else [full],
+                        {"Passed": "pass", "Failed": "fail", "Skipped": "skip"}[m.group(1)])
+            continue
+        if re.match(r"^\s*Error Message:\s*$", line) and last is not None and last["status"] == "fail" and not last["message"]:
+            last["message"] = next((ln.strip() for ln in lines[k + 1:] if ln.strip()), None)
             continue
         m = _PLAIN.match(line)
         if not m or m.group(2).startswith("["):   # pytest's `SKIPPED [1] file:line: reason` names no test
@@ -927,7 +955,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
     if own is not None:
         not_predicted += [{"id": f["id"], "name": "<top-level>", "kind": "file", "path": f["path"], "line": 1,
                            "end": f["span_end"], "why": "outside any function", "own": own[f["id"]]}
-                          for f in files if own.get(f["id"]) and any(text.strip() for _, text in own[f["id"]])]
+                          for f in files if own.get(f["id"]) and any(_code_line(text) for _, text in own[f["id"]])]
     new_declared, new_undeclared = [], []
     for n in d["nodes"]["added"]:
         (new_declared if segments(n["id"]) & declared_new else new_undeclared).append(n)
