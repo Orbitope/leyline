@@ -116,6 +116,19 @@ def _all(con) -> dict:
     return out
 
 
+def _unreadable(con) -> list[str]:
+    """Why each learnings file that is there cannot be read: its learnings are missing from every list until it is fixed."""
+    out = []
+    for root in _roots(con).values():
+        p = path_for(root)
+        if p.is_file():
+            try:
+                _read(p, strict=True)
+            except Unreadable as e:
+                out.append(str(e).replace("; fix it by hand, then decide again", "; fix it by hand"))
+    return out
+
+
 # -- where a finding points ----------------------------------------------------------------------
 def _bare(nid: str, repo: Optional[str]) -> str:
     return nid[len(repo) + 1:] if repo and nid.startswith(repo + ":") else nid
@@ -561,7 +574,7 @@ def listing(con) -> dict:
     where = [str(path_for(r)) for r in _roots(con).values()]
     active = [l for l in items if l.get("status", "active") == "active"]
     return {"active": len(active), "stale": sum(l["stale"] for l in active), "learnings": items,
-            "files": [str(p) for p in files] or where}
+            "files": [str(p) for p in files] or where, "problems": _unreadable(con)}
 
 
 def confirm(con, lid: str) -> dict:
@@ -578,7 +591,13 @@ def confirm(con, lid: str) -> dict:
                 gone = sorted(n for n, h in l["fingerprint"].items() if h is None)
                 return {"id": lid, "status": l.get("status", "active"), "file": str(path), "was": was,
                         **({"not_in_map": gone} if gone else {})}
-    return {"error": f"no learning {lid!r}; `leyline learnings` lists them"}
+    return _not_found(con, lid)
+
+
+def _not_found(con, lid: str) -> dict:
+    problems = _unreadable(con)
+    return {"error": f"no learning {lid!r}" + (f" in the files that can be read: {'; '.join(problems)}" if problems else
+                                               "; `leyline learnings` lists them")}
 
 
 def retire(con, lid: str, why: str = "") -> dict:
@@ -590,16 +609,19 @@ def retire(con, lid: str, why: str = "") -> dict:
                 l["retired"] = f"{now()[:10]}: retired by hand" + (f": {why.strip()}" if why.strip() else ".")
                 _write(path, items)
                 return {"id": lid, "status": "retired", "file": str(path)}
-    return {"error": f"no learning {lid!r}; `leyline learnings` lists them"}
+    return _not_found(con, lid)
 
 
 def text(r: dict) -> str:
+    problems = [f"Left out: {p}." for p in r.get("problems") or []]
+    if problems and not r["learnings"]:
+        return "\n".join(problems)
     if not r["learnings"]:
         return ("No learnings yet. One is kept when a person rejects a review finding with a reason"
                 " (`leyline spec resolve <finding> rejected \"why\"`). They go in " + " or ".join(r["files"] or [FILE_AT_ROOT]) + ".")
     L = [f"{r['active']} active of {len(r['learnings'])}"
          + (f" ({r['stale']} about code that has changed since)" if r.get("stale") else "")
-         + ", in " + ", ".join(r["files"]) + ".", ""]
+         + ", in " + ", ".join(r["files"]) + ".", *problems, ""]
     for l in r["learnings"]:
         where = ", ".join((l.get("scope") or {}).get("paths", [])[:3]) or "?"
         L.append(f"{l['id']}  {l.get('status', 'active'):<7} {l.get('reviewer', '')}, {where}")
@@ -643,4 +665,4 @@ def cli(con, args) -> int:
         print(json.dumps(r, indent=2, ensure_ascii=False))
     else:
         print(text(r))
-    return 0
+    return 1 if r["problems"] else 0   # a file left out is a failure to read, not an empty list

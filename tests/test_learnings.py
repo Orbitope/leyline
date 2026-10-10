@@ -168,6 +168,21 @@ def test_a_learnings_file_that_cannot_be_read_is_left_as_it_is(decided):
     assert "learning" not in r and "could not be read" in r["learning_note"]
 
 
+def test_a_learnings_file_that_cannot_be_read_is_not_listed_as_none(decided):
+    """`leyline learnings` said "No learnings yet" over a file a merge left conflict markers in, and retire and confirm
+    said the learning did not exist: the team's decisions looked gone, with nothing saying why."""
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    path.write_text("<<<<<<< HEAD\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    con = store.connect(root / ".leyline/leyline.db")
+    r = learnings.listing(con)
+    assert any("could not be read" in p for p in r["problems"])
+    page = learnings.text(r)
+    assert "No learnings yet" not in page and "could not be read" in page
+    for result in (learnings.retire(con, lid, "why"), learnings.confirm(con, lid)):
+        assert "could not be read" in result["error"]
+
+
 def test_a_spec_review_lists_the_learnings_that_apply(decided):
     """A learning made on a pull request applies to a spec change that names the same code."""
     root, lid = decided
