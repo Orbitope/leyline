@@ -724,6 +724,37 @@ def test_state_counts_an_append_on_a_field_as_a_write_and_says_so(tmp_path):
     assert "not assignments" not in got["note"] and "append" in got["note"]
 
 
+def test_python_a_call_on_an_object_is_not_guessed_onto_a_nested_or_module_function(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/parse.py": (
+            "def parse(text):\n"
+            "    def finish(frame):\n"
+            "        return frame\n"
+            "    return finish(text)\n"
+            "\n"
+            "def tokens(text):\n"
+            "    return text\n"),
+        "pkg/use.py": (
+            "from pkg import parse\n"
+            "\n"
+            "class Session:\n"
+            "    def reset(self):\n"
+            "        return 0\n"
+            "\n"
+            "def run(con, words, s):\n"
+            "    con.finish()\n"
+            "    words.tokens()\n"
+            "    s.reset()\n"
+            "    return parse.tokens('x')\n"),
+    })
+    got = calls(con)
+    assert ("pkg.use.run", "pkg.parse.parse.finish") not in got
+    assert got[("pkg.use.run", "pkg.use.Session.reset")] == "guess"         # a method is still guessed by its name
+    # parse.tokens('x') is linked through the module; words.tokens() is not guessed onto it
+    assert [r[0] for r in con.execute("SELECT precision FROM calls WHERE dst_id LIKE '%pkg.parse.tokens'")] == ["heuristic"]
+
+
 def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
     con = _map(tmp_path, {
         "pkg/core.py": (

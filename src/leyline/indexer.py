@@ -2776,6 +2776,9 @@ class Indexer:
         # Receiver type unknown: accept only a name that is defined exactly once.
         cands = self._pick([c for c in self.by_name[(lang, name)] if (
             self.file_of.get(c.id) in self._reach(fid) if lang == "typescript" else self._can_see(fid, c.id))], argc)
+        if lang == "python":
+            # `con.close()` is a method: not a module's function (the receiver is no module), nor one nested in another
+            cands = [c for c in cands if c.parent_id in self.nodes and self.nodes[c.parent_id].kind == "type"]
         owners = {c.parent_id for c in cands}
         if len(owners) > 1:
             # Several declarations: if all but one are overrides or implementations of the same
