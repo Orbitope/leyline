@@ -57,6 +57,14 @@ def _readme(con, repo_id: str) -> Optional[str]:
     return None
 
 
+# How each language is written in a sentence: one name per language, as its own community writes it.
+LANGUAGE_NAMES = {"csharp": "C#", "python": "Python", "typescript": "TypeScript", "javascript": "JavaScript",
+                  "go": "Go", "rust": "Rust", "java": "Java", "kotlin": "Kotlin", "swift": "Swift", "c": "C",
+                  "cpp": "C++", "ruby": "Ruby", "php": "PHP", "scala": "Scala", "lua": "Lua", "elixir": "Elixir",
+                  "dart": "Dart", "zig": "Zig", "haskell": "Haskell", "ocaml": "OCaml", "julia": "Julia",
+                  "bash": "Bash", "gdscript": "GDScript"}
+
+
 def generate(con, repo_id: str) -> dict:
     """Write the orientation tour for a repo, replacing the previous one."""
     q = lambda sql, *a: con.execute(sql, a).fetchall()
@@ -120,7 +128,7 @@ def generate(con, repo_id: str) -> dict:
 
     # 1. What it is.
     readme = _readme(con, repo_id)
-    lang_names = {"csharp": "C#", "python": "Python"}
+    lang_names = LANGUAGE_NAMES
     stop("What this repository is", "repo", repo_id,
          f"{repo[0]['name']} has {_plural(len(mods), 'module')} and {_plural(n_files, 'source file')}, written in "
          f"{_names([lang_names.get(x, x) for x in langs])}. "
