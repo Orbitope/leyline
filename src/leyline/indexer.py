@@ -269,7 +269,8 @@ def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, li
         return f"cannot read: {e.strerror or e}"
     if _binary(head[:8192]):
         return "binary"
-    if len(head) == 65536 and head.count(b"\n") < 65536 // LONG_LINES:
+    # a bundle of a few tens of KB on one line is as minified as a larger one; a short file is let through
+    if len(head) >= 4 * LONG_LINES and head.count(b"\n") < len(head) // LONG_LINES:
         return "minified or generated (very long lines)"
     return None
 
@@ -348,7 +349,42 @@ def read_source(path: Path) -> bytes:
             return data.decode("utf-16").encode("utf-8")
         except UnicodeDecodeError:
             return data
+    if str(path).endswith((".py", ".pyi", ".pyw")):   # a PEP 263 declaration in the first two lines: # coding: latin-1
+        m = _CODING.match(b"\n".join(data.split(b"\n", 2)[:2]))
+        if m and codecs_lookup(m[1].decode("ascii")) not in (None, "utf-8"):
+            try:
+                return data.decode(m[1].decode("ascii")).encode("utf-8")
+            except (UnicodeDecodeError, LookupError):
+                return data
     return data
+
+
+def _jsonc(path: Path) -> Optional[dict]:
+    """A JSON file that may hold comments and trailing commas, as tsconfig.json does; None when it cannot be read."""
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    # comments outside strings go, then commas before a closing bracket
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', lambda m: m[1] or "", text, flags=re.S)
+    text = re.sub(r'("(?:\\.|[^"\\])*")|,(\s*[}\]])', lambda m: m[1] or m[2], text)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_CODING = re.compile(rb"(?:[ \t\f]*(?:#[^\n]*)?\n)?[ \t\f]*#[^\n]*?coding[:=][ \t]*([-\w.]+)")
+
+
+def codecs_lookup(name: str) -> Optional[str]:
+    """A codec's canonical name, or None when Python has no such codec."""
+    import codecs
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return None
 
 
 def source_lines(path: Path) -> list[str]:
@@ -1220,6 +1256,9 @@ class Indexer:
                 start = len(parts) - 1
                 while start > 0 and "/".join(parts[:start]) in dirs_with_init:
                     start -= 1
+                if start == len(parts) - 1 and "src" in parts[:-1]:
+                    # a namespace package (PEP 420, no __init__.py) in a src layout: src/corp/tools/x.py is corp.tools.x
+                    start = len(parts) - 1 - parts[:-1][::-1].index("src")
                 if 0 < start < len(parts) - 1:
                     self.py_modules[repo].setdefault(module_path("/".join(parts[start:])), fid)
                 if len(self.repos) > 1 and start < len(parts) - 1:
@@ -1295,7 +1334,20 @@ class Indexer:
                     if not target and lang == "python" and imp.target.split(".")[0] not in stdlib:
                         target = self._py_on_path(fid, imp.target)
                         on_path = bool(target)
-                    if target:
+                    subs = {} if target or lang != "python" else \
+                        {s: self._py_module(fid, f"{imp.target}.{s.partition(' as ')[0]}") for s in imp.symbols or ()}
+                    if any(subs.values()):
+                        # `from corp.tools import strings` where corp/tools is a namespace package (no __init__.py):
+                        # the names are its modules
+                        for s, sub in subs.items():
+                            if sub:
+                                name, _, alias = s.partition(" as ")
+                                bind(fid, imp.src_id, alias or name, (sub, None))
+                                self.import_targets[fid].add(sub)
+                                if (fid, sub) not in seen and sub != fid:
+                                    seen.add((fid, sub))
+                                    self.edges.append(Edge("imports", fid, sub, "exact", {"symbols": imp.symbols}))
+                    elif target:
                         if imp.symbols:
                             for s in imp.symbols:
                                 name, _, alias = s.partition(" as ")
@@ -1438,7 +1490,51 @@ class Indexer:
             return hits[0] if hits else None
         if self.file_lang[fid] == "python":
             return self._py_module(fid, target)
-        return self._path_module(target, _repo_of(fid))
+        hit = self._path_module(target, _repo_of(fid))
+        if hit is None and self.file_lang[fid] == "typescript" and not target.startswith("."):
+            hit = self._ts_alias(fid, target)
+        return hit
+
+    def _ts_alias(self, fid: str, target: str) -> Optional[str]:
+        """An import through compilerOptions.paths of the nearest tsconfig.json or jsconfig.json above the file
+        (`@ui/*` -> `src/*`), resolved against its baseUrl, or its own directory when it has none. `extends` is not
+        followed: a tsconfig with no paths of its own lets the import fall to the next one up, as one that extends
+        a shared base mostly does."""
+        repo = _repo_of(fid)
+        configs = self.__dict__.setdefault("_ts_configs", {})
+        if repo not in configs:
+            configs[repo] = found = {}
+            for f in self.files_of.get(repo, ()):
+                name = f.rsplit("/", 1)[-1]
+                if not (name in ("tsconfig.json", "jsconfig.json") or re.fullmatch(r"tsconfig\.[\w.-]+\.json", name)):
+                    continue
+                opts = (_jsonc(self.repos[repo] / f) or {}).get("compilerOptions")
+                paths = opts.get("paths") if isinstance(opts, dict) else None
+                if isinstance(paths, dict):
+                    here = f.rpartition("/")[0]
+                    base = posixpath.normpath(posixpath.join(here, str(opts.get("baseUrl") or ".")))
+                    found.setdefault(here, []).append(("" if base == "." else base, paths))
+        here = self.nodes[fid].path.rpartition("/")[0]
+        while True:
+            for base, paths in configs[repo].get(here, ()):
+                fits = []
+                for key, subs in paths.items():
+                    pre, star, post = key.partition("*")
+                    if (target == key) if not star else (target.startswith(pre) and target.endswith(post)
+                                                          and len(target) >= len(pre) + len(post)):
+                        fits.append((len(pre), target[len(pre):len(target) - len(post)] if star else "", subs))
+                for _, middle, subs in sorted(fits, key=lambda x: -x[0]):   # the longest prefix wins, as in tsc
+                    for sub in subs if isinstance(subs, list) else [subs]:
+                        if isinstance(sub, str):
+                            path = posixpath.normpath(posixpath.join(base, sub.replace("*", middle, 1)))
+                            hit = self._path_module("./" + path, repo)
+                            if hit:
+                                return hit
+                if fits:
+                    return None
+            if not here:
+                return None
+            here = here.rpartition("/")[0]
 
     def _generic_import(self, fid: str, target: str) -> list[str]:
         """Files an import names, whatever the language writes: a relative path (./x, ../x.h), a dotted or ::
@@ -1612,6 +1708,21 @@ class Indexer:
                 hit = self._py_export(nxt, symbol, depth + 1)
                 if hit:
                     return hit
+        return None
+
+    def _export_module(self, target_fid: str, symbol: str, depth: int = 0) -> Optional[str]:
+        """The file a module exposes whole under a name (`export * as ns from './format'`, `import util as u`),
+        following re-exports, or None."""
+        if depth > 6:
+            return None
+        bound = self.py_names.get(target_fid, {}).get(symbol)
+        if bound:
+            nxt, sub = bound
+            return nxt if sub is None else self._export_module(nxt, sub, depth + 1)
+        for nxt in self.star_exports.get(target_fid, ()):
+            hit = self._export_module(nxt, symbol, depth + 1)
+            if hit:
+                return hit
         return None
 
     def _py_name(self, fid: str, src: str, name: str) -> tuple:
@@ -2729,6 +2840,10 @@ class Indexer:
             if symbol is None:
                 return self._py_symbol(self._py_export(target, name) or "", argc)
             tid = self._py_export(target, symbol)
+            if tid is None:   # a module passed on under a name: `export * as ns from './format'` in a barrel
+                mod = self._export_module(target, symbol)
+                if mod:
+                    return self._py_symbol(self._py_export(mod, name) or "", argc)
             if tid is None and lang == "python":
                 tid = self._py_var(target, symbol)   # `from .globals import g`: a variable of a known type
             found = self._methods(tid, name, argc)

@@ -19,6 +19,7 @@ worktrees are not touched), reusing the parse output of the checkout's map for e
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -143,6 +144,13 @@ def _archive(root: Path, sha: str) -> bytes:
     `export-subst` attributes shape release tarballs (tests left out, a version string filled in), so the archive is
     made from an empty repository that borrows this one's objects and unsets both, at the highest precedence."""
     objects = (root / _git(root, "rev-parse", "--git-path", "objects")).resolve()
+    # Line endings as the checkout has them (core.autocrlf=true writes CRLF), or every file would differ from it.
+    eol = []
+    for key in ("core.autocrlf", "core.eol"):
+        try:
+            eol += ["-c", f"{key}={_git(root, 'config', '--get', key)}"]
+        except GitError:   # not set
+            pass
     with tempfile.TemporaryDirectory(prefix="leyline-archive-") as tmp:
         bare = Path(tmp)
         _git(bare, "init", "-q", "--bare")
@@ -150,7 +158,7 @@ def _archive(root: Path, sha: str) -> bytes:
         (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n")
         (bare / "info").mkdir(exist_ok=True)
         (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
-        return _git(bare, "archive", "--format=tar", sha, binary=True)
+        return _git(bare, *eol, "archive", "--format=tar", sha, binary=True)
 
 
 def _export(root: Path, sha: str, into: Path) -> None:
@@ -173,6 +181,13 @@ def _export(root: Path, sha: str, into: Path) -> None:
                         pass
     finally:
         tmp.unlink()
+    # A sparse checkout leaves some of the commit's files out of the working tree (git marks them skip-worktree), and
+    # its map leaves them out: the base leaves out the same, or each would read as removed by the change.
+    for entry in _git(root, "ls-files", "-z", "-t", binary=True).split(b"\0"):
+        if entry.startswith(b"S "):
+            path = entry[2:].decode("utf-8", "surrogateescape")
+            if not os.path.lexists(root / path) and (into / path).is_file():
+                (into / path).unlink()
     # A repository of its own holding exactly the commit's files, so the map lists them as git lists the checkout's
     # (a tracked file that a .gitignore pattern would match stays in), and not by walking the directory.
     _git(into, "init", "-q")
@@ -598,6 +613,11 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         if gh.get("headRefOid") and gh["headRefOid"] != head:
             return {"error": f"the checkout is at {head[:7]}, not at pull request {github}'s head"
                              f" ({gh['headRefOid'][:7]}): run `gh pr checkout {github}` first"}
+    try:
+        _git(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+    except GitError:
+        return {"error": f"the repository at {root} has no commits yet: commit the base first, then branch from it"}
+    named = bool(base)
     if not base:
         base = _default_base(root)
     # A branch this clone has only as origin's; for a GitHub pull request origin's first, as GitHub compares with it
@@ -610,8 +630,17 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         except GitError:
             continue
     else:
+        if not named:   # main by default: a repository whose default branch has another name says nothing of it
+            return {"error": f"no main or master branch in {root}, and origin's default branch is not known: name the"
+                             " base, `leyline pr <branch or commit>`"}
         return {"error": f"no commit or branch {base!r} in {root}"}
-    base_sha = _git(root, "merge-base", base, "HEAD")
+    try:
+        base_sha = _git(root, "merge-base", base, "HEAD")
+    except GitError:
+        if _git(root, "rev-parse", "--is-shallow-repository") == "true":
+            return {"error": f"this clone is shallow and holds no commit both {base} and HEAD come from: fetch more"
+                             " history (`git fetch --unshallow`, or --deepen), then run it again"}
+        return {"error": f"{base} and HEAD share no history: name a base the branch was made from"}
     head_sha = _git(root, "rev-parse", "HEAD")
     dirty = bool(_git(root, "status", "--porcelain"))   # a new file not yet added is mapped, so it counts too
     given = about.strip() or None   # said by the person (or the pull request); a description made here is not kept

@@ -381,6 +381,20 @@ def _not_dirs(paths: list[str]) -> bool:
     return bool(bad)
 
 
+def _workspace_elsewhere(db: str) -> bool:
+    """Whether the store is a workspace of several repositories, none of them the current directory."""
+    if not Path(db).is_file():
+        return False
+    con = store.connect(db)
+    try:
+        if con.execute("SELECT 1 FROM meta WHERE key = 'workspace'").fetchone() is None:
+            return False
+        here = Path.cwd().resolve()
+        return all(Path(p).resolve() != here for p in store.roots(con).values())
+    finally:
+        con.close()
+
+
 def _loop(args) -> int:
     """map, plan and check: the short path."""
     from . import loop
@@ -388,10 +402,17 @@ def _loop(args) -> int:
         if len(args.path) > 1 and args.repo:
             print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
             return 2
-        if _not_dirs(args.path):
+        paths = args.path or ["."]
+        if _not_dirs(paths):
             return 2
-        db = args.db or (str(Path(args.path[0]) / DEFAULT_DB) if len(args.path) == 1 else DEFAULT_DB)
-        print(loop.map_text(loop.map_repos(args.path, db, args.repo, args.exact, args.scip, full=args.full)))
+        db = args.db or (str(Path(paths[0]) / DEFAULT_DB) if len(paths) == 1 else DEFAULT_DB)
+        if not args.path and not args.repo and _workspace_elsewhere(db):
+            paths = None   # the folder a workspace was mapped from: map its members again, not the folder itself
+        r = loop.map_repos(paths, db, args.repo, args.exact, args.scip, full=args.full)
+        if "error" in r:
+            print(f"leyline: {r['error']}", file=sys.stderr)
+            return 1
+        print(loop.map_text(r))
         return 0
     change = loop.find_change(args.change, args.db or DEFAULT_DB)
     if change is None:
@@ -455,6 +476,15 @@ def main(argv=None) -> int:
     except sqlite3.DatabaseError as e:
         print(f"leyline: {_store_problem(e)}", file=sys.stderr)
         return 2
+    except OSError as e:
+        import errno
+        if e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        # a repository that cannot be written to (read-only, or someone else's) can still be mapped and reported on
+        print(f"leyline: cannot write {e.filename or 'the store'} ({e.strerror}). To map a folder you cannot write to,"
+              " keep the store elsewhere: `leyline --db <writable folder>/leyline.db ...`, or set LEYLINE_DB.",
+              file=sys.stderr)
+        return 2
     except MemoryError:
         print("leyline: ran out of memory. A repository this large needs more than this machine has free: close other"
               " programs, or map one part of it (a subdirectory) at a time.", file=sys.stderr)
@@ -487,7 +517,8 @@ def _main(argv=None) -> int:
     # The commands are listed by ABOUT and ADVANCED, so the usual three come first.
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command", help=argparse.SUPPRESS)
     p = sub.add_parser("map", description="Index one or more repositories, print a short overview, and write the map page.")
-    p.add_argument("path", nargs="*", default=["."], help="the repository; name several to map them together")
+    p.add_argument("path", nargs="*", default=[], help="the repository (default: the current directory, or the workspace"
+                                                      " mapped from it); name several to map them together")
     p.add_argument("--repo", help="repo id (defaults to the directory name; one repository only)")
     p.add_argument("--exact", choices=["auto", "off", "roslyn", "scip"], default="auto",
                    help="let a compiler overrule the syntax-based links (default: auto, whatever is available)")
@@ -737,6 +768,9 @@ def _main(argv=None) -> int:
         _print(stats)
         return 0
     if args.cmd == "serve":
+        if not explicit:   # started in a folder inside the repository: the repository's store, as other commands
+            from .loop import find_store
+            args.db = str(find_store(Path.cwd()) or DEFAULT_DB)
         os.environ["LEYLINE_DB"] = args.db
         from .server import main as serve
         serve()

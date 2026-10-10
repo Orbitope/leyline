@@ -409,8 +409,12 @@ def _merged(runs: list[dict]) -> dict:
 def query(con, path: Optional[str] = None, min_together: int = MIN_TOGETHER, min_confidence: float = MIN_CONFIDENCE,
           limit: int = 20, cwd: Optional[Path] = None) -> dict:
     """A file's partners (files, and folders no single file explains), or with no path the most coupled pairs."""
-    roots = {r: Path(p) for r, p in store.roots(con).items() if Path(p).is_dir()}
+    held = store.roots(con)
+    roots = {r: Path(p) for r, p in held.items() if Path(p).is_dir()}
     if not roots:
+        if held:
+            return {"error": "no repository in the store is where it was mapped (" + ", ".join(
+                f"{r} at {p}" for r, p in sorted(held.items())) + "); map it again from where it is now"}
         return {"error": "the store does not say where any repository is; run `leyline map` first"}
     runs = {}
     for repo, root in roots.items():
@@ -418,6 +422,8 @@ def query(con, path: Optional[str] = None, min_together: int = MIN_TOGETHER, min
         if run is not None:
             runs[repo] = run
     if not runs:
+        if any(_git(root, "rev-parse", "--git-dir") is not None for root in roots.values()):
+            return {"error": "the repository has no commits yet, so there is no history to read"}
         return {"error": "no repository in the store is under git, so there is no history to read"}
     thresholds = {"min_together": min_together, "min_confidence": min_confidence}
     if not path:
@@ -468,8 +474,9 @@ def text(r: dict) -> str:
         L += [f"- {line(x)}" for x in r["pairs"]]
         return "\n".join(L)
     if not r["partners"]:
+        own = rule.replace("the first file's", "its")
         return (f"`{r['path']}` changed in {r['changes']} commits ({r['about']}); nothing usually changed with it"
-                f" ({rule.replace('first file', 'its')}).")
+                f" ({own}).")
     L = [f"`{r['path']}` changed in {r['changes']} commits ({r['about']}). What usually changed with it:", ""]
     L += [f"- {'files in ' if x.get('folder') else ''}`{x['path']}`: {x['together']} of {x['changes']}"
           f" ({round(x['confidence'] * 100)}%)" for x in r["partners"]]
