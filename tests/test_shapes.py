@@ -205,6 +205,21 @@ def test_a_sparse_checkout_does_not_review_the_files_it_left_out_as_removed(tmp_
     assert changed["files"] == ["pkg/core.py"], changed["files"]
 
 
+def test_a_namespace_passed_on_by_a_barrel_file_reaches_its_functions(tmp_path):
+    """`export * as ns from './format'` in lib/index.ts, `export * from './lib'` in index.ts, then `ns.fmt()`."""
+    from leyline.indexer import index
+    root = tmp_path / "repo"
+    for f, text in {"src/lib/format.ts": "export function fmt(x: number): string { return String(x); }\n",
+                    "src/lib/index.ts": "export * as ns from './format';\n",
+                    "src/index.ts": "export * from './lib';\n",
+                    "src/use.ts": "import { ns } from './index';\nexport function c() {\n  return ns.fmt(2);\n}\n"}.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    index(root, tmp_path / "l.db", "r")
+    _, calls = _graph(tmp_path / "l.db")
+    assert ("r:typescript:src.use.c", "r:typescript:src.lib.format.fmt") in calls, calls
+
+
 def test_a_minified_bundle_smaller_than_64_kb_is_left_out(tmp_path):
     """vendor.js, 47 KB on one line with no .min in its name: 1,500 functions nobody wrote."""
     from leyline.indexer import scan

@@ -1710,6 +1710,21 @@ class Indexer:
                     return hit
         return None
 
+    def _export_module(self, target_fid: str, symbol: str, depth: int = 0) -> Optional[str]:
+        """The file a module exposes whole under a name (`export * as ns from './format'`, `import util as u`),
+        following re-exports, or None."""
+        if depth > 6:
+            return None
+        bound = self.py_names.get(target_fid, {}).get(symbol)
+        if bound:
+            nxt, sub = bound
+            return nxt if sub is None else self._export_module(nxt, sub, depth + 1)
+        for nxt in self.star_exports.get(target_fid, ()):
+            hit = self._export_module(nxt, symbol, depth + 1)
+            if hit:
+                return hit
+        return None
+
     def _py_name(self, fid: str, src: str, name: str) -> tuple:
         """What a name imported in a file means inside one of its functions: an import in the function or an
         enclosing one first, then the file's. (None, None) when it cannot be told."""
@@ -2825,6 +2840,10 @@ class Indexer:
             if symbol is None:
                 return self._py_symbol(self._py_export(target, name) or "", argc)
             tid = self._py_export(target, symbol)
+            if tid is None:   # a module passed on under a name: `export * as ns from './format'` in a barrel
+                mod = self._export_module(target, symbol)
+                if mod:
+                    return self._py_symbol(self._py_export(mod, name) or "", argc)
             if tid is None and lang == "python":
                 tid = self._py_var(target, symbol)   # `from .globals import g`: a variable of a known type
             found = self._methods(tid, name, argc)
