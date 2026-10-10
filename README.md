@@ -525,7 +525,8 @@ and a two-space indent, one entry per learning: `id`, `status` (active or retire
 `reason`, `scope`, `fingerprint` (the code it is about, see below), `source` (the change and finding it
 came from), `created`, `confirmed` (when a person last said it holds for the code as it is), `hits`,
 `dismissals`, `accepted`, and `findings` (the later findings it matched, with what people decided). Node
-ids in it leave out the repository's id, so a clone in a folder of another name reads them.
+ids in it leave out the repository's id, so a clone in a folder of another name reads them. In a workspace of
+several repositories each keeps its own file, and a learning applies only to code in its own repository.
 
 - **Reviewers read them first.** The facts for a spec or a pull request (`leyline spec facts`, or
   `spec_review_facts`) start with `learnings_that_apply`: active learnings about code the change touches or
@@ -553,8 +554,9 @@ ids in it leave out the repository's id, so a clone in a folder of another name 
   `leyline learnings retire <id>` ends it. A learning kept before Leyline recorded fingerprints has none.
   Whether its code changed is unknown, not stale, and it says so; confirming it gives it one.
 
-`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand;
-`leyline learnings confirm <id>` says one still holds for the code as it is now.
+`leyline learnings` lists them, and exits 1, naming the file, when a learnings file cannot be read;
+`leyline learnings retire <id> "why"` retires one by hand; `leyline learnings confirm <id>` says one still holds for
+the code as it is now.
 
 ### How it runs: sequence diagrams
 
