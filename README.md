@@ -1015,7 +1015,9 @@ first items and their total, `cut` names any list that was shortened, and `more`
 
 The files git lists: tracked ones, and untracked ones `.gitignore` does not exclude. A directory that is
 not a git repository (or one git refuses to read, such as a checkout owned by another user) is walked
-instead, with the common `.gitignore` patterns applied. Some files are left out, and `map` names them with
+instead, leaving out what git would: the patterns of your global excludes file (`core.excludesFile`, else
+`~/.config/git/ignore`), of `.git/info/exclude` and of each `.gitignore`, escapes and trailing spaces read as
+git reads them, so a file kept out of git such as `.env` stays off the map and its page. Some files are left out, and `map` names them with
 the reason: other people's code (`node_modules`, a Go or Composer `vendor`), submodules and nested
 repositories, symlinks to directories or out of the repository, files git lists that are gone, and source
 files that are binary, minified, unreadable or larger than 5 MB (`LEYLINE_MAX_FILE_MB` changes that). A

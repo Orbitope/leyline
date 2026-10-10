@@ -485,3 +485,45 @@ def test_deeply_nested_json_from_the_repository_is_reported_not_a_crash(repo, re
         export.graph(con, memory=memory)
     finally:
         con.close()
+
+
+def _walked(root):
+    from leyline import indexer
+    listing = indexer.scan(root)
+    assert listing.how == "walk"
+    return listing.files
+
+
+def test_the_walk_without_git_applies_info_exclude_and_the_global_excludes_file(tmp_path, monkeypatch):
+    """When git cannot list the files (a broken .git, a dubious-ownership refusal), the walk must still leave out what
+    git would: .git/info/exclude and the person's global excludes file, not only the .gitignore files."""
+    home = tmp_path / "home"
+    (home / ".config" / "git").mkdir(parents=True)
+    (home / ".config" / "git" / "ignore").write_text("*.secret.py\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    root = tmp_path / "r"
+    (root / ".git" / "info").mkdir(parents=True)   # a .git git cannot read: the walk lists the files
+    (root / ".git" / "info" / "exclude").write_text("# local\n.env\n")
+    for f in ("app.py", ".env", "keys.secret.py", "notes.txt"):
+        (root / f).write_text("x = 1\n")
+    files = _walked(root)
+    assert "app.py" in files and "notes.txt" in files
+    assert ".env" not in files and "keys.secret.py" not in files
+    # core.excludesFile names another file, which then stands instead of the default one
+    (home / ".gitconfig").write_text("[core]\n\texcludesFile = ~/my-ignore\n")
+    (home / "my-ignore").write_text("notes.txt\n")
+    files = _walked(root)
+    assert "notes.txt" not in files and "keys.secret.py" in files and ".env" not in files
+
+
+def test_the_walk_reads_escaped_patterns_and_trailing_spaces_as_git_does(tmp_path):
+    root = tmp_path / "r"
+    root.mkdir()
+    (root / ".gitignore").write_text("\\#notes.py\n\\!bang.py\nlit\\*.py\nspaces.py   \ntrail.py\\ \n")
+    for f in ("#notes.py", "!bang.py", "lit*.py", "litX.py", "spaces.py", "trail.py ", "trail.py", "keep.py"):
+        (root / f).write_text("x = 1\n")
+    files = _walked(root)
+    assert sorted(files) == [".gitignore", "keep.py", "litX.py", "trail.py"]

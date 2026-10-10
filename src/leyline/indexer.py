@@ -123,9 +123,13 @@ def scan(root: Path) -> Listing:
 
 def _walk(root: Path, skipped: list) -> list[str]:
     """The files under root when git cannot list them. Symlinked directories are not followed (a link back up the
-    tree would never end), nested repositories and build or tool directories are left out, and .gitignore files
-    are applied (the common patterns; see _ignore_rules)."""
+    tree would never end), nested repositories and build or tool directories are left out, and the ignore files git
+    would apply are: the person's global excludes file, .git/info/exclude, then each .gitignore (see _ignore_rules).
+    git may fail on a real repository (a broken .git, a dubious-ownership refusal), and a file kept out of it with
+    one of those (.env) must stay out of the map and its page here too."""
     files = []
+    top = [r for f in (_global_excludes(), root / ".git" / "info" / "exclude") if f is not None
+           for r in _ignore_rules(f, "")]
 
     def err(e: OSError) -> None:
         try:
@@ -137,7 +141,7 @@ def _walk(root: Path, skipped: list) -> list[str]:
     for d, dirs, names in os.walk(root, onerror=err):
         rel = Path(d).relative_to(root).as_posix()
         rel = "" if rel == "." else rel + "/"
-        here = rules.get(rel[:-1].rpartition("/")[0] + "/" if "/" in rel[:-1] else "", []) if rel else []
+        here = rules.get(rel[:-1].rpartition("/")[0] + "/" if "/" in rel[:-1] else "", []) if rel else top
         if ".gitignore" in names:
             here = here + _ignore_rules(Path(d) / ".gitignore", rel)
         rules[rel] = here
@@ -165,10 +169,25 @@ def _walk(root: Path, skipped: list) -> list[str]:
     return sorted(files)
 
 
+def _global_excludes() -> Optional[Path]:
+    """The person's global ignore file: git's core.excludesFile, else $XDG_CONFIG_HOME/git/ignore (~/.config/git/
+    ignore). Asked of git outside any repository, so a repository's own config has no say."""
+    try:
+        run = subprocess.run(["git", "config", "--get", "core.excludesFile"], capture_output=True, timeout=30,
+                             stdin=subprocess.DEVNULL, cwd=str(Path.home()))
+        named = run.stdout.decode("utf-8", "replace").strip() if run.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError, RuntimeError):
+        named = ""
+    if named:
+        return Path(os.path.expanduser(named))
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return Path(xdg) / "git" / "ignore"
+
+
 def _ignore_rules(path: Path, base: str) -> list[tuple]:
-    """A .gitignore's patterns as (regex, negated, directories only). Covers what ignore files mostly hold: names,
-    globs with * ? [..] and **, a leading / or an inner / to anchor, a trailing / for directories, and ! to
-    take a path back. Escapes and trailing-space rules are not handled."""
+    """An ignore file's patterns as (regex, negated, directories only), read as git reads them: names, globs with
+    * ? [..] and **, a leading / or an inner / to anchor, a trailing / for directories, ! to take a path back, a
+    backslash before a character to mean it as written (\\#, \\!, \\*, a trailing \\ ), and trailing spaces cut."""
     import re as _re
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -176,7 +195,8 @@ def _ignore_rules(path: Path, base: str) -> list[tuple]:
         return []
     out = []
     for line in lines:
-        line = line.rstrip()
+        while line.endswith(" ") and not line.endswith("\\ "):   # trailing spaces go; git keeps an escaped one
+            line = line[:-1]
         if not line or line.startswith("#"):
             continue
         neg = line.startswith("!")
@@ -191,7 +211,9 @@ def _ignore_rules(path: Path, base: str) -> list[tuple]:
         rx, i = "", 0
         while i < len(line):
             c = line[i]
-            if line.startswith("**/", i):
+            if c == "\\" and i + 1 < len(line):   # the next character as written
+                rx, i = rx + _re.escape(line[i + 1]), i + 2
+            elif line.startswith("**/", i):
                 rx, i = rx + "(?:.*/)?", i + 3
             elif line.startswith("/**", i) and i + 3 == len(line):
                 rx, i = rx + "/.*", i + 3
