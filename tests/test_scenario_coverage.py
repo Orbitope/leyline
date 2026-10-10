@@ -329,6 +329,28 @@ def test_the_coverage_tool_ties_an_istanbul_report_to_its_test_file(tmp_path, mo
     assert {Path(t).name for t in tests} == {"scale.test.ts"}, tests
 
 
+def test_a_measured_test_that_is_also_an_entry_point_is_named_by_its_test_flow(tmp_path):
+    """Main is a program's entry point and a test ([Fact]): its test flow is flow:<Main>#test. A change it was
+    measured running, with no static path to it, names that flow, not the entry point's."""
+    from leyline import change
+    from leyline.indexer import index
+    root = tmp_path / "b"
+    write(root, {"P.cs": "public static class P\n{\n    [Fact]\n    public static void Main() { Run(); }\n"
+                         "    static void Run() { }\n    public static void Other() { }\n}\n"})
+    db = tmp_path / "b.db"
+    index(root, db, "b", exact="off")
+    con = store.connect(db)
+    main, other = (con.execute("SELECT id FROM nodes WHERE name = ? AND kind = 'callable'", (n,)).fetchone()[0]
+                   for n in ("Main", "Other"))
+    assert {r[0] for r in con.execute("SELECT id FROM flows")} >= {f"flow:{main}", f"flow:{main}#test"}
+    with con:
+        con.execute("INSERT INTO covered VALUES ('default', 'P.Main', ?, ?, 1)", (main, other))
+    r = change.assess(con, "touch Other", [{"id": other, "action": "behavior"}])
+    assert [(t["id"], t.get("flow")) for t in r["tests_to_run"] if t.get("measured")] == [(main, f"flow:{main}#test")], \
+        r["tests_to_run"]
+    con.close()
+
+
 def test_a_pull_request_lists_the_tests_measured_running_its_change(tmp_path, monkeypatch):
     from test_pr import FILES, git
     root = tmp_path / "repo"

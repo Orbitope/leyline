@@ -279,7 +279,10 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
                     f" AND test != '' GROUP BY test ORDER BY hits DESC, test", sorted(touched)):
                 if r["test_id"] and r["test_id"] in nodes and r["test_id"] not in have:
                     have.add(r["test_id"])
-                    flows.append({"id": f"flow:{r['test_id']}", "name": nodes[r["test_id"]]["name"], "kind": "test",
+                    # its test flow: flow:<test>, or flow:<test>#test when the test is an entry point too
+                    fid = con.execute("SELECT id FROM flows WHERE entry_id = ? AND json_extract(attrs, '$.kind') = 'test'"
+                                      " ORDER BY id LIMIT 1", (r["test_id"],)).fetchone()
+                    flows.append({"id": fid[0] if fid else f"flow:{r['test_id']}", "name": nodes[r["test_id"]]["name"], "kind": "test",
                                   "trigger": "measured", "touched_steps": r["hits"], "entry": r["test_id"], "measured": True})
                     mark(r["test_id"], "test", "ran the changed code when coverage was measured; run it", None)
                 elif r["test_id"] in have:
@@ -366,7 +369,7 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
                     "depth": depth},
         "risks": risks,
         "must_edit": [brief(m) for m in ordered if m["role"] in ("must_edit", "contract")][:80],
-        "tests_to_run": [{"name": f["name"], "id": f["entry"], "touched_steps": f["touched_steps"],
+        "tests_to_run": [{"name": f["name"], "id": f["entry"], "flow": f["id"], "touched_steps": f["touched_steps"],
                           **({"measured": True} if f.get("measured") else {})} for f in tests],
         # a script's body is named by its file, never by the map's id for it (`app.tools.run.<module>`); the
         # product's own entry points before scripts, benchmarks and examples
