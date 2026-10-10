@@ -491,6 +491,9 @@ def main(argv=None) -> int:
         except OSError:
             pass
         return 0
+    except store.UntrustedStore as e:
+        print(f"leyline: {e}", file=sys.stderr)
+        return 2
     except sqlite3.DatabaseError as e:
         print(f"leyline: {_store_problem(e)}", file=sys.stderr)
         return 2

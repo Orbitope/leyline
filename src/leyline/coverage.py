@@ -184,7 +184,7 @@ def import_file(con, path: str | Path, run: str = "default", test: Optional[str]
     elif head.lstrip().startswith(b"{"):
         try:
             data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except ValueError:
+        except (ValueError, RecursionError):
             data = None
         if not _istanbul(data):
             return {"error": "a JSON file, but not Istanbul's coverage-final.json (vitest --coverage.reporter=json,"

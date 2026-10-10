@@ -149,7 +149,7 @@ def _manifest(folder: Path) -> dict:
     try:
         m = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
         return m if isinstance(m, dict) and isinstance(m.get("skills"), dict) else {"skills": {}}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {"skills": {}}
 
 

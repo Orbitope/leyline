@@ -324,6 +324,37 @@ def test_bad_arguments_give_errors_an_agent_can_act_on(repo):
     serve(repo, script)
 
 
+def test_paths_an_agent_passes_stay_inside_the_mapped_repositories(repo, tmp_path):
+    """An agent may have read untrusted text that tells it which path to pass: a tool that takes a path reads or
+    writes only inside the repositories the store maps (or the directory the server started in, before the first
+    map). The person, at the command line, is not limited."""
+    outside = tmp_path / "outside"
+    other = outside / "openspec" / "changes" / "x"
+    other.mkdir(parents=True)
+    (other / "proposal.md").write_text("# Change x\n")
+    (other / "tasks.md").write_text("- [ ] 1.1 Change `start`\n")
+    (outside / ".coverage").write_bytes(b"SQLite format 3\0")
+    subprocess.run(["git", "init", "-q", str(outside)], check=True)
+    ch = change_folder(repo)
+
+    async def script(a: Agent, tools, init):
+        assert "outside" in await a.fail("map", paths=[str(outside)])
+        await a.call("map", paths=["."])
+        assert "outside" in await a.fail("map", paths=[str(outside)])
+        for name in ("plan", "check", "spec_brief", "spec_review_facts", "spec_verify", "affected_tests"):
+            assert "outside" in await a.fail(name, change=str(other)), name
+        assert "outside" in await a.fail("check", change=str(ch), coverage_path=str(outside / ".coverage"))
+        assert "outside" in await a.fail("coverage", import_path=str(outside / ".coverage"))
+        assert "outside" in await a.fail("quick", done="quick-x", coverage_path=str(outside / ".coverage"))
+        assert "outside" in await a.fail("drift", path=str(outside))
+        assert "outside" in await a.fail("review_pr", path=str(outside))
+        assert "outside" in await a.fail("map", paths=[".."])
+        assert not (other / "leyline.md").exists() and not (outside / ".leyline").exists()
+        assert (await a.call("plan", change=str(ch)))["written"]   # inside: as before
+
+    serve(repo, script)
+
+
 def test_no_store_says_to_map(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()

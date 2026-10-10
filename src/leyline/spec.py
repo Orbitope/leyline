@@ -558,7 +558,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
                          for l in links]
                         + [(cid, "scenario", s["key"], s["name"], s["kind"], json.dumps([s["test"]] if s["test"] else []),
                             json.dumps({"when": s["when"], "then": s["then"], "requirement": s["requirement"]})) for s in scenarios])
-    if write:
+    if write and (why := store.escapes(parsed["dir"])):
+        result["not_written"] = why
+    elif write:
         _write(Path(parsed["dir"]) / "leyline.md", brief_text(result))
         result["written"] = str(Path(parsed["dir"]) / "leyline.md")
     return result
@@ -1335,7 +1337,7 @@ def near_change(con, change_id: str, evidence: list[str]) -> Optional[bool]:
 def findings(con, change_id: str) -> dict:
     from . import learnings
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
-    learned = learnings.by_finding(con)
+    learned = learnings.by_finding(con, change_id)
     out = []
     for r in con.execute("SELECT * FROM findings WHERE change_id = ? ORDER BY created", (change_id,)):
         ev = json.loads(r["evidence"] or "[]")
@@ -1550,7 +1552,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     out["how_it_runs"] = diagrams.safe(diagrams.for_snapshot, diff.snapshot_path(con, cid), con,
                                        [n["id"] for k in ("edited", "resigned", "added") for n in g[k]]
                                        or [n["id"] for n in g["types_edited"]], [n["id"] for n in g["removed"]])
-    if write:
+    if write and (why := store.escapes(parsed["dir"])):
+        out["not_written"] = why
+    elif write:
         path = Path(parsed["dir"]) / "leyline.md"
         body = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
         head = body[body.index(BEGIN) + len(BEGIN):body.index(END)].strip() if BEGIN in body and END in body else ""

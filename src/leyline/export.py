@@ -408,7 +408,7 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
     if memory and memory.is_file():
         try:
             old = json.loads(memory.read_text(encoding="utf-8")).get("levels", {})
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError, RecursionError):
             old = {}
     width = lambda i: _box_width(N, i, kids)
     out, keep = {}, {}

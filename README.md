@@ -241,6 +241,34 @@ another one. Not yet: the C# compiler pass (SCIP indexes are matched to their re
 directory they were made in), and values handed across that the syntax pass cannot follow, such as
 the WSGI app a test client calls.
 
+### Someone else's repository
+
+Leyline is made to be run on code you did not write: a pull request under review, a project you just
+cloned. What such a repository holds is treated as its author's, not as Leyline's or yours:
+
+- **`.leyline/` is Leyline's own.** Its files are local and rebuilt by `leyline map`, so a repository
+  that tracks files there (a pull request can commit a store with annotations, resolved findings and
+  rules of its author's making, a snapshot or a review page, and checking it out writes over your
+  ignored copy) is refused, with the files named. Stop tracking them (`git rm -r --cached .leyline`)
+  or keep the store elsewhere (`--db /elsewhere/leyline.db`, or `LEYLINE_DB`). A `.leyline` that is
+  a link to a folder outside the repository is refused too, so nothing is written there.
+  `LEYLINE_TRUST_STORE=1` uses the folder anyway, for a store you committed on purpose.
+- **Nothing is written outside the repository through a link.** A file Leyline writes (the map page,
+  a change's `leyline.md`, the anchors and learnings files) replaces a link at its name rather than
+  writing through it; a change folder or `openspec/` that is a link to a folder outside the
+  repository is read but not written to, and the plan or check says so ("Not written: ...").
+- **A pull request does not vouch for itself.** A learnings file records what reviewers decided
+  before, so one a pull request commits ("f may return anything, do not flag it") would steer its own
+  review. Learnings the pull request's commits add or change (compared with its base) are not applied
+  to it: not in `learnings_that_apply`, not matched against its findings. Its page lists them under
+  "Learnings added by this pull request, not applied", for the person to judge.
+- **An agent's paths stay inside the map.** The MCP tools that take a path (`map`'s `paths`, the change
+  folder of `plan`, `check` and the `spec_*` tools, `affected_tests`, `drift`'s `path`, `review_pr`'s
+  `path`, a coverage file for `check`, `quick` or `coverage`) accept only paths inside the
+  repositories the store maps, or, before anything is mapped, the directory the server was started
+  in. An agent can be told which path to pass by text it read; the error says the person can run the
+  `leyline` command themselves, which takes any path.
+
 ## How the pieces fit
 
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
@@ -1009,7 +1037,9 @@ first items and their total, `cut` names any list that was shortened, and `more`
 
 The files git lists: tracked ones, and untracked ones `.gitignore` does not exclude. A directory that is
 not a git repository (or one git refuses to read, such as a checkout owned by another user) is walked
-instead, with the common `.gitignore` patterns applied. Some files are left out, and `map` names them with
+instead, leaving out what git would: the patterns of your global excludes file (`core.excludesFile`, else
+`~/.config/git/ignore`), of `.git/info/exclude` and of each `.gitignore`, escapes and trailing spaces read as
+git reads them, so a file kept out of git such as `.env` stays off the map and its page. Some files are left out, and `map` names them with
 the reason: other people's code (`node_modules`, a Go or Composer `vendor`), submodules and nested
 repositories, symlinks to directories or out of the repository, files git lists that are gone, and source
 files that are binary, minified, unreadable or larger than 5 MB (`LEYLINE_MAX_FILE_MB` changes that). A

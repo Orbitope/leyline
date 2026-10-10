@@ -375,7 +375,7 @@ def plan_text(b: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if b.get("baseline") == "kept":
         L.append("The code has changed since the first plan; `leyline check` still compares with the code as it was then.")
-    L.append(f"Written to {_show(b['written'])}")
+    L.append(f"Written to {_show(b['written'])}" if b.get("written") else f"Not written: {b.get('not_written')}")
     if b.get("page"):
         L.append(f"Map page: {_show(b['page'])} (opens on this change)")
     L += ["", *next_after_plan(b, name)]
@@ -491,6 +491,8 @@ def check_text(v: dict, name: str) -> str:
         L.append("The code had changed since it was mapped, so it was mapped again first.")
     if v.get("written"):
         L.append(f"Written to {_show(v['written'])}")
+    elif v.get("not_written"):
+        L.append(f"Not written: {v['not_written']}")
     if (v.get("anchors") or {}).get("count"):
         a = v["anchors"]
         L.append(f"Recorded what the spec's {spec._n(a['count'], 'code name')} mean now"

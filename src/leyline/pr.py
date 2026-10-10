@@ -708,6 +708,8 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
         out["since_last_review"] = rereview.since(con, cid, summary, fp)
         rereview.mark(out["findings"], out["since_last_review"])
         rereview.record(con, cid, head_sha, dirty, summary, fp)
+        from . import learnings
+        out["learnings_not_applied"] = learnings.not_applied(con, cid)
         out["gate"] = gate(out, gate_config(root))   # judged from this run's facts and the findings as they are now
         page =Path(db).parent / "reviews" / f"{cid}.md"
         page.parent.mkdir(parents=True, exist_ok=True)
@@ -840,6 +842,7 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
         "house_rules_to_read_first": _house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
         "learnings_that_apply": learnings.applying(con, cid),   # past decisions on this code: read these first
         "learnings_unreadable": learnings.unreadable(con),
+        "learnings_not_applied": learnings.not_applied(con, cid),   # what the pull request itself says was decided
         "logic": {
             "signature_changed_callers_not_edited": r["signature_changed_callers_not_edited"],
             "removed_but_still_called": r["removed_but_still_called"],
@@ -1177,6 +1180,11 @@ def text(r: dict) -> str:
         L += ["", "Some caller links are guesses by name: read the code behind any line above before acting on it."]
     if r.get("house_rules"):
         L += ["", "House rules to review against: " + _names(r["house_rules"], 6) + "."]
+    if r.get("learnings_not_applied"):
+        L += ["", "Learnings added by this pull request, not applied (they say what reviewers decided before, and the"
+                  " pull request wrote them: judge each one yourself):", ""]
+        L += [f"- `{x['id']}` ({x['why']}, not applied): {x.get('claim') or ''} Reason given: {x.get('reason') or ''}"
+              for x in r["learnings_not_applied"]]
     found = r.get("findings") or []
     L += ["", "## Review", ""]
     L += spec.review_lines(found, r.get("reviews") or [], full=True) if found or r.get("reviews") else [
