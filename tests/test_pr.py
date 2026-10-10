@@ -467,3 +467,38 @@ def test_the_tests_that_run_the_change_are_counted_past_the_thirty_listed(tmp_pa
     code, out = run("pr", "main")
     line = next(x for x in out.splitlines() if x.startswith("- Tests that run the changed code:"))
     assert line.endswith(" and 34 more."), line
+
+
+def test_a_parameter_added_with_a_default_does_not_block_its_callers(tmp_path, monkeypatch):
+    """Every existing call still fits `load(path, encoding="utf-8")`: the page says the signature changed and that
+    the callers need not change; the gate passes and no test is said to be likely to fail."""
+    root = tmp_path / "repo"
+    for f, text in FILES.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    (root / "app/store.py").write_text("def load(path, encoding=\"utf-8\", *rest, **options):\n"
+                                       "    with open(path, encoding=encoding) as f:\n        return f.read()\n\n\n"
+                                       "def helper(x):\n    return x * 2\n")
+    git(root, "commit", "-qam", "Read files with an encoding, utf-8 by default")
+    monkeypatch.chdir(root)
+    code, out = run("pr", "main", "--gate", "--json")
+    r = json.loads(out)
+    assert code == 0 and r["gate"]["passed"] is True, r["gate"]
+    assert r["reaches"]["signature_changed_callers_not_edited"] == []
+    assert r["tests"]["likely_to_fail_unedited"] == []
+    load = next(e for e in r["changed"]["edited"] if e["name"] in ("load", "store.py.load"))
+    assert load["signature"] == '(path) -> (path, encoding="utf-8", *rest, **options)' and load["compatible"] is True
+    code, out = run("pr", "main")
+    assert "- Signature: `load` (path) -> (path, encoding=\"utf-8\", *rest, **options) (only parameters with" \
+           " defaults were added: its callers need not change)" in out, out
+    assert "Likely to fail" not in out
+    # removing a parameter, or adding one without a default, still asks every caller to change
+    assert pr._compatible("path", "path, encoding") is False
+    assert pr._compatible("path, encoding", "path") is False
+    assert pr._compatible("a, b", "b, a=1") is False
+    assert pr._compatible("a: dict[str, int]", "a: dict[str, int], b: tuple[int, int] = (1, 2)") is True
+    assert pr._compatible("a, b=','", "a, b=',', c=')'") is True

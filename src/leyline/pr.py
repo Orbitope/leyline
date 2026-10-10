@@ -315,6 +315,41 @@ def _params(text: str, start: int, name: str) -> Optional[str]:
     return None
 
 
+def _split_params(params: str) -> list[str]:
+    """The parameters of a list as `_params` gives it, one by one, with nested brackets and strings kept whole."""
+    out, depth, cur, quote = [], 0, "", ""
+    for ch in params:
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in "([{<":
+            depth += 1
+        elif ch in ")]}>":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def _compatible(was: str, now: str) -> bool:
+    """Whether every call that fit the signature as it was still fits it now: the parameters it had are still
+    there, in order, and each one added after them has a default (or gathers the rest: `*args`, `**kwargs`,
+    `...rest`, `params`). Such a change asks nothing of its callers."""
+    before, after = _split_params(was), _split_params(now)
+    if len(after) < len(before) or after[:len(before)] != before:
+        return False
+    return all("=" in p or p.startswith(("*", "...", "params ")) for p in after[len(before):])
+
+
 def _touching(con, names, crossings: list, changed: set, own: Optional[dict], added: set):
     """A pull request, unlike a spec, shows the edited lines, so a channel counts as crossed only when the edit
     touches it: an edited line (or a new function's text) inside one of its ends names its address (the table, the
@@ -456,6 +491,10 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
         if was is not None and now is not None and was != now:
             n.update({"was": was, "now": now})
             resigned.add(i)
+    # A parameter added with a default breaks no call: the change is listed as a signature change, but its callers
+    # are not told to update, do not block the gate and are not said to be likely to fail.
+    compatible = {n["id"] for n in edited if n["id"] in resigned and "was" in n and _compatible(n["was"], n["now"])}
+    sig_changed, resigned = resigned, resigned - compatible
     types = [n for n in d["nodes"]["types_edited"] if own is None or own.get(n["id"])]
     added = d["nodes"]["added"]
     outer_added = [n for n in added if not any(n["id"].startswith(o["id"] + ".") for o in added if o is not n)]
@@ -533,7 +572,9 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
     return {
         "about": about,
         "changed": {
-            "edited": [item(n, lines=lines_of(n["id"]), **({"signature": f"({n['was']}) -> ({n['now']})"} if n["id"] in resigned else {}))
+            "edited": [item(n, lines=lines_of(n["id"]),
+                            **({"signature": f"({n['was']}) -> ({n['now']})", **({"compatible": True} if n["id"] in compatible else {})}
+                               if n["id"] in sig_changed else {}))
                        for n in edited],
             "types": [item(n, lines=lines_of(n["id"])) for n in types],
             "added": [item(n) for n in outer_added],
@@ -577,7 +618,7 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
                      "note": "Caller and channel links come from the map. Where the map guessed a link by name it says so;"
                              " read the code before filing anything on one."},
         "marks": (
-            [{"id": n["id"], "role": "changed", "note": "signature changed" if n["id"] in resigned else "edited"} for n in edited + types
+            [{"id": n["id"], "role": "changed", "note": "signature changed" if n["id"] in sig_changed else "edited"} for n in edited + types
              if n["id"] in names.by_id]
             + [{"id": i, "role": "new", "note": "added"} for i in new_existing]
             + [{"id": m["id"], "role": "must_edit", "note": "calls code whose signature changed; not edited"} for m in must]
@@ -1085,7 +1126,8 @@ def text(r: dict) -> str:
           (", ".join(p for p in parts if p) or "Nothing on the map changed") + where + lines + f" ({_n(s['files'], 'file')})."]
     sig = [e for e in c["edited"] if e.get("signature")]
     for e in sig[:8]:
-        L.append(f"- Signature: `{e['name']}` {e['signature']}")
+        L.append(f"- Signature: `{e['name']}` {e['signature']}"
+                 + (" (only parameters with defaults were added: its callers need not change)" if e.get("compatible") else ""))
     plain = [e for e in c["edited"] if not e.get("signature") and not e.get("test")]
     if plain:
         L.append(f"- Edited: {_names([e['name'] for e in plain], 8)}")
