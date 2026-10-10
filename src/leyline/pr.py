@@ -523,9 +523,21 @@ def analyse(con, snap: Path, about: str = "", old_source=None) -> dict:
         # the map's only link to the changed code is a guess by name: worth a read, never a reason to block
         m["guessed"] = "a guess" in (m.get("note") or "") and not sure
 
+    # Code that moved with its file keeps its name under a new id. A caller whose call now reaches it there is not
+    # still calling removed code.
+    moved_to = defaultdict(list)
+    for n in added:
+        moved_to[(n["kind"], n["name"])].append(n["id"])
+
+    def reaches_now(caller: str, rid_: str) -> bool:
+        gone = next(n for n in removed if n["id"] == rid_)
+        return any(con.execute("SELECT 1 FROM calls WHERE src_id = ? AND (dst_id = ? OR dst_id LIKE ?) LIMIT 1",
+                               (caller, m, m + ".%")).fetchone() is not None
+                   for m in moved_to.get((gone["kind"], gone["name"]), []))
     still_called = []
     for rid_, callers in removed_callers.items():
-        live = [c for c in callers if c in names.by_id and not _inside(c, changed) and not _inside(c, {rid_})]
+        live = [c for c in callers if c in names.by_id and not _inside(c, changed) and not _inside(c, {rid_})
+                and not reaches_now(c, rid_)]
         if live:
             still_called.append({"id": rid_, "removed": next(n["name"] for n in removed if n["id"] == rid_),
                                  "callers": [spec._label(names, c) for c in live], "caller_ids": live,

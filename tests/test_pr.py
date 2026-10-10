@@ -502,3 +502,28 @@ def test_a_parameter_added_with_a_default_does_not_block_its_callers(tmp_path, m
     assert pr._compatible("a, b", "b, a=1") is False
     assert pr._compatible("a: dict[str, int]", "a: dict[str, int], b: tuple[int, int] = (1, 2)") is True
     assert pr._compatible("a, b=','", "a, b=',', c=')'") is True
+
+
+def test_code_moved_with_its_file_is_not_removed_code_its_callers_still_call(tmp_path, monkeypatch):
+    """`git mv app/store.py app/storage.py`, with the import updated: `load` and `helper` have new ids, but every
+    caller reaches them where they are now. Nothing is still calling removed code, so the gate passes."""
+    root = tmp_path / "repo"
+    for f, text in FILES.items():
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_text(text)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "checkout", "-q", "-b", "feature")
+    git(root, "mv", "app/store.py", "app/storage.py")
+    use = root / "app/use.py"
+    use.write_text(use.read_text().replace("from app.store import", "from app.storage import"))
+    git(root, "commit", "-qam", "Rename store to storage")
+    monkeypatch.chdir(root)
+    code, out = run("pr", "main", "--gate", "--json")
+    r = json.loads(out)
+    assert code == 0 and r["gate"]["passed"] is True, r["gate"]
+    assert r["reaches"]["removed_but_still_called"] == []
+    assert r["tests"]["likely_to_fail_unedited"] == []
+    code, out = run("pr", "main")
+    assert "still called" not in out, out
