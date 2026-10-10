@@ -248,10 +248,12 @@ def _impact(con, args) -> int:
     print(f"{found['id']}\nreached by {_n(r['reached_by'], 'place')} within {_n(r['depth_limit'], 'call')}"
           + (", across modules" if r["crosses_module_boundary"] else "")
           + (", across repositories" if r["crosses_repo_boundary"] else ""))
+    verb = "used" if (query._node(con, found["id"]) or {"kind": ""})["kind"] == "field" else "called"
     for m in r["by_module"]:
         near = [_short(con, d) for d in m["direct"]]
         print(f"  {m['module']:<28} {m['count']:>5}"
-              + (f"   called directly by {', '.join(near[:5])}{' ...' if len(near) > 5 else ''}" if near else ""))
+              + (f"   {verb} directly by {', '.join(near[:5])}"
+                 f"{' ...' if len(near) > 5 else ''}" if near else ""))
     t = r["flows_through"]
     if t["total"]:
         print(f"flows through it: {t['total']}")

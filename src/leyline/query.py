@@ -480,6 +480,11 @@ def impact(con, node_id: str, max_depth: int = 6, flows_limit: int = 40) -> dict
     adj = _adjacency(con, reverse=True)
     from .change import enclosing
     shape = {r[0]: {"kind": r[1], "parent_id": r[2]} for r in con.execute("SELECT id, kind, parent_id FROM nodes")}
+    # A field is reached by the code that reads or writes it, and through that code by its callers.
+    fields = [t for t in targets if shape.get(t, {}).get("kind") == "field"]
+    for f in fields:
+        for (src,) in con.execute("SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f,)):
+            adj.setdefault(f, []).append((src, "uses"))
     dist: dict[str, int] = {t: 0 for t in targets}
 
     def lift(found, d):

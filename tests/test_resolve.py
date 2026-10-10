@@ -199,6 +199,23 @@ def test_impact_and_spec_finding_from_the_command_line(tmp_path, capsys):
     c.close()
 
 
+def test_impact_of_a_field_is_its_readers_and_writers_and_their_callers(tmp_path, capsys):
+    root = write(tmp_path / "repo", {
+        "app/__init__.py": "",
+        "app/box.py": "class Box:\n    def __init__(self):\n        self.items = []\n\n\n"
+                      "def fill(b: Box, x):\n    b.items = [x]\n\n\ndef count(b: Box):\n    return len(b.items)\n\n\n"
+                      "def report(b: Box):\n    return count(b)\n"})
+    db = str(tmp_path / "s.db")
+    index(root, db, "f")
+    c = store.connect(db)
+    r = query.impact(c, "f:python:app.box.Box.items")
+    c.close()
+    reached = {i.rsplit(".", 1)[-1] for g in r["by_module"] for i in g["direct"]}
+    assert {"fill", "count"} <= reached and r["reached_by"] >= 3, r     # report, through count
+    assert main(["--db", db, "impact", "Box.items"]) == 0
+    assert "used directly by" in capsys.readouterr().out
+
+
 def test_search_puts_what_the_text_names_exactly_first(tmp_path):
     files = {f"src/{n}.ts": f"export function {n}Thing(): number {{ return 1; }}\n"
              for n in ("localization", "localeCatalog", "localStore", "localCache")}
