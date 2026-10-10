@@ -208,9 +208,13 @@ def lost(con, name: str) -> bool:
 
 
 def _fingerprint(con) -> str:
+    """The code as the map has it, in one hash: every type, function, field and test, and every source file. Files
+    count because code outside any function (a module's constant, a table, an import) has no node of its own in most
+    languages: without them "make the retry count 3" did not move the code on. An edited comment counts too."""
     h = hashlib.sha1()
-    for r in con.execute(f"SELECT id, content_hash FROM nodes WHERE layer = 'fact' AND kind IN ({','.join('?' * len(CODE_KINDS))})"
-                         " ORDER BY id", CODE_KINDS):
+    kinds = CODE_KINDS + ("file",)
+    for r in con.execute(f"SELECT id, content_hash FROM nodes WHERE layer = 'fact' AND kind IN ({','.join('?' * len(kinds))})"
+                         " ORDER BY id", kinds):
         h.update(f"{r[0]}\0{r[1]}\n".encode())
     return h.hexdigest()
 

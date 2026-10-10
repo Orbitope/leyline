@@ -338,7 +338,9 @@ blocking = ["contradicted", "inconclusive", "partial", "needs a person"]   # eve
 A tick in `tasks.md` never clears an item: the agent ticks tasks as it goes.
 
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
-the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
+the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over. The code has moved
+on when any source file on the map has changed: a constant at the top of a module counts, and so, to be safe, does a
+comment.
 That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once, holding only what the
 comparison reads (nodes and their hashes, links, flows, a hash per source line) and what a diagram of the code
 as it was needs (the line of each call, the order of each flow, each channel link's channel). It stays after the
