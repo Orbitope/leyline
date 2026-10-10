@@ -180,18 +180,31 @@ def snapshot(con, name: str) -> Path:
         if p.exists():
             p.unlink()
     tmp.replace(target)
+    with con:   # so a plan can tell a baseline deleted by hand from one never taken or forgotten (see lost)
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, 'taken')", ("baseline:" + name,))
     return target
 
 
 def drop_snapshot(con, name: str) -> bool:
-    """Forget a change's baseline. True when there was one."""
+    """Forget a change's baseline. True when there was one. The store notes that it was forgotten on purpose (see
+    lost), so a plan can tell it from a baseline deleted by hand."""
     target = snapshot_path(con, name)
     gone = False
     for p in (target, Path(str(target) + "-wal"), Path(str(target) + "-shm")):
         if p.exists():
             p.unlink()
             gone = True
+    with con:
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, 'forgotten')", ("baseline:" + name,))
     return gone
+
+
+def lost(con, name: str) -> bool:
+    """True when a baseline was taken for this change and is gone without being forgotten (deleted by hand, or with
+    .leyline/snapshots): a plan that took a new one now would take the changed code as the start. A store that did
+    not note it (one written before Leyline did) is given the benefit of the doubt."""
+    row = con.execute("SELECT value FROM meta WHERE key = ?", ("baseline:" + name,)).fetchone()
+    return row is not None and row[0] == "taken" and not snapshot_path(con, name).exists()
 
 
 def _fingerprint(con) -> str:

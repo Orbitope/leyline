@@ -239,3 +239,28 @@ def test_check_after_a_plan_that_did_not_finish_says_to_plan_again(repo, monkeyp
     loop.plan(db, ch)   # as the error says: the first baseline stays, so the check compares with the code as it was
     v = loop.check(db, ch, diff.parse_test_output(AFTER))
     assert v["done_as_agreed"], v["why_not"]
+
+
+def test_a_baseline_deleted_by_hand_is_not_taken_again_quietly(repo):
+    """A snapshot deleted by hand after the change was implemented: plan took the changed code as the new baseline
+    and said "ready", so check then found nothing done. A baseline that was not forgotten on purpose is lost, and
+    taking a new one needs --new-baseline."""
+    from test_signalfix import implement
+    from leyline import cli
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    (work / ".leyline" / "snapshots" / "spec-report-queued.db").unlink()
+    b = loop.plan(db, ch)
+    assert "--new-baseline" in b.get("error", ""), b.get("error")
+    assert not (work / ".leyline" / "snapshots" / "spec-report-queued.db").exists()
+    assert loop.plan(db, ch, new_baseline=True)["baseline"] == "new"
+
+
+def test_a_forgotten_baseline_is_taken_again_by_plan(repo):
+    """`leyline spec forget` then `plan` starts over, as the README says."""
+    from leyline import cli
+    work, ch, db = repo
+    loop.plan(db, ch)
+    assert cli.main(["--db", str(db), "spec", "forget", "report-queued"]) == 0
+    assert loop.plan(db, ch)["baseline"] == "new"
