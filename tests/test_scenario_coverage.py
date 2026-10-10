@@ -306,6 +306,29 @@ def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     assert "Istanbul" in coverage.import_file(con, bad)["error"]
 
 
+def test_the_coverage_tool_ties_an_istanbul_report_to_its_test_file(tmp_path, monkeypatch):
+    """The MCP tool takes `test` as the command takes `--test`: what a run-wide report saw ran under that file."""
+    from leyline import server
+    root = tmp_path / "js"
+    write(root, {"package.json": '{"devDependencies": {"vitest": "1.6.1"}}',
+                 "src/ops.ts": "export function scale(x: number, k: number): number {\n  return x * k;\n}\n",
+                 "src/scale.test.ts": 'import { it, expect } from "vitest";\nimport { scale } from "./ops";\n\n'
+                                      'it("scales by a factor", () => {\n  expect(scale(2, 3)).toBe(6);\n});\n'})
+    db = root / ".leyline/leyline.db"
+    loop.map_repos([str(root)], db, exact="off", page=False)
+    ops = str(root / "src/ops.ts")
+    smap = {str(i): {"start": {"line": i + 1, "column": 0}, "end": {"line": i + 1, "column": 9}} for i in range(3)}
+    f = tmp_path / "coverage-final.json"
+    f.write_text(json.dumps({ops: {"path": ops, "statementMap": smap, "s": {"0": 1, "1": 1, "2": 1},
+                                   "fnMap": {"0": {"name": "scale", "loc": {"start": {"line": 1}, "end": {"line": 3}}}},
+                                   "f": {"0": 1}, "branchMap": {}, "b": {}}}))
+    monkeypatch.setenv("LEYLINE_DB", str(db))
+    r = json.loads(server.coverage(import_path=str(f), test=str(root / "src/scale.test.ts")))
+    assert r["imported"]["per"] == "test file" and r["imported"]["tests_matched_to_the_map"] == 1, r
+    tests = {t for (t,) in store.connect(db).execute("SELECT test FROM covered")}
+    assert {Path(t).name for t in tests} == {"scale.test.ts"}, tests
+
+
 def test_a_pull_request_lists_the_tests_measured_running_its_change(tmp_path, monkeypatch):
     from test_pr import FILES, git
     root = tmp_path / "repo"

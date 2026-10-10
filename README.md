@@ -640,8 +640,8 @@ Flows are static: what a test can reach. `leyline coverage FILE` imports what di
   to the tests that ran it.
 - Cobertura XML (coverlet, `coverage xml`). A function ran or did not; no per-test detail.
 - Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`). It covers a
-  whole run, so run one test file at a time and import each with `--test <that file>`: each function is then tied
-  to the test file that ran it, not to the one test inside it.
+  whole run, so run one test file at a time and import each with `--test <that file>` (`test` on the `coverage`
+  tool): each function is then tied to the test file that ran it, not to the one test inside it.
 
 #### Scenarios proven by what ran
 
@@ -967,7 +967,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `drift(path?, accept?)` | Code the living specs and finished changes name that is gone, moved, changed signature or ambiguous; `fails`, the page, `next` |
 | `shared_state(scope?)` | Fields assigned from outside the type that declares them |
 | `coupling(path?, min_together?, min_confidence?, limit?)` | Files (and folders) that usually change in the same commits as a file, from git history; with no path, the most coupled pairs |
-| `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
+| `coverage(node_id?, flow_id?, import_path?, test?)` | Measured coverage: what ran, set against the static paths; `import_path` reads a report in first, and `test` names the one test file that ran for a report with no per-test detail |
 | `patterns(pattern?, node_id?, limit?)` | Design patterns found by shape, with roles, rationale and confidence |
 | `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |
 | `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |

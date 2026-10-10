@@ -843,16 +843,21 @@ def change_coupling(path: Annotated[Optional[str], Field(description="A file: it
 @_tool(items=50)
 def coverage(node_id: Annotated[Optional[str], Field(description="A function: the tests under which it ran.")] = None,
              flow_id: Annotated[Optional[str], Field(description="A test's flow: its static path against what ran.")] = None,
-             import_path: Annotated[Optional[str], Field(description="A coverage.py data file or Cobertura XML report to"
-                                                                     " read into the store first.")] = None) -> dict:
+             import_path: Annotated[Optional[str], Field(description="A coverage.py data file, a Cobertura XML report or"
+                                                                     " Istanbul's coverage-final.json to read into the"
+                                                                     " store first.")] = None,
+             test: Annotated[Optional[str], Field(description="With import_path: the one test file that ran, for a"
+                                                              " report with no per-test detail (Istanbul, Cobertura);"
+                                                              " what ran is tied to that file.")] = None) -> dict:
     """Measured test coverage, as opposed to the static paths in `flows`. With no argument: per module, how many
     functions ran, how many are on a test's path but never ran, and how many ran through links the map does not
-    have."""
+    have. An Istanbul or Cobertura report covers a whole run: run one test file at a time and import each with
+    `test` naming that file."""
     out = {}
     if import_path:
         if not Path(import_path).is_file():
             return {"error": f"No file at {import_path} (relative paths are from {Path.cwd()})."}
-        imported = measured.import_file(_db(), import_path)
+        imported = measured.import_file(_db(), import_path, test=test)
         if isinstance(imported, dict) and "error" in imported:
             return imported
         out["imported"] = imported
