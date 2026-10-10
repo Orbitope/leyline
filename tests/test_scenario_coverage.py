@@ -340,7 +340,8 @@ def test_the_coverage_tool_ties_an_istanbul_report_to_its_test_file(tmp_path, mo
     loop.map_repos([str(root)], db, exact="off", page=False)
     ops = str(root / "src/ops.ts")
     smap = {str(i): {"start": {"line": i + 1, "column": 0}, "end": {"line": i + 1, "column": 9}} for i in range(3)}
-    f = tmp_path / "coverage-final.json"
+    f = root / "coverage" / "coverage-final.json"   # inside the repository: the server reads only there
+    f.parent.mkdir()
     f.write_text(json.dumps({ops: {"path": ops, "statementMap": smap, "s": {"0": 1, "1": 1, "2": 1},
                                    "fnMap": {"0": {"name": "scale", "loc": {"start": {"line": 1}, "end": {"line": 3}}}},
                                    "f": {"0": 1}, "branchMap": {}, "b": {}}}))
