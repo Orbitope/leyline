@@ -538,6 +538,7 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "shared_state": state, "left_alone": others, "patterns": patterns, "usually_changes_with": history,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
+              "learnings_unreadable": _learnings_unreadable(con),
               "baseline": report.get("snapshot"), "reviews": reviews(con, cid),
               "baseline_tests": con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1",
                                             (run_label(cid, "before"),)).fetchone() is not None,
@@ -1096,6 +1097,17 @@ def _past_decision(l: dict) -> str:
     return f"Matches a past decision: {l['reason']}"
 
 
+def _learnings_unreadable(con) -> list[str]:
+    from . import learnings
+    return learnings.unreadable(con)
+
+
+def unreadable_lines(problems: Optional[list[str]]) -> list[str]:
+    """The page's word that past decisions could not be read, so their absence is not read as none applying."""
+    return ["", "Past decisions (learnings) were left out, so none are matched or listed here: "
+            + "; ".join(problems) + "."] if problems else []
+
+
 def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list[str]:
     """Each kind of review: whether it ran, and what it filed. Open findings in full; settled ones as the claim,
     then the decision."""
@@ -1247,6 +1259,7 @@ def brief_text(b: dict) -> str:
     else:
         L.append("No scenarios yet: nothing says what done means.")
     L += ["", "## Review findings", ""] + review_lines(b["findings"], b.get("reviews") or [])
+    L += unreadable_lines(b.get("learnings_unreadable"))
     st = brief_status(b)
     L += ["", "## Before implementation", ""]
     if st["blocking"]:
@@ -1746,6 +1759,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
     return {
         "change_id": b["change_id"], "title": b["title"],
         "learnings_that_apply": learnings.applying(con, b["change_id"], tasked),   # past decisions: read these first
+        "learnings_unreadable": learnings.unreadable(con),   # so an empty list above is not taken as "none apply"
         "related_changes": b.get("related_changes") or {},   # earlier changes to the same code
         "logic": {
             "must_edit_with_no_task": b["must_edit_uncovered"],

@@ -835,6 +835,7 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
         "changed": f["changed"], "size": f["size"],
         "house_rules_to_read_first": pr._house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
         "learnings_that_apply": learnings.applying(con, cid),
+        "learnings_unreadable": learnings.unreadable(con),
         "logic": {**{k: r[k] for k in ("signature_changed_callers_not_edited", "removed_but_still_called", "channels_crossed",
                                        "callers_left_alone", "state_shared_with_unchanged_code")},
                   "other_ends_of_those_channels_not_edited": r["other_ends_not_edited"],
