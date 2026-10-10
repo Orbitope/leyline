@@ -99,6 +99,29 @@ def test_a_change_focuses_on_the_code_it_marked(branch, monkeypatch):
     c.close()
 
 
+def test_a_change_whose_marked_method_changed_signature_still_focuses_on_it(tmp_path):
+    root = tmp_path / "game"
+    (root / "Core").mkdir(parents=True)
+    (root / "Core/Core.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    (root / "Core/World.cs").write_text(
+        "namespace Core;\npublic class Assignment { }\npublic class World\n{\n"
+        "    public void Cancel(Assignment a, string reason) { }\n"
+        "    public void Run() { Cancel(new Assignment(), \"x\"); }\n}\n")
+    db = tmp_path / "s.db"
+    index(root, db, "g")
+    c = store.connect(db)
+    old = "g:csharp:Core::Core.World.Cancel(Assignment)"     # as planned, before a reason was added
+    with c:
+        c.execute("INSERT INTO views (id, title, kind, layer, source, created, change_id, spec) VALUES (?,?,?,?,?,?,?,?)",
+                  ("view-spec-log-cancel", "Log a cancel", "change", "intent", "test", "2026-01-01", "spec-log-cancel",
+                   json.dumps({"marks": [{"id": old, "role": "changed"}]})))
+    r = context.build(c, ["spec-log-cancel"], 600)
+    assert "error" not in r, r
+    marked = [ln for ln in lines(r["text"]) if ln.startswith(">") or ln.lstrip().startswith(">")]
+    assert any("Cancel(Assignment a, string reason)" in ln for ln in marked), r["text"]
+    c.close()
+
+
 def test_the_command_line(con, tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path / "repo")
     assert main(["context", "Engine.start", "--tokens", "300"]) == 0

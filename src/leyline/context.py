@@ -36,7 +36,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
-from . import query, store
+from . import diff, query, store
 from .diagrams import cut as diagrams_cut
 
 WEIGHTS = {"calls": 1.0, "overrides": 1.0, "communicates": 1.0, "extends": 0.8, "implements": 0.8,
@@ -225,7 +225,17 @@ def _change_nodes(con, cid: str) -> list[str]:
             ids += json.loads(nodes or "[]")
         except ValueError:
             pass
-    return list(dict.fromkeys(ids))
+    out = []
+    for i in dict.fromkeys(ids):
+        if con.execute("SELECT 1 FROM nodes WHERE id = ?", (i,)).fetchone() is None and i.endswith(")"):
+            # A method marked when the change was planned whose parameters have changed since: the same owner and name
+            base = diff._base(i)
+            out += [r[0] for r in con.execute("SELECT id FROM nodes WHERE id > ? AND id < ? AND kind = 'callable'",
+                                              (base + "(", base + "*"))
+                    if diff._base(r[0]) == base]
+        else:
+            out.append(i)
+    return list(dict.fromkeys(out))
 
 
 def _is_change(con, cid: str) -> bool:
