@@ -331,3 +331,31 @@ def test_write_file_replaces_a_link_and_keeps_text_and_bytes(tmp_path, victim):
     store.write_file(p, b"\x00bytes")
     assert p.read_bytes() == b"\x00bytes"
     assert [x.name for x in tmp_path.iterdir() if x.name.endswith(".tmp")] == []
+
+
+# -- round 3: the store's folder, learnings, MCP paths, nested JSON, the walk's ignore files ---------------------
+def test_a_store_folder_the_repository_tracks_is_refused_unless_trusted(repo, monkeypatch, capsys):
+    """A pull request can commit .leyline/ (a store with annotations, resolved findings and rules of its own making,
+    snapshots, review pages), and checking it out overwrites the reviewer's ignored copy. Leyline refuses to use it."""
+    from leyline import cli
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db, page=False)
+    git(repo, "add", "-f", ".leyline/leyline.db")
+    git(repo, "commit", "-qm", "a store of my own making")
+    with pytest.raises(store.UntrustedStore) as e:
+        loop.map_repos([str(repo)], db, page=False)
+    assert ".leyline/leyline.db" in str(e.value) and "git rm -r --cached .leyline" in str(e.value)
+    assert cli.main(["--db", str(db), "overview"]) == 2
+    assert "git rm -r --cached .leyline" in capsys.readouterr().err
+    monkeypatch.setenv("LEYLINE_TRUST_STORE", "1")
+    loop.map_repos([str(repo)], db, page=False)
+
+
+def test_a_store_folder_that_links_outside_the_repository_is_refused(repo, tmp_path):
+    elsewhere = tmp_path / "outside" / "store"
+    elsewhere.mkdir(parents=True)
+    (repo / ".leyline").symlink_to(elsewhere)
+    with pytest.raises(store.UntrustedStore) as e:
+        loop.map_repos([str(repo)], repo / ".leyline" / "leyline.db")
+    assert "link" in str(e.value)
+    assert list(elsewhere.iterdir()) == []

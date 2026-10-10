@@ -182,6 +182,8 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
         try:
             why = _missing() if needs_store else None
             out = {"error": why} if why else fn(*args, **kwargs)
+        except store.UntrustedStore as e:
+            out = {"error": str(e)}
         except sqlite3.OperationalError as e:
             # A map running in another process holds the write lock, or changed the tables under this connection.
             _generation[0] += 1

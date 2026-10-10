@@ -235,6 +235,19 @@ another one. Not yet: the C# compiler pass (SCIP indexes are matched to their re
 directory they were made in), and values handed across that the syntax pass cannot follow, such as
 the WSGI app a test client calls.
 
+### Someone else's repository
+
+Leyline is made to be run on code you did not write: a pull request under review, a project you just
+cloned. What such a repository holds is treated as its author's, not as Leyline's or yours:
+
+- **`.leyline/` is Leyline's own.** Its files are local and rebuilt by `leyline map`, so a repository
+  that tracks files there (a pull request can commit a store with annotations, resolved findings and
+  rules of its author's making, a snapshot or a review page, and checking it out writes over your
+  ignored copy) is refused, with the files named. Stop tracking them (`git rm -r --cached .leyline`)
+  or keep the store elsewhere (`--db /elsewhere/leyline.db`, or `LEYLINE_DB`). A `.leyline` that is
+  a link to a folder outside the repository is refused too, so nothing is written there.
+  `LEYLINE_TRUST_STORE=1` uses the folder anyway, for a store you committed on purpose.
+
 ## How the pieces fit
 
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
