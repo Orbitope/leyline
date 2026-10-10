@@ -287,6 +287,55 @@ def test_a_moved_workspace_member_is_moved_not_added_and_another_repository_is_n
     assert sorted(roots) == ["alpha", "beta", "stranger"], roots
 
 
+def test_a_workspace_member_is_forgotten_and_the_others_kept(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    _repo(ws / "alpha")
+    _repo(ws / "beta", CORE.replace("helper", "bhelper"))
+    _repo(ws / "gamma", CORE.replace("helper", "ghelper"))
+    monkeypatch.chdir(ws)
+    assert run("map", "alpha", "beta", "gamma")[0] == 0
+    db = ws / ".leyline/leyline.db"
+    _, before = _members(db)
+    code, out = run("map", "--forget", "alpha")
+    assert code == 0, out
+    roots, counts = _members(db)
+    assert sorted(roots) == ["beta", "gamma"] and counts == {"beta": before["beta"], "gamma": before["gamma"]}, counts
+    assert "2 repositories (beta, gamma)" in out, out
+    code, out = run("map")   # the workspace is the two that are left
+    assert code == 0 and "2 repositories (beta, gamma)" in out, out
+    assert run("map", "--forget", "nobody")[0] != 0
+
+
+def test_forgetting_a_member_leaves_no_link_into_it(tmp_path, monkeypatch):
+    from leyline import store
+    ws = tmp_path / "ws"
+    lib = ws / "alphalib"
+    (lib / "alphalib").mkdir(parents=True)
+    (lib / "alphalib/__init__.py").write_text("")
+    (lib / "alphalib/text.py").write_text("def shout(s):\n    return s.upper()\n")
+    git(lib, "init", "-q", "-b", "main")
+    git(lib, "add", "alphalib")
+    git(lib, "commit", "-qm", "lib")
+    app = _repo(ws / "app", "from alphalib.text import shout\n\n\ndef run():\n    return shout('a')\n")
+    monkeypatch.chdir(ws)
+    assert run("map", "alphalib", "app")[0] == 0
+    db = ws / ".leyline/leyline.db"
+
+    def into_lib():
+        con = store.connect(db)
+        try:
+            return (con.execute("SELECT COUNT(*) FROM calls WHERE dst_id LIKE 'alphalib:%'").fetchone()[0]
+                    + con.execute("SELECT COUNT(*) FROM edges WHERE dst_id LIKE 'alphalib:%' AND layer = 'fact'").fetchone()[0]
+                    + con.execute("SELECT COUNT(*) FROM nodes WHERE id LIKE 'alphalib:%' AND layer = 'fact'").fetchone()[0])
+        finally:
+            con.close()
+    assert into_lib() > 0
+    code, out = run("map", "--forget", "alphalib")
+    assert code == 0 and out.startswith("Forgot alphalib."), out
+    assert into_lib() == 0
+    assert sorted(_members(db)[0]) == ["app"] and app.is_dir()
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,

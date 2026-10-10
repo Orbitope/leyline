@@ -11,6 +11,7 @@ or the order of the spec commands. The CLI and the MCP server both call these.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -136,6 +137,47 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
 
 
 # -- map ------------------------------------------------------------------------------------------
+def forget(db: str | Path, ids: list[str]) -> dict:
+    """Drop repositories from the store: their facts, where they were, and their place in the workspace. What the
+    others know is kept; they are mapped again in full, so no link into a dropped one is left. Notes and decisions
+    written about a dropped one's code (inferred and intent rows) are kept, as when code is deleted."""
+    if not Path(db).is_file():
+        return {"error": f"no store at {db}: nothing to forget"}
+    con = store.connect(db)
+    try:
+        held = sorted(set(store.roots(con)) | {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'repo'")})
+        unknown = [i for i in ids if i not in held]
+        if unknown:
+            return {"error": f"no repository {unknown[0]!r} in the store (it holds {', '.join(held) or 'none'})"}
+        row = con.execute("SELECT value FROM meta WHERE key = 'workspace'").fetchone()
+        members = [m for m in (json.loads(row[0]) if row else []) if m not in ids]
+        with con:
+            for rid in ids:
+                store.clear_facts(con, rid)
+                for prefix in ("root", "rel", "left_out", "timing", "first_commit"):
+                    con.execute("DELETE FROM meta WHERE key = ?", (f"{prefix}:{rid}",))
+                for table in ("coupling_runs", "coupling_files", "coupling_pairs", "coupling_dirs"):
+                    con.execute(f"DELETE FROM {table} WHERE repo_id = ?", (rid,))
+            if len(members) > 1:
+                con.execute("INSERT OR REPLACE INTO meta VALUES ('workspace', ?)", (json.dumps(members),))
+            else:
+                con.execute("DELETE FROM meta WHERE key = 'workspace'")
+        left = sorted(store.roots(con))
+    finally:
+        con.close()
+    said = f"Forgot {', '.join(ids)}."
+    if not left:
+        con = store.connect(db)
+        try:
+            with con:
+                store.rebuild_derived(con)
+        finally:
+            con.close()
+        return {"said": said + " Nothing else is mapped in this store."}
+    out = map_repos(None, db, full=True)
+    return {**out, "said": said} if "error" not in out else out
+
+
 def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str] = None, exact: str = "auto",
               scip: Optional[list[str]] = None, page: bool = True, full: bool = False) -> dict:
     """Index, write the browsable map page next to the store, and count what was found. With no paths, map

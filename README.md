@@ -230,7 +230,9 @@ again, which keeps the links between them. A member whose directory has gone is 
 Name its new place and it is the same member, under its old id, not a second copy, when Leyline can tell it is the
 same repository: both are git repositories with the same first commit, and the same `origin` where both have one.
 Anything less sure (not under git, or a store mapped before Leyline recorded first commits) is mapped as a new
-member; drop the old one with `leyline map --forget <id>`.
+member; drop the old one with `leyline map --forget <id>`. That drops a member's facts, where it was and its place
+in the workspace, then maps the others again in full so no link into it is left; notes and review decisions about
+its code are kept, as when code is deleted.
 
 `overview` lists the links between repositories; the `cross_repo` tool adds the functions most called
 across and the flows that cross and come back. An edge between repositories carries `to_repo`;
