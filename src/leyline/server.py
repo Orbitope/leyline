@@ -843,7 +843,8 @@ def change_coupling(path: Annotated[Optional[str], Field(description="A file: it
 @_tool(items=50)
 def coverage(node_id: Annotated[Optional[str], Field(description="A function: the tests under which it ran.")] = None,
              flow_id: Annotated[Optional[str], Field(description="A test's flow: its static path against what ran.")] = None,
-             import_path: Annotated[Optional[str], Field(description="A coverage.py data file or Cobertura XML report to"
+             import_path: Annotated[Optional[str], Field(description="A coverage.py data file, Cobertura XML report,"
+                                                                     " Istanbul coverage-final.json or lcov.info to"
                                                                      " read into the store first.")] = None) -> dict:
     """Measured test coverage, as opposed to the static paths in `flows`. With no argument: per module, how many
     functions ran, how many are on a test's path but never ran, and how many ran through links the map does not

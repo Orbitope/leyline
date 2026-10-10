@@ -718,11 +718,11 @@ def _main(argv=None) -> int:
     p.add_argument("why", nargs="?", help="retire: why it no longer holds")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")
-    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report or Istanbul's"
-                                           " coverage-final.json")
+    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report, Istanbul's"
+                                           " coverage-final.json or an lcov file (lcov.info)")
     p.add_argument("--run", default="default", help="a name for this import")
     p.add_argument("--test", metavar="PATH", help="the one test file that ran, for a report with no per-test detail"
-                                                  " (Istanbul, Cobertura): ties what ran to that file")
+                                                  " (Istanbul, Cobertura, lcov with no TN: names): ties what ran to that file")
     p = sub.add_parser("state", description="fields assigned from outside the type that declares them")
     p.add_argument("scope", nargs="?", help="a module id or an id prefix")
     p = sub.add_parser("coupling", description="files that usually change in the same commits as a file (or, with no file,"

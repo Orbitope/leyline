@@ -208,6 +208,50 @@ def test_the_base_of_a_pr_lists_its_files_without_git_adding_them(tmp_path, monk
     assert "gen/made.py" not in json.dumps(json.loads(out)["changed"]), out
 
 
+LCOV_TS = ("export function add(a: number, b: number) {\n  return a + b;\n}\n\n"
+           "export function sub(a: number, b: number) {\n  return a - b;\n}\n")
+
+
+def _lcov_repo(tmp_path):
+    from leyline import store
+    from leyline.indexer import index
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src/math.ts").write_text(LCOV_TS)
+    (root / "tests").mkdir()
+    (root / "tests/test_math.py").write_text("def test_adds():\n    assert True\n\n\ndef test_subs():\n    assert True\n")
+    index(root, tmp_path / "l.db", "r")
+    return root, store.connect(tmp_path / "l.db")
+
+
+def test_an_lcov_file_is_read_with_windows_paths_and_per_test_names(tmp_path):
+    from leyline import coverage
+    root, con = _lcov_repo(tmp_path)
+    try:
+        # c8 / vitest --coverage.reporter=lcov on Windows: absolute backslashed paths, FN with an end line, and a
+        # declaration line counted as run in a function that never ran
+        (tmp_path / "lcov.info").write_text(
+            "TN:\nSF:C:\\work\\repo\\src\\math.ts\nFN:1,3,add\nFN:5,7,sub\nFNDA:1,add\nFNDA:0,sub\nFNF:2\nFNH:1\n"
+            "DA:1,1\nDA:2,1\nDA:3,1\nDA:5,1\nDA:6,0\nDA:7,1\nLF:6\nLH:5\nend_of_record\n")
+        r = coverage.import_file(con, tmp_path / "lcov.info")
+        assert r.get("format") == "lcov", r
+        assert r["files_matched"] == 1 and r["functions_ran"] == 1, r
+        ran = {x[0] for x in con.execute("SELECT node_id FROM covered WHERE run = 'default'")}
+        assert ran == {"r:typescript:src.math.add"}, ran
+
+        # one record per test (TN:), as lcov's own tools and `--cov-report=lcov` with contexts write it
+        (tmp_path / "per.info").write_text(
+            "TN:tests/test_math.py::test_adds\nSF:src/math.ts\nFN:1,add\nFNDA:1,add\nDA:2,1\nend_of_record\n"
+            "TN:tests/test_math.py::test_subs\nSF:src/math.ts\nFN:5,sub\nFNDA:1,sub\nDA:6,1\nend_of_record\n")
+        r = coverage.import_file(con, tmp_path / "per.info", run="per")
+        assert r["per_test"] and r["tests"] == 2 and r["tests_matched_to_the_map"] == 2, r
+        rows = sorted((x[0], x[1]) for x in con.execute("SELECT test_id, node_id FROM covered WHERE run = 'per'"))
+        assert rows == [("r:python:tests.test_math.test_adds", "r:typescript:src.math.add"),
+                        ("r:python:tests.test_math.test_subs", "r:typescript:src.math.sub")], rows
+    finally:
+        con.close()
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,

@@ -646,6 +646,9 @@ Flows are static: what a test can reach. `leyline coverage FILE` imports what di
 - Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`). It covers a
   whole run, so run one test file at a time and import each with `--test <that file>`: each function is then tied
   to the test file that ran it, not to the one test inside it.
+- lcov (`lcov.info`, from c8, vitest or jest with the `lcov` reporter, and most other tools). Lines (`DA:`) and
+  functions (`FN:`, `FNDA:`) that ran; records under a `TN:` test name are tied to that test, and a file with no test
+  names is a whole run, imported with `--test` as Istanbul's is. Paths may be absolute, relative or Windows-style.
 
 #### Scenarios proven by what ran
 
