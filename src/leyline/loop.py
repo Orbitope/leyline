@@ -416,7 +416,8 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         # Results recorded earlier describe code that has since changed: they prove nothing about it.
         tested = con.execute("SELECT value FROM meta WHERE key = ?", ("tested:" + after,)).fetchone()
         old = results is None and has(after) and (tested[0] != code if tested else bool(reindexed))
-        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None)
+        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None,
+                        old_run=after if old else None)
         if "error" in v:
             return v
         v["reindexed"] = bool(reindexed)

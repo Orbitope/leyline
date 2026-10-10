@@ -264,3 +264,20 @@ def test_a_forgotten_baseline_is_taken_again_by_plan(repo):
     loop.plan(db, ch)
     assert cli.main(["--db", str(db), "spec", "forget", "report-queued"]) == 0
     assert loop.plan(db, ch)["baseline"] == "new"
+
+
+def test_a_scenario_whose_results_are_older_than_the_code_is_not_said_to_have_no_test(repo):
+    """Checked done, then edited, then checked with no new test output: the scenario's test exists (its results carry
+    its name), but the page said "no test", as if one had to be written."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    core = work / "srv" / "core.py"
+    core.write_text(core.read_text().replace("return len(items)\n", "return len(list(items))\n", 1))
+    v = loop.check(db, ch)
+    s = v["scenarios"][0]
+    assert v["tests_old"] and s["state"] == "results older than the code", s
+    assert "older than the code" in s["verdict_why"]

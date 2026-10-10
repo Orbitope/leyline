@@ -1336,8 +1336,10 @@ def findings(con, change_id: str) -> dict:
 
 
 # -- verification --------------------------------------------------------------------------------
-def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True) -> dict:
-    """After implementation and a re-index: was the change made as the spec says?"""
+def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True,
+           old_run: Optional[str] = None) -> dict:
+    """After implementation and a re-index: was the change made as the spec says? `old_run` names results left out
+    because the code changed after they ran: a scenario they carry has a test, whose results are out of date."""
     parsed = parse(change_dir)
     if "error" in parsed:
         return parsed
@@ -1371,6 +1373,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     test_names = diff.TestNames(con)
     results = {r["name"]: r for r in con.execute("SELECT * FROM test_results WHERE run = ?", (after_run,))} if after_run else {}
     index = _results_index(results.values())
+    older = _results_index(con.execute("SELECT * FROM test_results WHERE run = ?", (old_run,)).fetchall()) if old_run else None
     from . import coverage as measured
     own_checks = _self_tests(con, [r for r in (before_run, after_run) if r])
 
@@ -1383,6 +1386,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         scenario_ran[s["key"]] = bool(rows)
         failed = [r for r in rows if r["status"] == "fail"]
         state = ("fails" if failed else "passes" if any(r["status"] == "pass" for r in rows) else "skipped" if rows
+                 else "results older than the code" if older and _scenario_results(older, s["name"])
                  else "test exists, not run" if tid or gen else "no test")
         ran_change = None
         if tid and measured.has(con):
