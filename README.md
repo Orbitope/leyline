@@ -226,7 +226,13 @@ the other: `import werkzeug` in Flask reaches Werkzeug's source (a package under
 name), a Flask class extends Werkzeug's, and a Werkzeug method that calls `self.open()` dispatches
 into Flask's override. Ids keep their own repo's prefix, so a store indexed one repository at a time
 reads the same. The store remembers its members: indexing any one of them later indexes all of them
-again, which keeps the links between them. A member whose directory has gone is left as stored.
+again, which keeps the links between them. A member whose directory has gone is left as stored, and `map` says so.
+Name its new place and it is the same member, under its old id, not a second copy, when Leyline can tell it is the
+same repository: both are git repositories with the same first commit, and the same `origin` where both have one.
+Anything less sure (not under git, or a store mapped before Leyline recorded first commits) is mapped as a new
+member; drop the old one with `leyline map --forget <id>`. That drops a member's facts, where it was and its place
+in the workspace, then maps the others again in full so no link into it is left; notes and review decisions about
+its code are kept, as when code is deleted.
 
 `overview` lists the links between repositories; the `cross_repo` tool adds the functions most called
 across and the flows that cross and come back. An edge between repositories carries `to_repo`;
@@ -276,6 +282,10 @@ leyline spec verify openspec/changes/<id> --before before --after after   # afte
 `before:spec-<id>`. `check` re-indexes, records its test output under `after:spec-<id>`, and runs `verify`
 with both. Before re-indexing, both compare each source file's hash with the store, so an unchanged
 repository is not indexed again.
+
+node --test's TAP writes a tab in a test's name and a backslash followed by `t` the same way (`\\t`, and so
+for `\n`, `\r`, `\b`, `\f`, `\v`); Leyline reads it as the tab, so a name with a literal `\t` in it may not
+match its test.
 
 The brief ties each task to code and each scenario to a test, by three conventions and no markup:
 
@@ -650,6 +660,9 @@ Flows are static: what a test can reach. `leyline coverage FILE` imports what di
 - Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`). It covers a
   whole run, so run one test file at a time and import each with `--test <that file>` (`test` on the `coverage`
   tool): each function is then tied to the test file that ran it, not to the one test inside it.
+- lcov (`lcov.info`, from c8, vitest or jest with the `lcov` reporter, and most other tools). Lines (`DA:`) and
+  functions (`FN:`, `FNDA:`) that ran; records under a `TN:` test name are tied to that test, and a file with no test
+  names is a whole run, imported with `--test` as Istanbul's is. Paths may be absolute, relative or Windows-style.
 
 #### Scenarios proven by what ran
 

@@ -100,13 +100,14 @@ def roots(con) -> dict[str, Path]:
     return store.roots(con)
 
 
-def source(con, repo: str, path: str, root_of: Optional[dict] = None) -> Optional[bytes]:
-    """A file's bytes as they are on disk now, if they are what the store indexed."""
+def source(con, repo: str, path: str, root_of: Optional[dict] = None, resolved: bool = False) -> Optional[bytes]:
+    """A file's bytes as they are on disk now, if they are what the store indexed. `resolved`: the roots in `root_of`
+    are real paths already."""
     root = (root_of if root_of is not None else roots(con)).get(repo)
     if root is None:
         return None
     from . import store
-    if not store.inside(root / path, root):   # a link out of the repository, checked out since it was mapped
+    if not store.inside(root / path, root, resolved):   # a link out of the repository, checked out since it was mapped
         return None
     try:
         return (root / path).read_bytes()
@@ -167,10 +168,10 @@ def snapshot(con, name: str) -> Path:
             where = {}
             for r in con.execute("SELECT repo_id, path, content_hash FROM main.nodes WHERE kind = 'file' AND layer = 'fact'"):
                 where[(r[0], r[1])] = r[2]
-            root_of = roots(con)
+            root_of = {r: p.resolve() for r, p in roots(con).items()}
             rows = []
             for (repo, path), sha in where.items():
-                data = source(con, repo, path, root_of)
+                data = source(con, repo, path, root_of, resolved=True)
                 if data is not None and hashlib.sha1(data).hexdigest() == sha:   # only text the store describes
                     rows.append((repo, path, _pack(line_hashes(data))))
             con.executemany("INSERT INTO snap.source_lines VALUES (?,?,?)", rows)

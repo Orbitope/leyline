@@ -11,6 +11,7 @@ or the order of the spec commands. The CLI and the MCP server both call these.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -65,8 +66,13 @@ def _roots(con) -> dict[str, Path]:
 
 def changed_files(db: str | Path) -> list[str]:
     """Source files added, edited or deleted since the store was indexed. Cheap next to indexing: it only hashes."""
+    return _changes(db)[0]
+
+
+def _changes(db: str | Path) -> tuple[list[str], dict]:
+    """changed_files, and each repository's listing it read (an index run right after takes it, not listing again)."""
     from .adapters import BY_EXTENSION
-    from .indexer import list_files, read_source
+    from .indexer import read_source, scan
 
     con = store.connect(db)
     try:
@@ -75,12 +81,13 @@ def changed_files(db: str | Path) -> list[str]:
             "SELECT repo_id, path, content_hash FROM nodes WHERE kind = 'file' AND layer = 'fact'")}
     finally:
         con.close()
-    out = []
+    out, listings = [], {}
     for repo, root in roots.items():
         if not root.is_dir():
             continue
         now = set()
-        for f in list_files(root):
+        listings[repo] = listing = scan(root)
+        for f in listing.files:
             if "." + f.rsplit(".", 1)[-1] not in BY_EXTENSION:
                 continue
             now.add(f)
@@ -91,7 +98,7 @@ def changed_files(db: str | Path) -> list[str]:
             if data is None or known.get((repo, f)) != hashlib.sha1(data).hexdigest():
                 out.append(f)
         out += [p for (r, p) in known if r == repo and p not in now]
-    return sorted(set(out))
+    return sorted(set(out)), listings
 
 
 def made_by_another_version(db: str | Path) -> bool:
@@ -111,7 +118,8 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
     leyline.incremental; `full` does everything). Returns the index stats, or None."""
     from .indexer import index
 
-    if not force and not changed_files(db) and not made_by_another_version(db):
+    changed, listed = _changes(db) if not force else ([], {})
+    if not force and not changed and not made_by_another_version(db):
         return None
     con = store.connect(db)
     try:
@@ -124,11 +132,52 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
         return None
     if len(roots) == 1:   # the repo id may not be the directory name (--repo), so pass it
         (rid, root), = roots.items()
-        return index(root, db, rid, exact, full=full)
-    return index(list(roots.values()), db, None, exact, full=full)
+        return index(root, db, rid, exact, full=full, listed=listed)
+    return index(list(roots.values()), db, None, exact, full=full, listed=listed)
 
 
 # -- map ------------------------------------------------------------------------------------------
+def forget(db: str | Path, ids: list[str]) -> dict:
+    """Drop repositories from the store: their facts, where they were, and their place in the workspace. What the
+    others know is kept; they are mapped again in full, so no link into a dropped one is left. Notes and decisions
+    written about a dropped one's code (inferred and intent rows) are kept, as when code is deleted."""
+    if not Path(db).is_file():
+        return {"error": f"no store at {db}: nothing to forget"}
+    con = store.connect(db)
+    try:
+        held = sorted(set(store.roots(con)) | {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'repo'")})
+        unknown = [i for i in ids if i not in held]
+        if unknown:
+            return {"error": f"no repository {unknown[0]!r} in the store (it holds {', '.join(held) or 'none'})"}
+        row = con.execute("SELECT value FROM meta WHERE key = 'workspace'").fetchone()
+        members = [m for m in (json.loads(row[0]) if row else []) if m not in ids]
+        with con:
+            for rid in ids:
+                store.clear_facts(con, rid)
+                for prefix in ("root", "rel", "left_out", "timing", "first_commit"):
+                    con.execute("DELETE FROM meta WHERE key = ?", (f"{prefix}:{rid}",))
+                for table in ("coupling_runs", "coupling_files", "coupling_pairs", "coupling_dirs"):
+                    con.execute(f"DELETE FROM {table} WHERE repo_id = ?", (rid,))
+            if len(members) > 1:
+                con.execute("INSERT OR REPLACE INTO meta VALUES ('workspace', ?)", (json.dumps(members),))
+            else:
+                con.execute("DELETE FROM meta WHERE key = 'workspace'")
+        left = sorted(store.roots(con))
+    finally:
+        con.close()
+    said = f"Forgot {', '.join(ids)}."
+    if not left:
+        con = store.connect(db)
+        try:
+            with con:
+                store.rebuild_derived(con)
+        finally:
+            con.close()
+        return {"said": said + " Nothing else is mapped in this store."}
+    out = map_repos(None, db, full=True)
+    return {**out, "said": said} if "error" not in out else out
+
+
 def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str] = None, exact: str = "auto",
               scip: Optional[list[str]] = None, page: bool = True, full: bool = False) -> dict:
     """Index, write the browsable map page next to the store, and count what was found. With no paths, map

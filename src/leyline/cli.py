@@ -410,6 +410,17 @@ def _loop(args) -> int:
         if len(args.path) > 1 and args.repo:
             print("leyline: --repo names one repository; a workspace takes its ids from the directory names", file=sys.stderr)
             return 2
+        if args.forget:
+            if args.path:
+                print("leyline: --forget takes no repository to map: forget first, then map", file=sys.stderr)
+                return 2
+            db = args.db or str(loop.find_store(Path.cwd()) or DEFAULT_DB)
+            r = loop.forget(db, args.forget)
+            if "error" in r:
+                print(f"leyline: {r['error']}", file=sys.stderr)
+                return 1
+            print(r["said"] + ("\n" + loop.map_text(r) if r.get("repos") else ""))
+            return 0
         paths = args.path or ["."]
         if _not_dirs(paths):
             return 2
@@ -534,6 +545,9 @@ def _main(argv=None) -> int:
                    help="let a compiler overrule the syntax-based links (default: auto, whatever is available)")
     p.add_argument("--scip", action="append", default=[], metavar="FILE", help="a SCIP index to read (repeatable)")
     p.add_argument("--full", action="store_true", help="index everything again, not only what changed since the last map")
+    p.add_argument("--forget", action="append", metavar="ID", help="drop a repository from the store (a workspace member"
+                                                                " that is gone or no longer wanted) and map the rest again;"
+                                                                " repeatable")
     p = sub.add_parser("plan", description="Write and print the one-page plan (leyline.md) for an OpenSpec change folder,"
                                            " re-mapping first if the code changed. Exits 1 while something blocks implementation.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
@@ -721,11 +735,11 @@ def _main(argv=None) -> int:
     p.add_argument("why", nargs="?", help="retire: why it no longer holds")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("coverage", description="import a coverage file, or show what was measured")
-    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report or Istanbul's"
-                                           " coverage-final.json")
+    p.add_argument("file", nargs="?", help="a coverage.py data file (.coverage), a Cobertura XML report, Istanbul's"
+                                           " coverage-final.json or an lcov file (lcov.info)")
     p.add_argument("--run", default="default", help="a name for this import")
     p.add_argument("--test", metavar="PATH", help="the one test file that ran, for a report with no per-test detail"
-                                                  " (Istanbul, Cobertura): ties what ran to that file")
+                                                  " (Istanbul, Cobertura, lcov with no TN: names): ties what ran to that file")
     p = sub.add_parser("state", description="fields assigned from outside the type that declares them")
     p.add_argument("scope", nargs="?", help="a module id or an id prefix")
     p = sub.add_parser("coupling", description="files that usually change in the same commits as a file (or, with no file,"

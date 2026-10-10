@@ -53,11 +53,12 @@ def write_file(path: str | Path, data: str | bytes) -> None:
         raise
 
 
-def inside(path: str | Path, root: str | Path) -> bool:
+def inside(path: str | Path, root: str | Path, resolved: bool = False) -> bool:
     """Whether `path`, links followed, is `root` or under it: a file Leyline reads from a repository into a page or an
-    answer (a README, a change's proposal) must not be a link to one outside it, such as ~/.aws/credentials."""
+    answer (a README, a change's proposal) must not be a link to one outside it, such as ~/.aws/credentials.
+    `resolved`: root is already the real path (a caller checking many files under it resolves it once)."""
     try:
-        real, top = Path(path).resolve(), Path(root).resolve()
+        real, top = Path(path).resolve(), (Path(root) if resolved else Path(root).resolve())
     except (OSError, RuntimeError):
         return False
     return real == top or top in real.parents

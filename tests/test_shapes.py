@@ -182,6 +182,160 @@ def test_serve_started_in_a_folder_inside_the_repository_reads_the_repositorys_s
     assert Path(seen[0]).resolve() == (root / ".leyline/leyline.db").resolve()
 
 
+def test_the_base_of_a_pr_lists_its_files_without_git_adding_them(tmp_path, monkeypatch):
+    """The base is mapped from the commit's files as listed from the archive: a tracked file that a .gitignore
+    pattern matches is still in it, and no `git add` of every file is run (it cost a third of `pr` on large repos)."""
+    from leyline import pr as prmod
+    root = _origin(tmp_path)
+    (root / ".gitignore").write_text("gen/\n")
+    (root / "gen").mkdir()
+    (root / "gen/made.py").write_text("def made():\n    return 1\n")
+    git(root, "add", "-f", ".gitignore", "gen/made.py")
+    git(root, "commit", "-qm", "generated, ignored, tracked")
+    sha = git(root, "rev-parse", "HEAD").strip()
+    calls = []
+    real = prmod._git
+    monkeypatch.setattr(prmod, "_git", lambda where, *a, **k: calls.append(a) or real(where, *a, **k))
+    names = prmod._export(root, sha, tmp_path / "out")
+    assert "gen/made.py" in names and "pkg/core.py" in names and ".gitignore" in names
+    assert not any(a[:1] == ("add",) for a in calls), calls
+    # and mapped from that list, the ignored file is on the base's map, as on the checkout's
+    git(root, "switch", "-q", "-c", "feature")
+    (root / "pkg/core.py").write_text(CORE.replace("lower", "upper"))
+    monkeypatch.chdir(root)
+    code, out = run("pr", "main", "--json")
+    assert code == 0, out
+    assert "gen/made.py" not in json.dumps(json.loads(out)["changed"]), out
+
+
+LCOV_TS = ("export function add(a: number, b: number) {\n  return a + b;\n}\n\n"
+           "export function sub(a: number, b: number) {\n  return a - b;\n}\n")
+
+
+def _lcov_repo(tmp_path):
+    from leyline import store
+    from leyline.indexer import index
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src/math.ts").write_text(LCOV_TS)
+    (root / "tests").mkdir()
+    (root / "tests/test_math.py").write_text("def test_adds():\n    assert True\n\n\ndef test_subs():\n    assert True\n")
+    index(root, tmp_path / "l.db", "r")
+    return root, store.connect(tmp_path / "l.db")
+
+
+def test_an_lcov_file_is_read_with_windows_paths_and_per_test_names(tmp_path):
+    from leyline import coverage
+    root, con = _lcov_repo(tmp_path)
+    try:
+        # c8 / vitest --coverage.reporter=lcov on Windows: absolute backslashed paths, FN with an end line, and a
+        # declaration line counted as run in a function that never ran
+        (tmp_path / "lcov.info").write_text(
+            "TN:\nSF:C:\\work\\repo\\src\\math.ts\nFN:1,3,add\nFN:5,7,sub\nFNDA:1,add\nFNDA:0,sub\nFNF:2\nFNH:1\n"
+            "DA:1,1\nDA:2,1\nDA:3,1\nDA:5,1\nDA:6,0\nDA:7,1\nLF:6\nLH:5\nend_of_record\n")
+        r = coverage.import_file(con, tmp_path / "lcov.info")
+        assert r.get("format") == "lcov", r
+        assert r["files_matched"] == 1 and r["functions_ran"] == 1, r
+        ran = {x[0] for x in con.execute("SELECT node_id FROM covered WHERE run = 'default'")}
+        assert ran == {"r:typescript:src.math.add"}, ran
+
+        # one record per test (TN:), as lcov's own tools and `--cov-report=lcov` with contexts write it
+        (tmp_path / "per.info").write_text(
+            "TN:tests/test_math.py::test_adds\nSF:src/math.ts\nFN:1,add\nFNDA:1,add\nDA:2,1\nend_of_record\n"
+            "TN:tests/test_math.py::test_subs\nSF:src/math.ts\nFN:5,sub\nFNDA:1,sub\nDA:6,1\nend_of_record\n")
+        r = coverage.import_file(con, tmp_path / "per.info", run="per")
+        assert r["per_test"] and r["tests"] == 2 and r["tests_matched_to_the_map"] == 2, r
+        rows = sorted((x[0], x[1]) for x in con.execute("SELECT test_id, node_id FROM covered WHERE run = 'per'"))
+        assert rows == [("r:python:tests.test_math.test_adds", "r:typescript:src.math.add"),
+                        ("r:python:tests.test_math.test_subs", "r:typescript:src.math.sub")], rows
+    finally:
+        con.close()
+
+
+def _members(db) -> tuple[dict, dict]:
+    from leyline import store
+    con = store.connect(db)
+    try:
+        counts = dict(con.execute("SELECT repo_id, COUNT(*) FROM nodes WHERE layer = 'fact' GROUP BY repo_id").fetchall())
+        return {r: Path(p).resolve() for r, p in store.roots(con).items()}, counts
+    finally:
+        con.close()
+
+
+def test_a_moved_workspace_member_is_moved_not_added_and_another_repository_is_not_taken_for_it(tmp_path, monkeypatch,
+                                                                                                capsys):
+    ws = tmp_path / "ws"
+    _repo(ws / "alpha")
+    _repo(ws / "beta", CORE.replace("helper", "bhelper"))
+    monkeypatch.chdir(ws)
+    assert run("map", "alpha", "beta")[0] == 0
+    db = ws / ".leyline/leyline.db"
+    _, before = _members(db)
+    (ws / "alpha").rename(ws / "alpha-renamed")
+    capsys.readouterr()
+    code, out = run("map", "alpha-renamed", "beta")
+    assert code == 0, out
+    assert "alpha-renamed is workspace member alpha" in capsys.readouterr().err
+    roots, counts = _members(db)
+    assert roots == {"alpha": (ws / "alpha-renamed").resolve(), "beta": (ws / "beta").resolve()}, roots
+    assert counts == before, counts            # the same code once, not twice
+    # a different repository of the same shape (its own first commit) is a new member, not the moved one
+    (ws / "alpha-renamed").rename(ws / "gone-again")
+    _repo(ws / "stranger", CORE + "\n# another project\n")
+    assert run("map", "stranger", "beta")[0] == 0
+    roots, _ = _members(db)
+    assert sorted(roots) == ["alpha", "beta", "stranger"], roots
+
+
+def test_a_workspace_member_is_forgotten_and_the_others_kept(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    _repo(ws / "alpha")
+    _repo(ws / "beta", CORE.replace("helper", "bhelper"))
+    _repo(ws / "gamma", CORE.replace("helper", "ghelper"))
+    monkeypatch.chdir(ws)
+    assert run("map", "alpha", "beta", "gamma")[0] == 0
+    db = ws / ".leyline/leyline.db"
+    _, before = _members(db)
+    code, out = run("map", "--forget", "alpha")
+    assert code == 0, out
+    roots, counts = _members(db)
+    assert sorted(roots) == ["beta", "gamma"] and counts == {"beta": before["beta"], "gamma": before["gamma"]}, counts
+    assert "2 repositories (beta, gamma)" in out, out
+    code, out = run("map")   # the workspace is the two that are left
+    assert code == 0 and "2 repositories (beta, gamma)" in out, out
+    assert run("map", "--forget", "nobody")[0] != 0
+
+
+def test_forgetting_a_member_leaves_no_link_into_it(tmp_path, monkeypatch):
+    from leyline import store
+    ws = tmp_path / "ws"
+    lib = ws / "alphalib"
+    (lib / "alphalib").mkdir(parents=True)
+    (lib / "alphalib/__init__.py").write_text("")
+    (lib / "alphalib/text.py").write_text("def shout(s):\n    return s.upper()\n")
+    git(lib, "init", "-q", "-b", "main")
+    git(lib, "add", "alphalib")
+    git(lib, "commit", "-qm", "lib")
+    app = _repo(ws / "app", "from alphalib.text import shout\n\n\ndef run():\n    return shout('a')\n")
+    monkeypatch.chdir(ws)
+    assert run("map", "alphalib", "app")[0] == 0
+    db = ws / ".leyline/leyline.db"
+
+    def into_lib():
+        con = store.connect(db)
+        try:
+            return (con.execute("SELECT COUNT(*) FROM calls WHERE dst_id LIKE 'alphalib:%'").fetchone()[0]
+                    + con.execute("SELECT COUNT(*) FROM edges WHERE dst_id LIKE 'alphalib:%' AND layer = 'fact'").fetchone()[0]
+                    + con.execute("SELECT COUNT(*) FROM nodes WHERE id LIKE 'alphalib:%' AND layer = 'fact'").fetchone()[0])
+        finally:
+            con.close()
+    assert into_lib() > 0
+    code, out = run("map", "--forget", "alphalib")
+    assert code == 0 and out.startswith("Forgot alphalib."), out
+    assert into_lib() == 0
+    assert sorted(_members(db)[0]) == ["app"] and app.is_dir()
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,
