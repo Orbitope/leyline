@@ -256,6 +256,12 @@ cloned. What such a repository holds is treated as its author's, not as Leyline'
   review. Learnings the pull request's commits add or change (compared with its base) are not applied
   to it: not in `learnings_that_apply`, not matched against its findings. Its page lists them under
   "Learnings added by this pull request, not applied", for the person to judge.
+- **An agent's paths stay inside the map.** The MCP tools that take a path (`map`'s `paths`, the change
+  folder of `plan`, `check` and the `spec_*` tools, `affected_tests`, `drift`'s `path`, `review_pr`'s
+  `path`, a coverage file for `check`, `quick` or `coverage`) accept only paths inside the
+  repositories the store maps, or, before anything is mapped, the directory the server was started
+  in. An agent can be told which path to pass by text it read; the error says the person can run the
+  `leyline` command themselves, which takes any path.
 
 ## How the pieces fit
 

@@ -66,6 +66,31 @@ def _path() -> str:
     return os.environ.get("LEYLINE_DB") or ".leyline/leyline.db"
 
 
+_START = Path.cwd().resolve()   # where the server was started: the place of the first map
+
+
+def _outside(path, what: str) -> Optional[str]:
+    """An error when a path an agent passed is outside the repositories the store maps (before anything is mapped,
+    the directory the server started in). The agent may have read untrusted text naming the path (map ~/, plan a
+    folder elsewhere, import a file from anywhere); the person at the command line is not limited."""
+    allowed = []
+    if Path(_path()).is_file():
+        try:
+            allowed = [Path(r).resolve() for r in store.roots(_db()).values()]
+        except (sqlite3.Error, OSError):
+            allowed = []
+    allowed = allowed or [_START]
+    try:
+        p = Path(path).resolve()
+    except (OSError, RuntimeError):
+        return f"{what} {path!r} cannot be resolved."
+    if any(p == r or r in p.parents for r in allowed):
+        return None
+    return (f"{what} {path!r} ({p}) is outside the repositories this server maps ({', '.join(map(str, allowed))}):"
+            " a tool reads and writes only inside them. If the person wants it, they can run the `leyline` command"
+            " themselves, or start the server in that repository.")
+
+
 def _db() -> sqlite3.Connection:
     # The server may run each tool call on a different worker thread, and a SQLite connection
     # belongs to the thread that opened it. Keep one per thread, for the store the path names now.
@@ -257,6 +282,8 @@ def _change(arg: str) -> tuple[Optional[Path], Optional[str]]:
     folder = loop.find_change(arg, _path())
     if folder is None and arg.startswith("spec-"):
         folder = loop.find_change(arg[5:], _path())
+    if folder is not None and (why := _outside(folder, "The change folder")):
+        return None, why
     if folder is None or not (folder / "tasks.md").is_file() and not (folder / "proposal.md").is_file():
         return None, (f"No change folder {arg!r}: looked for it as a path from {Path.cwd()} and under openspec/changes/"
                       " in the mapped repositories. Write the change first, as openspec/changes/<id>/ with proposal.md,"
@@ -314,6 +341,9 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
     """Loop step 1: index the code into the store this server reads. Call it once, when a tool says nothing is
     mapped, or to add a repository. `plan` and `check` re-map changed code on their own. Returns what was found,
     the map page a person can open, and `next`."""
+    for p in paths or []:
+        if (why := _outside(p, "The directory")):
+            return {"error": why}
     bad = [p for p in paths or [] if not Path(p).is_dir()]
     if bad:
         return {"error": f"Not a directory: {', '.join(map(str, bad))}. Pass repository directories (relative paths are"
@@ -384,6 +414,8 @@ def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestR
     folder, err = _change(change)
     if err:
         return {"error": err}
+    if coverage_path and (why := _outside(coverage_path, "The coverage file")):
+        return {"error": why}
     results, err = _results(test_output, test_results)
     if err:
         return {"error": err}
@@ -852,6 +884,8 @@ def coverage(node_id: Annotated[Optional[str], Field(description="A function: th
     have."""
     out = {}
     if import_path:
+        if (why := _outside(import_path, "The coverage file")):
+            return {"error": why}
         if not Path(import_path).is_file():
             return {"error": f"No file at {import_path} (relative paths are from {Path.cwd()})."}
         imported = measured.import_file(_db(), import_path)
@@ -876,6 +910,8 @@ def affected_tests(change: Annotated[str, Field(description="The change: its fol
     whose path on the map passes through it. Run these, then pass their output to `check`."""
     from . import affected
     folder = loop.find_change(change, _path())
+    if folder is not None and (why := _outside(folder, "The change folder")):
+        return {"error": why}
     with _lock:
         try:
             loop.refresh(_path())
@@ -937,6 +973,8 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
     nothing does. Then run the adversarial review on the returned `change_id` with `spec_review_facts` and
     `spec_finding`, as for a spec."""
     from . import pr
+    if (why := _outside(path, "The checkout")):
+        return {"error": why}
     try:
         with _lock:
             try:
@@ -976,6 +1014,8 @@ def quick(what: Annotated[Optional[str], Field(description="Before the edit: the
     new test output: one verdict (`done`), each item proven, partial, contradicted, inconclusive or needs a person, the
     edits outside the named code and the callers left broken. When `grown` is not empty, write a spec and use `plan`."""
     from . import quick as quick_mod
+    if coverage_path and (why := _outside(coverage_path, "The coverage file")):
+        return {"error": why}
     results, err = _results(test_output, test_results)
     if err:
         return {"error": err}
@@ -1083,6 +1123,8 @@ def drift(path: Annotated[Optional[str], Field(description="The repository or it
     body (changed inside; not drift by itself) or ok. Re-maps changed code first. `fails` is true when something is
     gone, renamed or changed signature."""
     from . import drift as drift_mod
+    if path is not None and (why := _outside(path, "The path")):
+        return {"error": why}
     with _lock:
         try:
             r = drift_mod.run(_path(), path if path is not None else Path.cwd(), accept)
