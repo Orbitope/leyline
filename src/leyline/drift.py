@@ -221,6 +221,8 @@ def read_file(openspec: Optional[Path]) -> tuple[dict, Optional[str]]:
 
 
 def _write_file(openspec: Path, anchors: dict) -> Path:
+    if (why := store.escapes(openspec)):
+        raise store.UntrustedStore(why)
     f = openspec / ANCHOR_FILE
     data = {"about": "Written by Leyline (`leyline check`, `leyline drift --accept`): what each code name in these specs"
                      " meant when it was last known to be right. `leyline drift` compares the code with it. Commit it"
@@ -268,7 +270,9 @@ def _put(con, openspec: Optional[Path], key: str, anchors: list[dict], write_fil
     entry = {"recorded": old["recorded"] if old and old.get("anchors") == anchors else _today(), "anchors": anchors}
     _store(con, _place(openspec), key, entry)
     out = {"key": key, "count": len(anchors), **({"problem": problem} if problem else {})}
-    if openspec is not None and write_file and not problem:
+    if openspec is not None and write_file and not problem and (why := store.escapes(openspec)):
+        out["problem"] = why
+    elif openspec is not None and write_file and not problem:
         held[key] = entry
         if not anchors:
             held.pop(key)

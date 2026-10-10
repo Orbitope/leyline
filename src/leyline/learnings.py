@@ -94,6 +94,8 @@ def _write(path: Path, items: list[dict]) -> None:
     items = sorted(({k: v for k, v in x.items() if not k.startswith("_")} for x in items),
                    key=lambda x: (x.get("created", ""), x["id"]))
     body = json.dumps({"about": ABOUT, "learnings": items}, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    if (why := store.escapes(path.parent)):
+        raise store.UntrustedStore(why)
     store.write_file(path, body)
 
 

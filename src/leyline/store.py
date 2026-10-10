@@ -113,6 +113,20 @@ def check_folder(folder: str | Path) -> None:
                              f" {TRUST_ENV}=1 to use them as they are.")
 
 
+def escapes(folder: str | Path) -> Optional[str]:
+    """Why Leyline writes nothing into `folder` (a change folder, openspec/), or None: it is a link, or under one, to a
+    place outside the repository it sits in (the folder above openspec/, else the nearest with .git). A repository
+    can commit openspec/changes/x as a link to any folder, and the page written there would land outside it."""
+    folder = Path(folder).absolute()
+    chain = [folder, *folder.parents]
+    top = (next((p.parent for p in chain if p.name == "openspec"), None)
+           or next((p for p in chain if (p / ".git").exists()), None))
+    if top is None or inside(folder, top):
+        return None
+    return (f"{folder} is a link to {folder.resolve()}, outside the repository at {top}: Leyline writes nothing there"
+            " (a repository can commit such a link to have files written anywhere)")
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     check_folder(db_path.parent)

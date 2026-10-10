@@ -247,6 +247,10 @@ cloned. What such a repository holds is treated as its author's, not as Leyline'
   or keep the store elsewhere (`--db /elsewhere/leyline.db`, or `LEYLINE_DB`). A `.leyline` that is
   a link to a folder outside the repository is refused too, so nothing is written there.
   `LEYLINE_TRUST_STORE=1` uses the folder anyway, for a store you committed on purpose.
+- **Nothing is written outside the repository through a link.** A file Leyline writes (the map page,
+  a change's `leyline.md`, the anchors and learnings files) replaces a link at its name rather than
+  writing through it; a change folder or `openspec/` that is a link to a folder outside the
+  repository is read but not written to, and the plan or check says so ("Not written: ...").
 
 ## How the pieces fit
 

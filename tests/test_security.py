@@ -359,3 +359,33 @@ def test_a_store_folder_that_links_outside_the_repository_is_refused(repo, tmp_p
         loop.map_repos([str(repo)], repo / ".leyline" / "leyline.db")
     assert "link" in str(e.value)
     assert list(elsewhere.iterdir()) == []
+
+
+def test_a_change_folder_that_links_outside_the_repository_gets_no_page_written(repo, tmp_path):
+    """openspec/changes/x committed as a link to a folder elsewhere: plan reads the change, but writes its
+    leyline.md (and the anchors and learnings files beside openspec/) only inside the repository, and says why."""
+    elsewhere = tmp_path / "outside" / "x"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "proposal.md").write_text("# Change f\n\n## Why\n\nBecause.\n")
+    (elsewhere / "tasks.md").write_text("- [ ] 1.1 Change `f`\n")
+    (repo / "openspec" / "changes").mkdir(parents=True)
+    (repo / "openspec" / "changes" / "x").symlink_to(elsewhere)
+    db = repo / ".leyline" / "leyline.db"
+    loop.map_repos([str(repo)], db, page=False)
+    r = loop.plan(db, repo / "openspec" / "changes" / "x")
+    assert "error" not in r, r
+    assert not (elsewhere / "leyline.md").exists()
+    assert not r.get("written") and "outside" in r["not_written"]
+    assert "outside" in loop.plan_text(r, "x")
+
+
+def test_an_openspec_folder_that_links_outside_gets_no_anchors_or_learnings_written(repo, tmp_path):
+    from leyline import learnings
+    elsewhere = tmp_path / "outside" / "openspec"
+    elsewhere.mkdir(parents=True)
+    (repo / "openspec").symlink_to(elsewhere)
+    with pytest.raises(store.UntrustedStore):
+        drift._write_file(repo / "openspec", {})
+    with pytest.raises(store.UntrustedStore):
+        learnings._write(learnings.path_for(repo), [])
+    assert list(elsewhere.iterdir()) == []
