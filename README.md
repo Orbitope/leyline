@@ -277,6 +277,10 @@ leyline spec verify openspec/changes/<id> --before before --after after   # afte
 with both. Before re-indexing, both compare each source file's hash with the store, so an unchanged
 repository is not indexed again.
 
+node --test's TAP writes a tab in a test's name and a backslash followed by `t` the same way (`\\t`, and so
+for `\n`, `\r`, `\b`, `\f`, `\v`); Leyline reads it as the tab, so a name with a literal `\t` in it may not
+match its test.
+
 The brief ties each task to code and each scenario to a test, by three conventions and no markup:
 
 - Code named in backticks in `tasks.md` is looked up on the map (`` `Vehicle.Speed` ``). A name not on
