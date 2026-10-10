@@ -498,7 +498,10 @@ def main(argv=None) -> int:
 
 def _store_problem(e: Exception) -> str:
     """What a person can do about an error from the store, in place of the traceback."""
+    from .diff import DamagedBaseline
     msg = str(e)
+    if isinstance(e, DamagedBaseline):
+        return msg
     if "locked" in msg or "busy" in msg:
         return ("the store is in use: another leyline run (a map, plan or check) is writing it. Try again when that"
                 " run finishes.")
@@ -794,6 +797,14 @@ def _main(argv=None) -> int:
         print(f"leyline: no store at {args.db}. Run `leyline map` first.", file=sys.stderr)
         return 2
     con = store.connect(args.db)
+    try:
+        return _with_store(args, con)
+    finally:
+        con.close()
+
+
+def _with_store(args, con) -> int:
+    """The commands that read or write one store, given open."""
     if args.cmd == "export":
         from . import export
         text = (export.fragment if args.fragment else export.page)(con, not args.no_sources)

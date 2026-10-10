@@ -524,6 +524,9 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
         # A task that names no code (docs, a mutant list in a file the map does not read) is for the person to check.
         l["by_you"] = not (l["nodes"] or l["new"] or l["into"] or l["scenarios"])
     gaps += [f"must be edited but no task covers it: {m['name']} ({m.get('note', '')})" for m in uncovered]
+    if report.get("snapshot_error"):
+        gaps.append(f"the baseline of the code as it is now could not be kept ({report['snapshot_error']}), so `check`"
+                    " would have nothing to compare the change with: fix that, then plan again before changing the code")
     gaps += [f"scenario \"{s['name']}\" has no test of that name, and no task says it will add one"
              for s in scenarios if not s["test_exists"] and s["key"] not in planned]
     result = {"change_id": cid, "title": parsed["title"], "why": parsed["why"], "what": parsed["what"], "dir": parsed["dir"],
@@ -584,8 +587,31 @@ def folder_gone(con, cid: str) -> bool:
     attrs = json.loads(row[0] or "{}") if row else {}
     if attrs.get("dir_repo"):
         root = store.roots(con).get(attrs["dir_repo"])
-        return root is not None and root.is_dir() and not (root / attrs["dir_rel"]).is_dir()
+        if root is None or not root.is_dir() or (root / attrs["dir_rel"]).is_dir():
+            return False
+        folder = root / attrs["dir_rel"]
+        archived = folder.parent / "archive"
+        if archived.is_dir() and any(f.is_dir() and f.name.endswith("-" + folder.name) for f in archived.iterdir()):
+            return True
+        # A folder committed on a branch that is not checked out is out of the working tree only until it is again.
+        return not _on_a_branch(root, attrs["dir_rel"])
     return bool(attrs.get("dir")) and not Path(attrs["dir"]).is_dir()
+
+
+def _on_a_branch(root: Path, rel: str) -> bool:
+    """True when the head of some local branch of the repository at `root` holds the folder `rel` (relative to root)."""
+    import subprocess
+    try:
+        git = lambda *a, **k: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=True,
+                                             **k).stdout
+        heads = git("for-each-ref", "--format=%(refname)", "refs/heads").split()
+        if not heads:
+            return False
+        path = git("rev-parse", "--show-prefix").strip() + rel   # as the commit names it: from the top of the repository
+        out = git("cat-file", "--batch-check", input="".join(f"{h}:{path}\n" for h in heads))
+    except (OSError, subprocess.CalledProcessError):   # not a git repository, or no git
+        return False
+    return any(line.split()[1:2] == ["tree"] for line in out.splitlines())   # "<oid> tree <size>", or "<name> missing"
 
 
 # -- channels and tests the map does not see as such -------------------------------------------------
@@ -943,13 +969,18 @@ def _patterns_touched(con, tasked: set) -> list[dict]:
 
 
 def _write(path: Path, body: str) -> None:
-    """Replace the generated block of a file, keeping anything a person wrote around it."""
+    """Replace the generated block of a file, keeping anything a person wrote around it. A block whose end marker
+    is missing (a write cut off, a merge gone wrong) runs to the end of the file. Written whole or not at all."""
     block = f"{BEGIN}\n{body.rstrip()}\n{END}\n"
     old = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-    if BEGIN in old and END in old:
-        store.write_file(path, old[:old.index(BEGIN)] + block + old[old.index(END) + len(END):].lstrip("\n"))
-    else:
+    start = old.find(BEGIN)
+    end = old.find(END, start) if start >= 0 else -1
+    if start < 0:
         store.write_file(path, block)
+    elif end < 0:
+        store.write_file(path, old[:start] + block)
+    else:
+        store.write_file(path, old[:start] + block + old[end + len(END):].lstrip("\n"))
 
 
 def _some(xs: list[str], n: int = 4) -> str:
@@ -1311,6 +1342,13 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     if "error" in parsed:
         return parsed
     cid = "spec-" + parsed["id"]
+    planned = con.execute("SELECT 1 FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    if planned and parsed["tasks"] and not con.execute("SELECT 1 FROM spec_items WHERE change_id = ? LIMIT 1", (cid,)).fetchone():
+        # The plan stored the change, and stopped before its tasks and scenarios: there is nothing to judge.
+        kept = diff.snapshot_path(con, cid).exists()
+        return {"error": f"the last plan of {parsed['id']} did not finish, so its tasks were not stored.",
+                "next": [f"Next: run `leyline plan {parsed['id']}` again" + (" (the baseline it took is kept)" if kept else
+                         " on the code as it was before the change") + ", then check it again."]}
     review = diff.review(con, cid, before_run, after_run)
     if "error" in review:
         if review["error"].startswith("No change"):   # never planned, or the plan stopped at an error
@@ -1486,6 +1524,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
            "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings),
                       "kinds": reviews(con, cid), "all": all_findings},
            "baseline": review.get("baseline"),
+           "baseline_other_version": review.get("baseline_other_version", False),
            "after_tests": {"passed": sum(r["status"] == "pass" for r in results.values()), "total": len(results),
                            "skipped": sum(r["status"] == "skip" for r in results.values())} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
@@ -1544,6 +1583,9 @@ def verify_text(v: dict) -> str:
          " and each scenario from the test results.", "",
          "**Yes.** " + _yes(v) if v["done_as_agreed"]
          else "**Not yet:** " + "; ".join(v["why_not"]) + ".", "",
+         *(["*The baseline was taken by another version of Leyline (or one that did not record its version), which may"
+            " have read the same code differently: a change below that the diff does not show comes from that, not from"
+            " the edit.*", ""] if v.get("baseline_other_version") else []),
          "| Task | Result | Verdict | Missing |", "| --- | --- | --- | --- |"]
     for t in v["tasks"]:
         L.append(f"| {t['key']} {_clip(t['text'], 70).replace('|', '/')} | {t['state']} | {t.get('verdict', '')} | {', '.join(t['missing'])} |")

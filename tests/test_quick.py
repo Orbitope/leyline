@@ -3,6 +3,7 @@ that run it. After: one verdict from the code and the test results, and the way 
 
 import io
 import json
+import os
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -193,3 +194,49 @@ def test_nothing_changed_is_inconclusive(repo):
     run("quick", "make the retry count 3", "--about", "RETRIES", "--tests", "-", stdin=PASSING)
     code, page = run("quick", "--done", "quick-make-the-retry-count-3", "--tests", "-", stdin=PASSING)
     assert code == 1 and "Edits stayed in the named code: inconclusive" in page
+
+
+def test_a_start_stopped_while_keeping_the_source_leaves_done_able_to_run(repo, monkeypatch):
+    """The text of the files a quick change will edit is kept beside its baseline. Written in place, a start stopped part
+    way (a full disk, a killed process) left half a JSON file, and every `--done` after it failed on it."""
+    import pathlib
+    real = pathlib.Path.write_text
+
+    def cut_off(self, data, *a, **k):
+        if self.name.endswith(".src.json"):
+            real(self, data[:20], *a, **k)
+            raise OSError(28, "No space left on device")
+        return real(self, data, *a, **k)
+
+    real_replace = os.replace
+
+    def fails_late(src, dst, *a, **k):
+        if str(dst).endswith(".src.json"):
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *a, **k)
+    with monkeypatch.context() as m:
+        m.setattr(pathlib.Path, "write_text", cut_off)
+        m.setattr("os.replace", fails_late)
+        with pytest.raises(OSError):
+            quick.start(repo / ".leyline/leyline.db", "make the retry count 3", ["RETRIES"])
+    edit(repo, "app/net.py", "def fetch(url, tries=RETRIES):", "def fetch(url, tries=RETRIES * 2):")
+    code, page = run("quick", "make the retry count 3", "--about", "RETRIES")   # started again: the first baseline stays
+    assert code == 0 and "still compares with the code as it was then" in page, page
+    code, page = run("quick", "--done", "quick-make-the-retry-count-3", "--tests", "-", stdin=PASSING)
+    assert "No caller left broken" in page, page
+
+
+def test_done_after_a_start_that_did_not_finish_says_to_start_again(repo, monkeypatch):
+    """A start stopped after it stored the change but before it marked it a quick change: `--done` answered "no quick
+    change X started here (there are: X)"."""
+    from leyline import spec
+
+    def dies(*a, **k):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(spec, "_crossings", dies)
+        with pytest.raises(KeyboardInterrupt):
+            quick.start(repo / ".leyline/leyline.db", "make the retry count 3", ["RETRIES"])
+    code, page = run("quick", "--done", "quick-make-the-retry-count-3")
+    assert code != 0 and "there are: quick-make-the-retry-count-3" not in page, page
+    assert "did not finish" in page, page

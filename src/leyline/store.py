@@ -37,11 +37,16 @@ def write_file(path: str | Path, data: str | bytes) -> None:
     import os
     import tempfile
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # The mode of the file it replaces, unless that is a link: a temporary file is private; the file it becomes is not.
+    mode = path.stat().st_mode & 0o777 if path.is_file() and not path.is_symlink() else 0o644
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(fd, "wb" if isinstance(data, bytes) else "w", **({} if isinstance(data, bytes) else {"encoding": "utf-8"})) as f:
+        # Also whole or not at all: a write that fails part way (a full disk, a killed process) leaves the file as it was.
+        with os.fdopen(fd, "wb" if isinstance(data, bytes) else "w",
+                       **({} if isinstance(data, bytes) else {"encoding": "utf-8", "newline": "\n"})) as f:
             f.write(data)
-        os.chmod(tmp, 0o644)   # a temporary file is private; the file it becomes is not
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

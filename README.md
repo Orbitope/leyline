@@ -240,7 +240,8 @@ the WSGI app a test client calls.
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
 read and write it, and none of them runs unless you start it. Beside it, `leyline.cache.db` holds what the
 next index needs to do again only what an edit changed: each file's parse output under its content hash,
-and fingerprints of the last run. Deleting it only makes the next index a full one.
+and fingerprints of the last run. Deleting it only makes the next index a full one, and so does damage to it: a
+cache that is not a database is started again.
 
 | Piece | Started by | Reads | Writes |
 | --- | --- | --- | --- |
@@ -342,7 +343,8 @@ That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once,
 comparison reads (nodes and their hashes, links, flows, a hash per source line) and what a diagram of the code
 as it was needs (the line of each call, the order of each flow, each channel link's channel). It stays after the
 change is checked done as agreed, so `check` can run again after a later edit, and is deleted with
-`leyline spec forget <id>` or once the change folder is archived or removed. `leyline map` writes
+`leyline spec forget <id>` or once the change folder is archived or removed (a folder that a local branch not checked
+out still holds is not removed: it is back when that branch is). `leyline map` writes
 `.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.

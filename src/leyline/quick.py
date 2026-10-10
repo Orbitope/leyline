@@ -643,7 +643,13 @@ def done(db: str | Path, cid: str, results: Optional[list[dict]] = None, coverag
         a = stored(con, cid)
         snap = diff.snapshot_path(con, cid)
         if a is None or not snap.exists():
-            known = [r[0] for r in con.execute("SELECT id FROM change_proposals WHERE id LIKE 'quick-%' ORDER BY id")]
+            begun = con.execute("SELECT 1 FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+            if a is None and cid.startswith(PREFIX) and begun:
+                return {"error": f"the start of {cid} did not finish; start it again with the same words (`leyline quick"
+                                 " \"<what>\" --about <names>`)" + ("; the baseline it took is kept." if snap.exists() else
+                                                                       ", before editing.")}
+            known = [r[0] for r in con.execute("SELECT id FROM change_proposals WHERE id LIKE 'quick-%' ORDER BY id")
+                     if stored(con, r[0]) is not None and diff.snapshot_path(con, r[0]).exists()]
             return {"error": f"no quick change {cid!r} started here" + (f" (there are: {', '.join(known[:5])})" if known else "")
                              + "; start it with `leyline quick \"<what>\" --about <names>` before editing."}
         if more:

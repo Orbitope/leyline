@@ -3571,8 +3571,6 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         with con:   # so the overview and the map page can say what is not in the map
             for r, v in left.items():
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"left_out:{r}", json.dumps(v)))
-            # Which Leyline made this map: a newer one maps again even where no file changed (see loop.refresh).
-            con.execute("INSERT OR REPLACE INTO meta VALUES ('made_by', ?)", (incremental.code_version(),))
         # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
         # large repo) from adding to what clustering and the pattern matchers hold.
         repo, timing, repos = ix.repo, ix.timing, dict(ix.repos)
@@ -3609,6 +3607,10 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{r}", json.dumps(stats["timing"])))
                 con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
                             (r, "timing", "-", "ok", None, json.dumps(stats["timing"])))
+            # Which Leyline made this map, noted once the whole of it is written: a newer one, or a run that stopped
+            # part way (its systems, patterns or tour not yet redone), maps again even where no file changed
+            # (see loop.refresh).
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('made_by', ?)", (incremental.code_version(),))
         inc.finish(con)
         if _verify and stats["incremental"]["mode"] == "incremental" and os.environ.get("LEYLINE_VERIFY"):
             stats["incremental"]["differs"] = incremental.verify(db_path, members, exact, scip)

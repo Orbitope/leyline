@@ -162,6 +162,8 @@ def snapshot(con, name: str) -> Path:
             con.execute("INSERT INTO snap.annotations SELECT node_id, key, value FROM main.annotations WHERE key = 'name'")
             con.execute("INSERT INTO snap.meta SELECT key, value FROM main.meta WHERE key LIKE 'root:%'")
             con.execute("INSERT INTO snap.meta VALUES ('format', 'slim')")
+            from .incremental import code_version   # what read the code: another version may read it differently
+            con.execute("INSERT INTO snap.meta VALUES ('made_by', ?)", (code_version(),))
             where = {}
             for r in con.execute("SELECT repo_id, path, content_hash FROM main.nodes WHERE kind = 'file' AND layer = 'fact'"):
                 where[(r[0], r[1])] = r[2]
@@ -212,9 +214,27 @@ def moved_on(con, name: str) -> bool:
         before.close()
 
 
+class DamagedBaseline(sqlite3.DatabaseError):
+    """A baseline (a snapshot) that SQLite cannot read: the store beside it is not the one damaged."""
+
+
 def _open(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
     con.row_factory = sqlite3.Row
+    try:   # told apart from damage to the store: not a database, or cut off short of the pages its header counts
+        con.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        pages, size = con.execute("PRAGMA page_count").fetchone()[0], con.execute("PRAGMA page_size").fetchone()[0]
+        short = Path(path).stat().st_size < pages * size and not Path(str(path) + "-wal").exists()   # pages in a WAL count too
+        ok = "cut off" if short else "ok"
+    except sqlite3.OperationalError:
+        con.close()
+        raise
+    except sqlite3.DatabaseError as e:
+        ok = str(e)
+    if ok != "ok":
+        con.close()
+        raise DamagedBaseline(f"the baseline kept at {path} is damaged ({ok}). Delete that file, then take a new baseline:"
+                              " plan the change again on the code as it was before it.")
     return con
 
 
@@ -915,6 +935,8 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
                          " nothing to compare with. Plan the change again to take a new one."}
     before = _open(snap)
     try:
+        from .incremental import code_version
+        made_by = before.execute("SELECT value FROM meta WHERE key = 'made_by'").fetchone()
         d = compare(before, con)
         # Today's rules, evaluated on the graph as it was: a rule added after the proposal still counts.
         rules_before = rules.check(before, rules_from=con)
@@ -1025,4 +1047,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
         extra={"review": {k: v for k, v in lean.items() if k not in ("as_predicted", "intent")}})
     report["view_id"] = saved.get("id")
     report["baseline"] = (row["base_commit"] or "")[:7] or None
+    # Taken by another version of Leyline (or one that did not say): what that version read differently (a name defined
+    # twice, an id it gave a file) shows as a change here, and is not one.
+    report["baseline_other_version"] = made_by is None or made_by[0] != code_version()
     return report

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import sqlite3
 from collections import defaultdict
 from typing import Optional
 
@@ -435,8 +436,9 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
         try:  # keep the graph as it was when the change was proposed, to compare against later
             diff.snapshot(con, cid)
             report["snapshot"] = "new"
-        except Exception:
+        except (OSError, sqlite3.Error) as e:   # a full disk, a folder that cannot be written
             report["snapshot"] = False
+            report["snapshot_error"] = f"{type(e).__name__}: {e}"
     report["change_id"], report["view_id"] = cid, view.get("id")
     report["marks"] = report["marks"][:60]
     return report
