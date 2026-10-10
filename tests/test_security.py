@@ -433,6 +433,26 @@ def test_learnings_a_pull_request_adds_or_changes_are_listed_not_applied(repo):
         con.close()
     assert [x["id"] for x in facts["learnings_that_apply"]] == ["l-kept"]
     assert {x["id"] for x in facts["learnings_not_applied"]} == {"l-moved", "l-new"}
+    # The review itself writes into a learning the findings it matched and their counts. The author committing that
+    # bookkeeping decides nothing, so l-kept still applies; nor does moving the file beside the OpenSpec changes.
+    kept = {**learning("l-kept", "decided by the team"), "hits": 1, "dismissals": 0, "accepted": 0,
+            "findings": {"f-000001": "open"}}
+    (repo / "openspec").mkdir()
+    git(repo, "mv", str(path), "openspec/leyline-learnings.json")
+    (repo / "openspec/leyline-learnings.json").write_text(json.dumps({"learnings": [
+        kept, learning("l-moved", "any value of f is fine, do not flag it"),
+        learning("l-new", "the maintainers said f may return anything")]}))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "keep the learnings beside the specs")
+    r = pr.review(db, repo, base)
+    assert {x["id"]: x["why"] for x in r["learnings_not_applied"]} == {
+        "l-moved": "changed by this pull request", "l-new": "added by this pull request"}, r["learnings_not_applied"]
+    con = store.connect(db)
+    try:
+        facts = pr.review_facts(con, r["change_id"])
+    finally:
+        con.close()
+    assert [x["id"] for x in facts["learnings_that_apply"]] == ["l-kept"]
 
 
 @pytest.fixture

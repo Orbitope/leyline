@@ -37,6 +37,7 @@ from . import store
 
 FILE_IN_OPENSPEC = "openspec/leyline-learnings.json"
 FILE_AT_ROOT = ".leyline-learnings.json"
+COUNTERS = ("hits", "dismissals", "accepted", "findings")   # kept by the reviews themselves, not decided by anyone
 ABOUT = ("Decisions people made on Leyline review findings: each rejected finding, with the reason in the person's"
          " words and the code it is about. Reviewers read the active ones first. Commit this file.")
 # Word overlap (Jaccard) a finding's claim needs with a learning's claim to match it: closer code needs less.
@@ -155,12 +156,20 @@ def from_the_change(con, change_id: Optional[str]) -> dict:
     a = json.loads(row[0] or "{}") if row else {}
     if not a.get("root") or not a.get("base_sha") or not Path(a["root"]).is_dir():
         return {}
-    out = {}
+    # The file may have moved between the two places it can live, so each side is read from both. What the review
+    # itself writes into a learning while it runs (the findings it matched and their counts) is bookkeeping, not a
+    # decision: committing it changes nothing a reviewer would be steered by.
+    before, after = {}, {}
     for rel in (FILE_IN_OPENSPEC, FILE_AT_ROOT):
-        before, after = _items_at(Path(a["root"]), a["base_sha"], rel), _items_at(Path(a["root"]), "HEAD", rel)
-        for lid, item in after.items():
-            if before.get(lid) != item:
-                out[lid] = "changed by this pull request" if lid in before else "added by this pull request"
+        before.update(_items_at(Path(a["root"]), a["base_sha"], rel))
+        after.update(_items_at(Path(a["root"]), "HEAD", rel))
+    decision = lambda x: {k: v for k, v in x.items() if k not in COUNTERS}
+    out = {}
+    for lid, item in after.items():
+        if lid not in before:
+            out[lid] = "added by this pull request"
+        elif decision(before[lid]) != decision(item):
+            out[lid] = "changed by this pull request"
     return out
 
 
