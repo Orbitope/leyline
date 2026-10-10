@@ -45,3 +45,5 @@ packages = ["src/leyline"]
 testpaths = ["tests"]
 norecursedirs = ["fixture", "fixture2", "fixture3", "fixture4", "fixture5", "fixture6", "fixture_ws"]
 python_files = ["test_*.py"]
+# A connection left for the garbage collector fails the test that left it (tests/conftest.py closes the tests' own).
+filterwarnings = ["error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning"]
