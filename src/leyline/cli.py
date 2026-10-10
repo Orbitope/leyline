@@ -550,7 +550,7 @@ def _main(argv=None) -> int:
     p = sub.add_parser("pr", description="Review a branch or pull request someone else wrote: map the commit it left"
                                          " its base at, compare it with the checkout, and print what the change reaches"
                                          " and did not change, with no spec needed. Findings are filed against pr-<id>.")
-    p.add_argument("base", nargs="?", help="the branch it will merge into (default: origin's default branch, or main)")
+    p.add_argument("base", nargs="?", help="the branch it will merge into (default: origin's default branch, else main, else master)")
     p.add_argument("--about", help="what the change says it does (its title and description); - reads stdin")
     p.add_argument("--about-file", metavar="FILE", help="the same, from a file")
     p.add_argument("--github", metavar="NUMBER", help="take the base, title and description from this GitHub pull request"

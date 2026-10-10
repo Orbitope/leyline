@@ -921,7 +921,7 @@ def spec_review_facts(change: ChangeArg,
 @_tool(needs_store=False, items=20, keep=("next", "blocking"),
        more="Lists were cut to keep this answer short; `page` has the whole review page and `spec_review_facts` the facts.")
 def review_pr(base: Annotated[Optional[str], Field(description="The branch the change will merge into, or a commit."
-                                                             " Default: origin's default branch, else main.")] = None,
+                                                             " Default: origin's default branch, else main, else master.")] = None,
               about: Annotated[Optional[str], Field(description="What the change says it does: its title and"
                                                               " description. Default: its commit messages.")] = None,
               github: Annotated[Optional[str], Field(description="A GitHub pull request number: base, title and"
