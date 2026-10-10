@@ -207,8 +207,7 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
 NodeId = Annotated[str, Field(description="A node id exactly as `search`, `overview` or `expand` returned it.")]
 ChangeArg = Annotated[str, Field(description="The change: its folder (openspec/changes/<id>, absolute or relative to the"
                                              " server's directory) or just its id.")]
-TestOutput = Annotated[Optional[str], Field(description="The test runner's output as text: TAP (vitest --reporter=tap,"
-                                                        " node --test), `pytest -rA`, or one PASS or FAIL line per test."
+TestOutput = Annotated[Optional[str], Field(description="The test runner's output as text: " + diff.READS + "."
                                                         " Use this or test_results.")]
 
 
@@ -279,8 +278,7 @@ def _results(test_output: Optional[str], test_results: Optional[list[dict]]):
         return None, None
     parsed = diff.parse_test_output(test_output)
     if not parsed:
-        return None, ("found no test results in test_output: it reads TAP (vitest --reporter=tap, node --test), pytest -rA,"
-                      " or one PASS or FAIL line per test. Pass other formats as test_results.")
+        return None, (f"found no test results in test_output: it reads {diff.READS}. Pass other formats as test_results.")
     return parsed, None
 
 

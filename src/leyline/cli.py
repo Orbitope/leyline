@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__, query, store
+from .diff import READS
 from .indexer import index
 
 DEFAULT_DB = ".leyline/leyline.db"
@@ -165,8 +166,7 @@ def _quick(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It reads TAP, pytest -rA, or one PASS or FAIL line per test.",
-              file=sys.stderr)
+        print(f"leyline: found no test results in that output. It reads {READS}.", file=sys.stderr)
         return 2
     if args.done:
         r = quick.done(db, args.done if args.done.startswith("quick-") else "quick-" + args.done, results, args.coverage,
@@ -431,10 +431,8 @@ def _loop(args) -> int:
         print(f"leyline: cannot read the test output: {e}", file=sys.stderr)
         return 2
     if results == []:
-        print("leyline: found no test results in that output. It reads TAP (vitest --reporter=tap, node --test), pytest -rA, go test -v, jest --verbose,"
-              " dotnet test --logger \"console;verbosity=detailed\", or one"
-              " PASS or FAIL line per test"
-              " (`pytest -rA` prints them); other formats can go through the record_test_run MCP tool.", file=sys.stderr)
+        print(f"leyline: found no test results in that output. It reads {READS}; other formats can go through the"
+              " record_test_run MCP tool.", file=sys.stderr)
         return 2
     name = args.change
     if args.cmd == "plan":
@@ -534,14 +532,13 @@ def _main(argv=None) -> int:
                                            " re-mapping first if the code changed. Exits 1 while something blocks implementation.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
     p.add_argument("--tests", metavar="FILE", help="test runner output from before the change (- for stdin), kept to compare"
-                                                  " with after; TAP, pytest -rA, or one PASS or FAIL line per test")
+                                                  " with after; " + READS)
     p.add_argument("--new-baseline", action="store_true",
                    help="compare from the code as it is now, forgetting the picture kept from the first plan")
     p = sub.add_parser("check", description="After the change is made: re-map, record the test output, and say whether the"
                                             " change was done as agreed. Exits 0 only when it was.")
     p.add_argument("change", help="the change folder, or its id under openspec/changes/")
-    p.add_argument("--tests", metavar="FILE", help="test runner output from after the change (- for stdin); one PASS or"
-                                                  " FAIL line per test, as pytest -rA prints")
+    p.add_argument("--tests", metavar="FILE", help="test runner output from after the change (- for stdin); " + READS)
     p.add_argument("--coverage", metavar="FILE", help="coverage measured on that same run (pytest --cov=<package>"
                                                      " --cov-context=test writes .coverage): says whether each scenario's"
                                                      " test ran the changed code")
@@ -571,7 +568,7 @@ def _main(argv=None) -> int:
     p.add_argument("--about", nargs="+", metavar="NAME", help="the code it touches: `Owner.name`, `module.func`, a constant")
     p.add_argument("--done", metavar="ID", help="after the change: the quick-<slug> the first run printed")
     p.add_argument("--tests", metavar="FILE", help="test runner output (- for stdin): before the edit with the sentence,"
-                                                  " after it with --done; TAP, pytest -rA, or one PASS or FAIL line per test")
+                                                  " after it with --done; " + READS)
     p.add_argument("--coverage", metavar="FILE", help="with --done: coverage measured on that test run")
     p.add_argument("--id", help="name it quick-<id> (default: from the sentence)")
     p.add_argument("--to-spec", metavar="SPEC_ID", help="it grew: hand its baseline and test run to openspec/changes/<SPEC_ID>"
@@ -676,7 +673,7 @@ def _main(argv=None) -> int:
     p.add_argument("--no-sources", action="store_true", help="leave source text out of the page")
     p = sub.add_parser("record-tests", description="store a test run read from a test runner's output")
     p.add_argument("run", help="a label for the run, such as before or after")
-    p.add_argument("file", help="runner output (TAP, pytest -rA, or one PASS or FAIL line per test); - for stdin")
+    p.add_argument("file", help="runner output (" + READS + "); - for stdin")
     p = sub.add_parser("rules", description="check the architecture rules")
     p.add_argument("--confirm", type=int, metavar="ID", help="confirm a suggested rule")
     p = sub.add_parser("review", description="compare an implemented change with its proposal")

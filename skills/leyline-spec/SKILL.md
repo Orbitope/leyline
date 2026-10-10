@@ -87,8 +87,9 @@ why not.
    - "Remove `X`" is done when `X` is gone and nothing still calls it; "Rename `X` to `Y`" when `X`
      is gone, `Y` is there and nothing still calls `X`. Name the callers' edits in tasks too.
 5. **Record the tests as they pass now**, before anyone edits code: run the test suite and pass its
-   output to `plan` as `test_output` (TAP from vitest or node --test, `pytest -rA`, or one PASS or FAIL
-   line per test; several runners' output can go in one text), or the
+   output to `plan` as `test_output` (TAP from vitest or node --test, `pytest -rA`, `go test -v`, `jest
+   --verbose`, `dotnet test --logger "console;verbosity=detailed"`, or one PASS or FAIL line per test; several
+   runners' output can go in one text), or the
    results as `test_results`. Without it, `check` cannot tell a test the change broke from one that
    already failed. If you cannot run the tests, say so and give the person the command
    (`<test command> | leyline plan <id> --tests -`).

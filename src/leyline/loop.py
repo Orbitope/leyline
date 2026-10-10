@@ -360,9 +360,9 @@ def next_after_plan(b: dict, name: str, for_agent: bool = False) -> list[str]:
                    " `leyline spec findings " + name + "` shows them in full.")
     if not b.get("baseline_tests") and b.get("baseline") != "kept":
         out.append("while the code is unchanged, run the tests and call `plan` again with their output as test_output"
-                   " (TAP, `pytest -rA`, or one PASS or FAIL line per test)." if for_agent else
+                   f" ({diff.READS})." if for_agent else
                    f"while the code is unchanged, record how the tests pass now: `<your test command> | leyline plan {name}"
-                   " --tests -`. TAP (vitest, node --test), `pytest -rA`, or one PASS or FAIL line per test.")
+                   f" --tests -`. It reads {diff.READS}.")
     st_missing = [r for r in spec.REVIEWERS if r not in (b.get("reviews") or [])]
     if not st["reviewed"] or st_missing:
         which = " and ".join(st_missing)
@@ -463,10 +463,9 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
     out = []
     if v.get("tests_missing") or v.get("tests_old"):
         out.append(("the test results on record are from before the code last changed. " if v.get("tests_old") else "")
-                   + ("run the tests and call `check` again with their output as test_output (TAP, `pytest -rA`, or one"
-                      " PASS or FAIL line per test)." if for_agent else
+                   + (f"run the tests and call `check` again with their output as test_output ({diff.READS})." if for_agent else
                       f"run the tests and pass the output: `<your test command> | leyline check {name} --tests -`"
-                      " (TAP, `pytest -rA`, or one PASS or FAIL line per test)."))
+                      f" ({diff.READS})."))
     undone = [t for t in v["tasks"] if t["state"] in ("not done", "partly")]
     if undone:
         out.append(f"finish task{'s' if len(undone) > 1 else ''} " + ", ".join(

@@ -632,6 +632,11 @@ def _outside_brackets(text: str, sep: str) -> int:
     return -1
 
 
+# What parse_test_output reads, as the help, the tools and the next steps say it.
+READS = ('TAP (vitest --reporter=tap, node --test), pytest -rA, go test -v, jest --verbose,'
+         ' dotnet test --logger "console;verbosity=detailed", or one PASS or FAIL line per test')
+
+
 def parse_test_output(text: str) -> list[dict]:
     """Read test results from runner output. Understood: TAP 13 and 14 as vitest, node:test and tap print it, where
     nested subtests (indented, or opened with `{`) give names like `file > suite > test` and a suite is not a test of

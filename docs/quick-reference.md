@@ -25,7 +25,8 @@ adds Go, Rust, Java, Kotlin, Swift, C, C++, Ruby, PHP, Scala, Lua, Bash and GDSc
 | Check it | `<tests> \| leyline check <id> --tests -` | The verdict, added to the same page. Exits 0 only when done as agreed |
 
 `<tests>` is your test run, printing one pass or fail line per test: `pytest -rA`, vitest or
-`node --test` (TAP), or similar. `<id>` is an OpenSpec change folder, `openspec/changes/<id>/`.
+`node --test` (TAP), `go test -v`, `jest --verbose`, `dotnet test --logger "console;verbosity=detailed"`, or
+similar. `<id>` is an OpenSpec change folder, `openspec/changes/<id>/`.
 
 ## By job
 
