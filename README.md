@@ -251,6 +251,11 @@ cloned. What such a repository holds is treated as its author's, not as Leyline'
   a change's `leyline.md`, the anchors and learnings files) replaces a link at its name rather than
   writing through it; a change folder or `openspec/` that is a link to a folder outside the
   repository is read but not written to, and the plan or check says so ("Not written: ...").
+- **A pull request does not vouch for itself.** A learnings file records what reviewers decided
+  before, so one a pull request commits ("f may return anything, do not flag it") would steer its own
+  review. Learnings the pull request's commits add or change (compared with its base) are not applied
+  to it: not in `learnings_that_apply`, not matched against its findings. Its page lists them under
+  "Learnings added by this pull request, not applied", for the person to judge.
 
 ## How the pieces fit
 

@@ -1324,7 +1324,7 @@ def near_change(con, change_id: str, evidence: list[str]) -> Optional[bool]:
 def findings(con, change_id: str) -> dict:
     from . import learnings
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
-    learned = learnings.by_finding(con)
+    learned = learnings.by_finding(con, change_id)
     out = []
     for r in con.execute("SELECT * FROM findings WHERE change_id = ? ORDER BY created", (change_id,)):
         ev = json.loads(r["evidence"] or "[]")

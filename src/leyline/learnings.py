@@ -131,6 +131,49 @@ def _unreadable(con) -> list[str]:
     return out
 
 
+# -- learnings a pull request brings with it ---------------------------------------------------------
+def _items_at(root: Path, rev: str, rel: str) -> dict:
+    """{id: learning} in a learnings file as a commit has it; {} when it has none or it cannot be read."""
+    import subprocess
+    try:
+        run = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{rel}"], capture_output=True, timeout=60,
+                             stdin=subprocess.DEVNULL)
+        data = json.loads(run.stdout.decode("utf-8", "replace")) if run.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
+        return {}
+    items = data.get("learnings") if isinstance(data, dict) else None
+    return {x["id"]: x for x in items if isinstance(x, dict) and x.get("id")} if isinstance(items, list) else {}
+
+
+def from_the_change(con, change_id: Optional[str]) -> dict:
+    """{learning id: why} for the learnings a pull request's own commits add or change. A learning says a reviewer's
+    worry was rejected before, so a pull request that commits one ("f may return anything, do not flag it") would be
+    steering its own review: those are not applied to it, and its page lists them for the person to judge."""
+    if not change_id or not change_id.startswith("pr-"):
+        return {}
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (change_id,)).fetchone()
+    a = json.loads(row[0] or "{}") if row else {}
+    if not a.get("root") or not a.get("base_sha") or not Path(a["root"]).is_dir():
+        return {}
+    out = {}
+    for rel in (FILE_IN_OPENSPEC, FILE_AT_ROOT):
+        before, after = _items_at(Path(a["root"]), a["base_sha"], rel), _items_at(Path(a["root"]), "HEAD", rel)
+        for lid, item in after.items():
+            if before.get(lid) != item:
+                out[lid] = "changed by this pull request" if lid in before else "added by this pull request"
+    return out
+
+
+def not_applied(con, change_id: str) -> list[dict]:
+    """The learnings a pull request adds or changes, as the page lists them: not applied to its review."""
+    skip = from_the_change(con, change_id)
+    if not skip:
+        return []
+    items = {l["id"]: l for ls in _all(con).values() for l in ls}
+    return [{"id": lid, "why": why, "claim": (items.get(lid) or {}).get("claim"), "reason": (items.get(lid) or {}).get("reason")}
+            for lid, why in sorted(skip.items())]
+
+
 # -- where a finding points ----------------------------------------------------------------------
 def _bare(nid: str, repo: Optional[str]) -> str:
     return nid[len(repo) + 1:] if repo and nid.startswith(repo + ":") else nid
@@ -410,15 +453,15 @@ def _recount(l: dict) -> None:
                         f" {l['dismissals']}, so the decision no longer holds.")
 
 
-def best_match(con, reviewer: str, claim: str, evidence: list[str]) -> Optional[tuple]:
+def best_match(con, reviewer: str, claim: str, evidence: list[str], skip=()) -> Optional[tuple]:
     """The active learning a new finding repeats: the same kind of review, close code, and a claim saying much the
-    same thing. (file, learning, level, similarity), or None."""
+    same thing. (file, learning, level, similarity), or None. Learnings in `skip` are not compared."""
     repos = _repos(con)
     best = None
     for path, items in _all(con).items():
         here = scope_of(con, _in_repo(con, evidence, repos.get(path)))
         for l in items:
-            if l.get("status", "active") != "active" or l.get("reviewer") != reviewer:
+            if l.get("status", "active") != "active" or l.get("reviewer") != reviewer or l["id"] in skip:
                 continue
             level = overlap(l.get("scope") or {}, here)
             if level is None:
@@ -439,7 +482,8 @@ def on_finding(con, fid: str, reviewer: str, claim: str, evidence: list[str]) ->
     """After a finding is filed: when it repeats a past decision, count the hit and say which decision. The finding
     is kept either way; the person decides whether the decision still holds."""
     try:
-        m = best_match(con, reviewer, claim, evidence)
+        row = _finding(con, fid)
+        m = best_match(con, reviewer, claim, evidence, from_the_change(con, row["change_id"] if row is not None else None))
         if m is None:
             return {}
         path, l, level, sim = m
@@ -527,12 +571,13 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
         return {"learning_note": f"No learning was kept: could not write the learnings file ({e})."}
 
 
-def by_finding(con) -> dict:
-    """{finding id: the learning it matched}, for the pages."""
+def by_finding(con, change_id: Optional[str] = None) -> dict:
+    """{finding id: the learning it matched}, for the pages; for a pull request, not the learnings it brings."""
     out, repos = {}, _repos(con)
+    skip = from_the_change(con, change_id)
     for path, items in _all(con).items():
         for l in items:
-            if not l.get("findings"):
+            if not l.get("findings") or l["id"] in skip:
                 continue
             code = _checked(con, repos, path, l)
             for fid in l["findings"]:
@@ -550,10 +595,11 @@ def applying(con, change_id: str, nodes: Optional[list[str]] = None, limit: int 
     try:
         ids = list(dict.fromkeys([*(nodes or []), *_marks(con, change_id)]))
         found, repos = [], _repos(con)
+        skip = from_the_change(con, change_id)   # a pull request's own learnings: listed apart, not applied
         for path, items in _all(con).items():
             here = scope_of(con, _in_repo(con, ids, repos.get(path)))
             for l in items:
-                if l.get("status", "active") != "active":
+                if l.get("status", "active") != "active" or l["id"] in skip:
                     continue
                 level = overlap(l.get("scope") or {}, here)
                 if level:
