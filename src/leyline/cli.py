@@ -795,8 +795,10 @@ def _main(argv=None) -> int:
         return 0
     if args.cmd == "serve":
         if not explicit:   # started in a folder inside the repository: the repository's store, as other commands
-            from .loop import find_store
-            args.db = str(find_store(Path.cwd()) or DEFAULT_DB)
+            from .loop import find_store, repository_of
+            found = find_store(Path.cwd())
+            top = None if found else repository_of(Path.cwd())   # no store yet: the first map puts it at the top
+            args.db = str(found or (top / DEFAULT_DB if top else DEFAULT_DB))
         os.environ["LEYLINE_DB"] = args.db
         from .server import main as serve
         serve()

@@ -355,6 +355,32 @@ def test_paths_an_agent_passes_stay_inside_the_mapped_repositories(repo, tmp_pat
     serve(repo, script)
 
 
+def test_a_server_started_in_a_folder_inside_the_repository_maps_the_repository(repo):
+    """Claude Code starts the server where it was opened, which may be a folder inside the repository. Before the
+    first map, `..` was "outside" and `.` mapped the folder as a repository with a store of its own; after it, `.`
+    added the folder as a second member. The repository is the unit: its top is allowed, a folder inside it means it,
+    and the store goes at its top."""
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    async def script(a: Agent, tools, init):
+        m = await a.call("map", paths=[".."])
+        assert m["repos"] == ["repo"] and m["db"] == str(repo / ".leyline" / "leyline.db")
+        m = await a.call("map", paths=["."])
+        assert m["repos"] == ["repo"], m
+        o = await a.call("overview")
+        assert [r["id"] for r in o["repos"]] == ["repo"]
+        assert "outside" in await a.fail("map", paths=["../.."])
+    serve(repo / "py", script)
+    assert not (repo / "py" / ".leyline").exists()
+
+    async def fresh(a: Agent, tools, init):   # with no map yet, the folder itself means the repository too
+        m = await a.call("map", paths=["."])
+        assert m["repos"] == ["repo"] and m["db"] == str(repo / ".leyline" / "leyline.db")
+    shutil.rmtree(repo / ".leyline")
+    serve(repo / "py" / "tests", fresh)
+    assert not (repo / "py" / "tests" / ".leyline").exists()
+
+
 def test_no_store_says_to_map(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()

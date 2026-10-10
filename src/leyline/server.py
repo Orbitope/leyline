@@ -69,17 +69,31 @@ def _path() -> str:
 _START = Path.cwd().resolve()   # where the server was started: the place of the first map
 
 
+def _repository_of(folder: Path) -> Optional[Path]:
+    """The git repository `folder` is in, when it is in one: the server is started where the agent was opened, which
+    may be a folder inside the repository it is to map."""
+    from .loop import repository_of
+    return repository_of(folder)
+
+
+def _roots() -> list[Path]:
+    """The repositories the store maps, resolved; none before anything is mapped."""
+    if not Path(_path()).is_file():
+        return []
+    try:
+        return [Path(r).resolve() for r in store.roots(_db()).values()]
+    except (sqlite3.Error, OSError):
+        return []
+
+
 def _outside(path, what: str) -> Optional[str]:
     """An error when a path an agent passed is outside the repositories the store maps (before anything is mapped,
-    the directory the server started in). The agent may have read untrusted text naming the path (map ~/, plan a
-    folder elsewhere, import a file from anywhere); the person at the command line is not limited."""
-    allowed = []
-    if Path(_path()).is_file():
-        try:
-            allowed = [Path(r).resolve() for r in store.roots(_db()).values()]
-        except (sqlite3.Error, OSError):
-            allowed = []
-    allowed = allowed or [_START]
+    the directory the server started in, and the repository it is a folder of). The agent may have read untrusted
+    text naming the path (map ~/, plan a folder elsewhere, import a file from anywhere); the person at the command
+    line is not limited."""
+    allowed = _roots()
+    if not allowed:
+        allowed = [_START] + [top for top in [_repository_of(_START)] if top and top != _START]
     try:
         p = Path(path).resolve()
     except (OSError, RuntimeError):
@@ -337,11 +351,23 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
                                                                      " server's directory. Several are mapped together as one"
                                                                      " workspace. Leave out to map again what the store holds.")] = None) -> dict:
     """Loop step 1: index the code into the store this server reads. Call it once, when a tool says nothing is
-    mapped, or to add a repository. `plan` and `check` re-map changed code on their own. Returns what was found,
+    mapped; a workspace of several repositories is named whole in that call. A folder inside a repository means the
+    repository. `plan` and `check` re-map changed code on their own. Returns what was found,
     the map page a person can open, and `next`."""
     for p in paths or []:
         if (why := _outside(p, "The directory")):
             return {"error": why}
+    if paths:   # a folder inside a mapped repository (where the server was started, say) means that repository
+        roots = _roots() or [top for top in [_repository_of(_START)] if top]
+        folded = []
+        for p in paths:
+            try:
+                r = Path(p).resolve()
+            except (OSError, RuntimeError):
+                r = None
+            inside = next((root for root in roots if r is not None and root in r.parents), None)
+            folded.append(str(inside) if inside is not None else p)
+        paths = list(dict.fromkeys(folded))
     bad = [p for p in paths or [] if not Path(p).is_dir()]
     if bad:
         return {"error": f"Not a directory: {', '.join(map(str, bad))}. Pass repository directories (relative paths are"

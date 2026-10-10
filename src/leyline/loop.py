@@ -51,6 +51,18 @@ def find_store(start: Path) -> Optional[Path]:
     return None
 
 
+def repository_of(folder: Path) -> Optional[Path]:
+    """The git repository `folder` is in (its top folder), when it is in one; None otherwise, or without git."""
+    import subprocess
+    try:
+        run = subprocess.run(["git", "-C", str(folder), "rev-parse", "--show-toplevel"], capture_output=True,
+                             text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    top = run.stdout.strip()
+    return Path(top).resolve() if run.returncode == 0 and top else None
+
+
 def _show(path: str | Path) -> str:
     """A path as a person would type it: relative when it is under the current directory."""
     p = Path(path).resolve()
