@@ -88,7 +88,8 @@ You tell your agent: "engine names should come back in upper case, and add a `sh
 
 and two scenarios, `Start` and `Shout`, in `specs/engine/spec.md`. Then you plan it, passing the tests'
 output from before any code changes so that `check` can tell a test the change breaks from one that
-already failed (TAP from vitest, node --test or tap, `pytest -rA`, `go test -v`, `jest --verbose`, or any runner
+already failed (TAP from vitest, node --test or tap, `pytest -rA`, `go test -v`, `jest --verbose`,
+`dotnet test --logger "console;verbosity=detailed"`, or any runner
 that prints one PASS or FAIL line per test):
 
 ```bash

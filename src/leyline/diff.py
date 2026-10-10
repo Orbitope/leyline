@@ -466,6 +466,9 @@ def result_parts(name: str) -> dict:
     m = re.match(r"^(.+?)\[(.*)\]$", out["leaf"])
     if m and out["file"] and out["file"].endswith(".py"):
         out["func"], out["param"] = m.group(1), m.group(2)
+    m = re.match(r"^([A-Za-z_]\w*)\((.+)\)$", out["leaf"])
+    if m and not out["file"] and out["suites"] and "." in out["suites"][-1]:   # dotnet: a theory's row, Method(x: 1)
+        out["func"], out["param"] = m.group(1), m.group(2)
     return out
 
 
@@ -508,7 +511,7 @@ class TestNames:
             chain = " > ".join(p["suites"])
             same = [t for t in cands if (t["full"] and t["full"].rsplit(" > ", 1)[0] in (chain, " > ".join(p["suites"][-1:])))
                     or (t["suite"] and t["suite"] in (chain, p["suites"][-1]))
-                    or ("." + p["suites"][-1] + "." in t["id"])]
+                    or re.search(r"[.:]" + re.escape(p["suites"][-1]) + r"\.", t["id"])]
             if same or not p["file"]:
                 cands = same
         return cands
@@ -557,6 +560,9 @@ _YAML_START = re.compile(r"^\s*---\s*$")
 _JEST_FILE = re.compile(r"^\s*(?:PASS|FAIL)\s+(\S+\.[cm]?[jt]sx?)(?:\s+\([\d.]+\s*m?s\))?\s*$")
 _JEST_TEST = re.compile(r"^(\s*)(✓|✕|○|✎|√|×)\s+(.*?)(?:\s+\([\d.]+\s*m?s\))?\s*$")
 _GO_RESULT = re.compile(r"^(\s*)--- (PASS|FAIL|SKIP): (\S+) \([\d.]+m?s\)\s*$")
+# dotnet test with `--logger "console;verbosity=detailed"`: `  Passed Ns.Class.Method [3 ms]`, `  Failed ... [<1 ms]`,
+# then for a failure `  Error Message:` and the message on the lines below it.
+_DOTNET = re.compile(r"^\s*(Passed|Failed|Skipped)\s+(\S.*?)\s+\[[^\]]*\]\s*$")
 _GO_RUN = re.compile(r"^=== (?:RUN|CONT|PAUSE|NAME)\s+(\S+)\s*$")
 _GO_PACKAGE = re.compile(r"^(ok|FAIL|\?)\s+(\S+)(?:\t.*| \[(build failed|setup failed)\])$")
 
@@ -604,7 +610,8 @@ def parse_test_output(text: str) -> list[dict]:
     nested subtests (indented, or opened with `{`) give names like `file > suite > test` and a suite is not a test of
     its own; pytest -rA summaries (`PASSED path::test[param]`), kept whole so each parameter is one result; go test
     (`--- PASS: TestX/sub`, read as `TestX > sub`; only -v prints the tests that pass); jest's default reporter (` PASS  file`,
-    the `✓`/`✕` tree that --verbose adds, and a `●` section per failure), named `file > describe > test`; and any
+    the `✓`/`✕` tree that --verbose adds, and a `●` section per failure), named `file > describe > test`; dotnet test's
+    detailed console logger (`Passed Ns.Class.Method [3 ms]`); and any
     runner that prints one `PASS name` or `FAIL name: message` line per test. Other formats: pass results to
     record_tests directly."""
     out: dict[str, dict] = {}
@@ -751,6 +758,18 @@ def parse_test_output(text: str) -> list[dict]:
                 last = None
             else:
                 last = emit([f["name"] for f in stack] + [desc], status)
+            continue
+        m = _DOTNET.match(line)
+        if m:
+            full = m.group(2)
+            cut = full.find("(")
+            head, args = (full[:cut], full[cut:]) if cut > 0 else (full, "")
+            owner, _, method = head.rpartition(".")   # Ns.Class.Method: the class is its suite
+            last = emit([owner, method + args] if owner else [full],
+                        {"Passed": "pass", "Failed": "fail", "Skipped": "skip"}[m.group(1)])
+            continue
+        if re.match(r"^\s*Error Message:\s*$", line) and last is not None and last["status"] == "fail" and not last["message"]:
+            last["message"] = next((ln.strip() for ln in lines[k + 1:] if ln.strip()), None)
             continue
         m = _PLAIN.match(line)
         if not m or m.group(2).startswith("["):   # pytest's `SKIPPED [1] file:line: reason` names no test

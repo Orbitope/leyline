@@ -357,6 +357,48 @@ def test_jest_output_is_read_test_by_test():
     assert out == {"src/shout.test.js > Engine > shout > adds a bang": "fail"}
 
 
+# dotnet test --logger "console;verbosity=detailed" on an xUnit project: a fact, a theory's rows, a failure.
+DOTNET = """  Passed Shop.Tests.CartTests.Total_adds_the_lines [3 ms]
+  Passed Shop.Tests.CartTests.Parses_a_price(text: "1.50", expected: 150) [< 1 ms]
+  Skipped Shop.Tests.CartTests.Slow_one [1 ms]
+  Failed Shop.Tests.CartTests.Empty_cart_is_free [107 ms]
+  Error Message:
+   Assert.Equal() Failure: Values differ
+Expected: 0
+  Stack Trace:
+     at Shop.Tests.CartTests.Empty_cart_is_free() in /src/Shop.Tests/CartTests.cs:line 30
+
+Test Run Failed.
+Total tests: 4
+     Passed: 2
+     Failed: 1
+"""
+
+
+def test_dotnet_test_output_is_read_test_by_test(tmp_path):
+    """dotnet test prints `Passed Ns.Class.Method [3 ms]`: none of it was read, so `plan` found no test results."""
+    out = {r["name"]: r for r in diff.parse_test_output(DOTNET)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "Shop.Tests.CartTests > Total_adds_the_lines": "pass",
+        'Shop.Tests.CartTests > Parses_a_price(text: "1.50", expected: 150)': "pass",
+        "Shop.Tests.CartTests > Slow_one": "skip",
+        "Shop.Tests.CartTests > Empty_cart_is_free": "fail"}
+    assert out["Shop.Tests.CartTests > Empty_cart_is_free"]["message"] == "Assert.Equal() Failure: Values differ"
+    root = tmp_path / "repo"
+    (root / "Shop.Tests").mkdir(parents=True)
+    (root / "Shop.Tests/Shop.Tests.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    (root / "Shop.Tests/CartTests.cs").write_text(
+        "using Xunit;\nnamespace Shop.Tests;\npublic class CartTests\n{\n"
+        "    [Fact] public void Total_adds_the_lines() { }\n"
+        "    [Theory] [InlineData(\"1.50\", 150)] public void Parses_a_price(string text, int expected) { }\n"
+        "    [Fact] public void Slow_one() { }\n"
+        "    [Fact] public void Empty_cart_is_free() { }\n}\n")
+    db = tmp_path / "s.db"
+    index(root, db, "shop")
+    con = store.connect(db)
+    assert diff.record_tests(con, "after", list(out.values()))["matched_to_test_nodes"] == 4
+
+
 # node --test --test-reporter=tap (node 26) on test("tab\there"), test("back\\slash t"), test("new\nline"),
 # test("parses {"), describe("suite {", () => test("inside")) and test("hash # here").
 NODE_ESCAPED = """TAP version 13
