@@ -137,6 +137,22 @@ def test_entry_points_and_tests_come_with_the_flows_that_start_there(notes):
     assert main["reached_from"] and main["reached_from"][0]["flow"].startswith("flow:")
 
 
+def test_a_function_only_tests_reach_lists_those_tests(tmp_path, capsys):
+    """reached_from is entry-point flows only; a function no program reaches says which tests do."""
+    write(tmp_path, {"calc/tally.py": "def tally(xs):\n    return len(xs)\n",
+                     "calc/test_tally.py": "from tally import tally\n\n\ndef test_tally_counts_items():\n"
+                                           "    assert tally([1, 2]) == 2\n"})
+    db = tmp_path / ".leyline" / "leyline.db"
+    index(tmp_path, db, "calc")
+    con = store.connect(db)
+    c = next(c for c in explain.find_flows(con, "tally the items")["candidates"] if c["name"] == "tally")
+    assert c["flows"] == [] and c["reached_from"] == []
+    assert [x["flow"] for x in c["tests_reaching"]] == ["flow:" + node(con, "test_tally_counts_items")], c
+    con.close()
+    assert cli.main(["--db", str(db), "find-flows", "tally the items"]) == 0
+    assert "tests that reach it: flow:" in capsys.readouterr().out
+
+
 def test_nothing_to_look_for_is_an_error_and_unknown_words_find_nothing(notes):
     _, _, con = notes
     assert "error" in explain.find_flows(con, "how does it work")

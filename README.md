@@ -830,7 +830,8 @@ just above it (or a Python docstring). Code names are split (`saveDialogue` is s
 create, add, spawn; run, execute, play, start; about twenty groups, `SYNONYMS` in `explain.py`), a word rare on the
 map counts for more, and a word for who does it (a user, a writer) counts little. Route handlers, UI event handlers,
 program entries, message handlers and commands are ranked up, then tests. Each candidate says why it matched and which
-flows start there or reach it; `ambiguous` is set when the first ones score close in different files, so the agent
+flows start there; one where none starts names the entry points' flows that reach it (`reached_from`) and the tests'
+(`tests_reaching`). `ambiguous` is set when the first ones score close in different files, so the agent
 asks the person which they mean. The words index is built once per map run (about a second on Parlance) and kept: a
 later question takes a few milliseconds.
 
@@ -948,7 +949,7 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | `flows(kind?, through?, limit?, offset?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
 | `flow(flow_id, max_steps?, offset?)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |
-| `find_flows(description, limit?)` | Where a behavior described in words could start: entry points, route, UI and message handlers, tests named for it, functions; each with why it matched, its kind, file:line and the flows that start there |
+| `find_flows(description, limit?)` | Where a behavior described in words could start: entry points, route, UI and message handlers, tests named for it, functions; each with why it matched, its kind, file:line and the flows that start there, or else the entry points' flows (`reached_from`) and the tests' (`tests_reaching`) that reach it |
 | `explain_path(start, to?, through?, max_steps?)` | An ordered walk across calls and channels from `start` (its main flow, the shortest path `to` a node, or the path `through` one), each step with how it was reached, the calling line and the declaration; data written for later marked; a Mermaid diagram of the walk |
 | `diagram(ids)` | A Mermaid sequence diagram of how execution reaches some functions or types and what they call |
 | `impact(node_id, max_depth?, limit?)` | What can reach a node: callers by module and the flows through it |

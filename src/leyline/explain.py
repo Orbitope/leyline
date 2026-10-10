@@ -371,11 +371,11 @@ def _matches(ix: Index, t: dict) -> dict[str, float]:
     return out
 
 
-def _flows_through(con, nid: str, most: int = 2) -> list[dict]:
-    """Entry-point flows that pass a function, shortest way in first."""
+def _flows_through(con, nid: str, most: int = 2, kind: str = "entry") -> list[dict]:
+    """Flows of one kind (entry, or test) that pass a function, shortest way in first."""
     rows = con.execute("SELECT f.id, f.name, s.depth FROM flow_steps s JOIN flows f ON f.id = s.flow_id WHERE"
-                       " s.callable_id = ? AND json_extract(f.attrs, '$.kind') = 'entry' AND f.entry_id != ?"
-                       " ORDER BY s.depth, f.id LIMIT ?", (nid, nid, most)).fetchall()
+                       " s.callable_id = ? AND json_extract(f.attrs, '$.kind') = ? AND f.entry_id != ?"
+                       " ORDER BY s.depth, f.id LIMIT ?", (nid, kind, nid, most)).fetchall()
     return [{"flow": r[0], "depth": r[2]} for r in rows]
 
 
@@ -462,8 +462,9 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
             kind_word += f" ({row['address']})"
         item = {"id": nid, "name": row["label"], "kind": kind_word, "at": f"{row['path']}:{row['line']}",
                 "score": round(score, 2), "why": why, "flows": ix.flows_from.get(nid, [])[:3]}
-        if not item["flows"]:
+        if not item["flows"]:   # no flow starts here: the entry points' flows that reach it, and the tests'
             item["reached_from"] = _flows_through(con, nid)
+            item["tests_reaching"] = _flows_through(con, nid, 3, "test")
         out.append(item)
     # Close: another of the first four, in another file, scores near the first.
     ambiguous = any(sc >= 0.7 * picked[0][0] and ix.rows[k]["path"] != ix.rows[picked[0][1]]["path"]
@@ -494,8 +495,11 @@ def find_text(r: dict) -> str:
         L.append(f"      matched: {'; '.join(c['why'])}")
         if c["flows"]:
             L.append(f"      flows that start here: {', '.join(c['flows'])}")
-        elif c.get("reached_from"):
-            L.append(f"      reached from: {', '.join(x['flow'] for x in c['reached_from'])}")
+        else:
+            if c.get("reached_from"):
+                L.append(f"      reached from: {', '.join(x['flow'] for x in c['reached_from'])}")
+            if c.get("tests_reaching"):
+                L.append(f"      tests that reach it: {', '.join(x['flow'] for x in c['tests_reaching'])}")
     L += ["", r["note"]]
     if r.get("next"):
         L.append("Next: leyline explain-path " + json.dumps(r["candidates"][0]["id"]))

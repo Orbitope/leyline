@@ -635,8 +635,9 @@ def find_flows(description: Annotated[str, Field(min_length=1, description="What
     """Where a described behavior could start, best first: entry points, route handlers, UI event handlers, message
     handlers, commands, tests whose names state the behavior, and other functions, ranked by the words they share
     with the description (code names split, endings cut, a few synonyms such as save, write, persist). Each comes
-    with why it matched, its kind, file:line, the flows that start there or reach it. When `ambiguous` is true, show
-    the person the top few and ask which they mean. Then walk one with `explain_path`."""
+    with why it matched, its kind, file:line and `flows`, the flows that start there; one where none starts has
+    `reached_from`, the entry points' flows that reach it, and `tests_reaching`, the tests' flows that reach it. When
+    `ambiguous` is true, show the person the top few and ask which they mean. Then walk one with `explain_path`."""
     from . import explain
     return explain.find_flows(_db(), description, limit)
 
