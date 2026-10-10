@@ -97,7 +97,7 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                     g.add_edge(a, b, weight=w)
             communities = nx.community.louvain_communities(g, weight="weight", seed=seed, resolution=resolution)
             modularity = nx.community.modularity(g, communities, weight="weight") if g.number_of_edges() else 0.0
-            made, made_ids = 0, set()
+            made, made_ids, anchors = 0, set(), []
             if modularity < min_modularity:
                 # The module does not split cleanly; proposing groups would be noise.
                 result[mod.split(":module:")[-1]] = {"units": len(members), "systems": 0,
@@ -126,6 +126,16 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                 store.insert_edges(con, [(None, "groups", sid, u, "heuristic", "inferred", SOURCE, None, None)
                                          for u in sorted(community)])
                 made += 1
+                anchors.append((sid, anchor))
+            # Groups anchored on types of the same name (a _Walker in each of three files): named with the anchor's file.
+            seen = defaultdict(list)
+            for sid, anchor in anchors:
+                seen[names[anchor]].append((sid, anchor))
+            for same in (v for v in seen.values() if len(v) > 1):
+                for sid, anchor in same:
+                    row = con.execute("SELECT path FROM nodes WHERE id = ?", (anchor,)).fetchone()
+                    if row and row[0]:
+                        con.execute("UPDATE nodes SET name = ? WHERE id = ?", (f"{names[anchor]} group ({row[0]})", sid))
             result[mod.split(":module:")[-1]] = {"units": len(members), "systems": made,
                                                  "modularity": round(modularity, 3)}
         if modules is not None:
