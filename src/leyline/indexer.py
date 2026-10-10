@@ -70,17 +70,28 @@ class Listing:
         self.files, self.skipped, self.how, self.why_walk = files, skipped, how, why_walk
 
 
-def scan(root: Path) -> Listing:
+def scan(root: Path, names: Optional[list[str]] = None) -> Listing:
     """Every file to index: what git lists (tracked, and untracked but not ignored), or a walk of the directory when
     it is not a git repository. Anything that cannot be read as a source file is left out, with a reason, so that
     nothing later fails on it: entries git lists that are not files on disk (submodules, deleted files, symlinks to
     directories or to nothing), files outside the repository, other people's code, and source files that are too
-    large, binary, minified or unreadable."""
+    large, binary, minified or unreadable. `names` lists the files instead, as git would (a commit's files written
+    out by `leyline pr`)."""
     root = Path(root)
     skipped: list[tuple[str, str]] = []
     why_walk = None
-    out = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", raw=True, timeout=600)
-    if out is not None:
+    out = None if names is not None else \
+        _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", raw=True, timeout=600)
+    if names is not None:
+        how, given, names = "git", names, []
+        for n in given:
+            try:
+                n.encode("utf-8")
+                names.append(n)
+            except UnicodeEncodeError:
+                skipped.append((n.encode("utf-8", "surrogateescape").decode("utf-8", "replace"), "file name is not UTF-8"))
+        names = sorted(set(names))
+    elif out is not None:
         names, how = [], "git"
         for b in out.split(b"\0"):
             if not b:
@@ -886,6 +897,7 @@ class Indexer:
         self._loose_reach: dict[str, set] = {}
         self.exact_mode = "off"          # off | auto | roslyn | scip
         self.scip_paths: list[str] = []
+        self.listed: dict = {}           # repo -> its Listing, or its files, when the caller has listed them (see scan)
         self.exact_stats: dict[str, dict] = {}
         self.keep_results = True         # False: run() lets go of the adapters' output and the resolvers' caches before writing
         self.parse_cache = None          # leyline.incremental: parse output kept from the last run, by content hash
@@ -937,7 +949,8 @@ class Indexer:
         started = time.perf_counter()
         self.files_of, self.skipped, self.failed = {}, {}, {}
         for rid, root in self.repos.items():
-            listing = scan(root)
+            got = self.listed.get(rid)   # listed already by the caller: its files, or the whole listing
+            listing = got if isinstance(got, Listing) else scan(root, got)
             self.files_of[rid], self.skipped[rid] = listing.files, listing.skipped
             if listing.why_walk:
                 print(f"leyline: git would not list the files of {root} ({listing.why_walk}); reading the directory"
@@ -3542,7 +3555,8 @@ def workspace(con, roots: list[str | Path], repo_id: Optional[str] = None) -> li
 
 
 def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] = None, exact: str = "off",
-          scip: Optional[list[str]] = None, full: bool = False, _verify: bool = True) -> dict:
+          scip: Optional[list[str]] = None, full: bool = False, _verify: bool = True,
+          listed: Optional[dict] = None) -> dict:
     """Index a repository, or several as one workspace (`root` a list). `exact` is off, auto, roslyn or scip:
     whether a compiler's view of the references replaces the syntax-based one (see leyline.exact). `scip`
     lists index.scip files. When the store was made by an earlier run, only what changed since is done again
@@ -3554,6 +3568,7 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
     try:
         members = workspace(con, list(root) if isinstance(root, (list, tuple)) else [root], repo_id)
         ix = Indexer(members[0][0], members[0][1], members[1:])
+        ix.listed = dict(listed or {})   # repo id -> its files or its Listing, when the caller has listed them
         ix.exact_mode, ix.scip_paths = ("scip" if scip and exact == "off" else exact), list(scip or [])
         ix.keep_results = False
         inc = incremental.Run(con, db_path, ix, full=full)
@@ -3613,7 +3628,7 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
             con.execute("INSERT OR REPLACE INTO meta VALUES ('made_by', ?)", (incremental.code_version(),))
         inc.finish(con)
         if _verify and stats["incremental"]["mode"] == "incremental" and os.environ.get("LEYLINE_VERIFY"):
-            stats["incremental"]["differs"] = incremental.verify(db_path, members, exact, scip)
+            stats["incremental"]["differs"] = incremental.verify(db_path, members, exact, scip, listed)
         inc = None
         return stats
     finally:

@@ -905,7 +905,7 @@ def differences(a, b, tables: Optional[dict] = None) -> dict:
     return out
 
 
-def verify(db_path, members: list, exact: str, scip) -> dict:
+def verify(db_path, members: list, exact: str, scip, listed=None) -> dict:
     """LEYLINE_VERIFY=1: index the same tree in full into a scratch store and compare it with the store an
     incremental run just wrote. Slow (it is a full run); for checking this module against changes to the resolvers."""
     import tempfile
@@ -913,7 +913,7 @@ def verify(db_path, members: list, exact: str, scip) -> dict:
     with tempfile.TemporaryDirectory() as d:
         other = Path(d) / "full.db"
         if len(members) == 1:
-            index(members[0][0], other, members[0][1], exact, scip, full=True, _verify=False)
+            index(members[0][0], other, members[0][1], exact, scip, full=True, _verify=False, listed=listed)
         else:
             index([r for r, _ in members], other, None, exact, scip, full=True, _verify=False)
         diff = differences(db_path, other)

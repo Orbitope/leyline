@@ -182,6 +182,32 @@ def test_serve_started_in_a_folder_inside_the_repository_reads_the_repositorys_s
     assert Path(seen[0]).resolve() == (root / ".leyline/leyline.db").resolve()
 
 
+def test_the_base_of_a_pr_lists_its_files_without_git_adding_them(tmp_path, monkeypatch):
+    """The base is mapped from the commit's files as listed from the archive: a tracked file that a .gitignore
+    pattern matches is still in it, and no `git add` of every file is run (it cost a third of `pr` on large repos)."""
+    from leyline import pr as prmod
+    root = _origin(tmp_path)
+    (root / ".gitignore").write_text("gen/\n")
+    (root / "gen").mkdir()
+    (root / "gen/made.py").write_text("def made():\n    return 1\n")
+    git(root, "add", "-f", ".gitignore", "gen/made.py")
+    git(root, "commit", "-qm", "generated, ignored, tracked")
+    sha = git(root, "rev-parse", "HEAD").strip()
+    calls = []
+    real = prmod._git
+    monkeypatch.setattr(prmod, "_git", lambda where, *a, **k: calls.append(a) or real(where, *a, **k))
+    names = prmod._export(root, sha, tmp_path / "out")
+    assert "gen/made.py" in names and "pkg/core.py" in names and ".gitignore" in names
+    assert not any(a[:1] == ("add",) for a in calls), calls
+    # and mapped from that list, the ignored file is on the base's map, as on the checkout's
+    git(root, "switch", "-q", "-c", "feature")
+    (root / "pkg/core.py").write_text(CORE.replace("lower", "upper"))
+    monkeypatch.chdir(root)
+    code, out = run("pr", "main", "--json")
+    assert code == 0, out
+    assert "gen/made.py" not in json.dumps(json.loads(out)["changed"]), out
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,

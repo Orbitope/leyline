@@ -65,8 +65,13 @@ def _roots(con) -> dict[str, Path]:
 
 def changed_files(db: str | Path) -> list[str]:
     """Source files added, edited or deleted since the store was indexed. Cheap next to indexing: it only hashes."""
+    return _changes(db)[0]
+
+
+def _changes(db: str | Path) -> tuple[list[str], dict]:
+    """changed_files, and each repository's listing it read (an index run right after takes it, not listing again)."""
     from .adapters import BY_EXTENSION
-    from .indexer import list_files, read_source
+    from .indexer import read_source, scan
 
     con = store.connect(db)
     try:
@@ -75,12 +80,13 @@ def changed_files(db: str | Path) -> list[str]:
             "SELECT repo_id, path, content_hash FROM nodes WHERE kind = 'file' AND layer = 'fact'")}
     finally:
         con.close()
-    out = []
+    out, listings = [], {}
     for repo, root in roots.items():
         if not root.is_dir():
             continue
         now = set()
-        for f in list_files(root):
+        listings[repo] = listing = scan(root)
+        for f in listing.files:
             if "." + f.rsplit(".", 1)[-1] not in BY_EXTENSION:
                 continue
             now.add(f)
@@ -91,7 +97,7 @@ def changed_files(db: str | Path) -> list[str]:
             if data is None or known.get((repo, f)) != hashlib.sha1(data).hexdigest():
                 out.append(f)
         out += [p for (r, p) in known if r == repo and p not in now]
-    return sorted(set(out))
+    return sorted(set(out)), listings
 
 
 def made_by_another_version(db: str | Path) -> bool:
@@ -111,7 +117,8 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
     leyline.incremental; `full` does everything). Returns the index stats, or None."""
     from .indexer import index
 
-    if not force and not changed_files(db) and not made_by_another_version(db):
+    changed, listed = _changes(db) if not force else ([], {})
+    if not force and not changed and not made_by_another_version(db):
         return None
     con = store.connect(db)
     try:
@@ -124,8 +131,8 @@ def refresh(db: str | Path, force: bool = False, full: bool = False) -> Optional
         return None
     if len(roots) == 1:   # the repo id may not be the directory name (--repo), so pass it
         (rid, root), = roots.items()
-        return index(root, db, rid, exact, full=full)
-    return index(list(roots.values()), db, None, exact, full=full)
+        return index(root, db, rid, exact, full=full, listed=listed)
+    return index(list(roots.values()), db, None, exact, full=full, listed=listed)
 
 
 # -- map ------------------------------------------------------------------------------------------

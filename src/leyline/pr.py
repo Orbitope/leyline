@@ -161,26 +161,23 @@ def _archive(root: Path, sha: str) -> bytes:
         return _git(bare, *eol, "archive", "--format=tar", sha, binary=True)
 
 
-def _export(root: Path, sha: str, into: Path) -> None:
-    """The files of a commit, as git keeps them, written under `into`. Nothing in the repository changes."""
-    data = _archive(root, sha)
-    tmp = into.parent / (into.name + ".tar")
-    tmp.write_bytes(data)
-    try:
-        with tarfile.open(tmp) as tar:
-            members = list(_safe_members(tar, into))
-            try:
-                tar.extractall(into, members=members, filter="tar")
-            except TypeError:   # no extraction filters before Python 3.12 (and 3.11.4, 3.10.12)
-                tar.extractall(into, members=members)
-            except tarfile.FilterError:   # a link the filter refuses: take the entries one by one, leaving those out
-                for m in members:
-                    try:
-                        tar.extract(m, into, filter="tar")
-                    except tarfile.FilterError:
-                        pass
-    finally:
-        tmp.unlink()
+def _export(root: Path, sha: str, into: Path) -> list[str]:
+    """The files of a commit, as git keeps them, written under `into`; returns their paths, as the map lists them
+    (every file of the commit: a tracked file that a .gitignore pattern would match stays in). Nothing in the
+    repository changes."""
+    import io
+    with tarfile.open(fileobj=io.BytesIO(_archive(root, sha))) as tar:
+        members = list(_safe_members(tar, into))
+        try:
+            tar.extractall(into, members=members, filter="tar")
+        except TypeError:   # no extraction filters before Python 3.12 (and 3.11.4, 3.10.12)
+            tar.extractall(into, members=members)
+        except tarfile.FilterError:   # a link the filter refuses: take the entries one by one, leaving those out
+            for m in members:
+                try:
+                    tar.extract(m, into, filter="tar")
+                except tarfile.FilterError:
+                    pass
     # A sparse checkout leaves some of the commit's files out of the working tree (git marks them skip-worktree), and
     # its map leaves them out: the base leaves out the same, or each would read as removed by the change.
     for entry in _git(root, "ls-files", "-z", "-t", binary=True).split(b"\0"):
@@ -188,10 +185,10 @@ def _export(root: Path, sha: str, into: Path) -> None:
             path = entry[2:].decode("utf-8", "surrogateescape")
             if not os.path.lexists(root / path) and (into / path).is_file():
                 (into / path).unlink()
-    # A repository of its own holding exactly the commit's files, so the map lists them as git lists the checkout's
-    # (a tracked file that a .gitignore pattern would match stays in), and not by walking the directory.
+    # An empty repository of its own, so that git asked about the base never answers for a folder above it. The
+    # files are listed here rather than added to it: adding them hashed every file again (a third of the time).
     _git(into, "init", "-q")
-    _git(into, "add", "-A", "-f")
+    return [m.name for m in members if not m.isdir() and os.path.lexists(into / m.name)]
 
 
 def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Path:
@@ -214,7 +211,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
     try:
         src = work / rid           # the directory name is the repository's id in a workspace
         src.mkdir()
-        _export(root, base_sha, src)
+        names = _export(root, base_sha, src)
         mapped = work / "map" / "leyline.db"
         mapped.parent.mkdir()
         live = store.connect(db)   # a consistent copy of the store, even while something else reads it
@@ -231,7 +228,7 @@ def base_snapshot(db: Path, root: Path, rid: str, base_sha: str, cid: str) -> Pa
                 con.execute("DELETE FROM meta WHERE key LIKE 'rel:%'")
         finally:
             con.close()
-        index(src, mapped, rid, exact)
+        index(src, mapped, rid, exact, listed={rid: names})
         con = store.connect(mapped)
         try:
             snap = diff.snapshot(con, "base")
