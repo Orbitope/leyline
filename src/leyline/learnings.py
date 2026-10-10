@@ -38,6 +38,7 @@ from . import store
 FILE_IN_OPENSPEC = "openspec/leyline-learnings.json"
 FILE_AT_ROOT = ".leyline-learnings.json"
 COUNTERS = ("hits", "dismissals", "accepted", "findings")   # kept by the reviews themselves, not decided by anyone
+FOR_ITS_FINDING = "the finding it came from was marked"
 ABOUT = ("Decisions people made on Leyline review findings: each rejected finding, with the reason in the person's"
          " words and the code it is about. Reviewers read the active ones first. Commit this file.")
 # Word overlap (Jaccard) a finding's claim needs with a learning's claim to match it: closer code needs less.
@@ -520,7 +521,7 @@ def on_finding(con, fid: str, reviewer: str, claim: str, evidence: list[str]) ->
                 note += " Whether its code changed since is not known: it was kept before Leyline recorded that."
         return {"learned": {"id": mine["id"], "reason": mine.get("reason", ""), "claim": mine.get("claim", ""),
                             "close_on": level, "similarity": round(sim, 2), **code, "note": note}}
-    except OSError as e:
+    except (OSError, store.UntrustedStore) as e:
         return {"learned_error": f"could not read or write the learnings file: {e}"}
 
 
@@ -544,11 +545,16 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
                 elif (l.get("source") or {}).get("finding") == finding_id:
                     matched = changed = True
                     out["learning"] = l["id"]
-                    if status == "rejected" and resolution.strip():
-                        l["reason"] = resolution.strip()
-                    elif status != "rejected" and l.get("status", "active") == "active":
+                    if status == "rejected":
+                        if resolution.strip():
+                            l["reason"] = resolution.strip()
+                        if l.get("status") == "retired" and FOR_ITS_FINDING in (l.get("retired") or ""):
+                            l["status"] = "active"   # rejected again after being reopened or accepted for a while
+                            del l["retired"]
+                    elif status == "accepted" and l.get("status", "active") == "active":
                         l["status"] = "retired"
-                        l["retired"] = f"{now()[:10]}: the finding it came from was marked {status} instead."
+                        l["retired"] = f"{now()[:10]}: {FOR_ITS_FINDING} {status} instead."
+                    # reopened or deferred: no decision yet, so the learning stands as it is
             if changed:
                 _write(path, items)
         if matched or status != "rejected":
@@ -576,7 +582,7 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
                       "hits": 0, "dismissals": 0, "accepted": 0, "findings": {}})
         _write(path, items)
         return {"learning": lid, "learning_file": str(path)}
-    except OSError as e:
+    except (OSError, store.UntrustedStore) as e:
         return {"learning_note": f"No learning was kept: could not write the learnings file ({e})."}
 
 
@@ -644,11 +650,22 @@ def confirm(con, lid: str) -> dict:
                 was = _checked(con, repos, path, l)["code"]
                 l["fingerprint"] = fingerprint(con, repos.get(path), (l.get("scope") or {}).get("nodes", []))
                 l["confirmed"] = now()
-                _write(path, items)
+                if (problem := _write_back(path, items)):
+                    return problem
                 gone = sorted(n for n, h in l["fingerprint"].items() if h is None)
                 return {"id": lid, "status": l.get("status", "active"), "file": str(path), "was": was,
                         **({"not_in_map": gone} if gone else {})}
     return _not_found(con, lid)
+
+
+def _write_back(path: Path, items: list[dict]) -> Optional[dict]:
+    """Write a decision into its file, or say why it could not be (a folder linked outside the repository, a file
+    that cannot be written): an error, not a traceback, for the command and the tool."""
+    try:
+        _write(path, items)
+    except (OSError, store.UntrustedStore) as e:
+        return {"error": f"could not write the learnings file: {e}"}
+    return None
 
 
 def _not_found(con, lid: str) -> dict:
@@ -664,7 +681,8 @@ def retire(con, lid: str, why: str = "") -> dict:
             if l["id"] == lid:
                 l["status"] = "retired"
                 l["retired"] = f"{now()[:10]}: retired by hand" + (f": {why.strip()}" if why.strip() else ".")
-                _write(path, items)
+                if (problem := _write_back(path, items)):
+                    return problem
                 return {"id": lid, "status": "retired", "file": str(path)}
     return _not_found(con, lid)
 
