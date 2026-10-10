@@ -892,3 +892,91 @@ def test_a_function_that_builds_every_kind_is_not_said_to_choose_one(tmp_path):
     assert "every one" not in next(v for k, v in said.items() if k.endswith("shapes.make"))
     assert "every one" in next(v for k, v in said.items() if k.endswith("shapes.everything"))
     assert "every one" not in next(v for k, v in said.items() if k.endswith("Rulebook.Arm(string)"))
+
+
+def test_a_call_on_self_in_a_nested_class_is_not_the_enclosing_classs_method(tmp_path):
+    """Python's nested classes do not inherit from the class around them, and C#'s `this` in a nested class is the
+    nested class: `self.go()` and `this.Go()` were linked to the enclosing class's method. A bare static call in a
+    nested C# class still reaches the enclosing class."""
+    con = _map(tmp_path, {
+        "pkg/n.py": ("class Outer:\n    def go(self):\n        return 1\n\n"
+                     "    class Inner:\n        def run(self):\n            return self.go()\n"),
+        "N/N.csproj": CSPROJ,
+        "N/Outer.cs": ("namespace N;\npublic class Outer {\n    public int Go() => 1;\n    public static int SGo() => 2;\n"
+                       "    public class Inner {\n        public int Run() => this.Go();\n        public int Static() => SGo();\n"
+                       "    }\n}\n"),
+    })
+    got = calls(con)
+    assert ("pkg.n.Outer.Inner.run", "pkg.n.Outer.go") not in got, got
+    assert ("N.Outer.Inner.Run()", "N.Outer.Go()") not in got, got
+    assert ("N.Outer.Inner.Static()", "N.Outer.SGo()") in got
+
+
+def test_python_a_method_replaces_the_one_each_of_several_bases_declares(tmp_path):
+    """`class Square(Mixin, Shape)`: Mixin.name is what `self.name()` in Shape.describe runs for a Square, and
+    Rect.name for a Rect. Only the first base with the name was linked, so a flow from Shape stopped at Shape.name."""
+    con = _map(tmp_path, {
+        "pkg/shapes.py": ("class Shape:\n    def describe(self):\n        return self.name()\n\n"
+                          "    def name(self):\n        return 'shape'\n\n\n"
+                          "class Mixin:\n    def name(self):\n        return 'mixin'\n\n\n"
+                          "class Square(Mixin, Shape):\n    pass\n\n\n"
+                          "class Rect(Square):\n    def name(self):\n        return 'rect'\n\n\n"
+                          "def main():\n    return Rect().describe()\n\n\n"
+                          "if __name__ == '__main__':\n    main()\n"),
+    })
+    over = edges(con, "overrides")
+    assert ("pkg.shapes.Rect.name", "pkg.shapes.Mixin.name") in over
+    assert ("pkg.shapes.Rect.name", "pkg.shapes.Shape.name") in over
+    assert ("pkg.shapes.Mixin.name", "pkg.shapes.Shape.name") in over
+    steps = {short(r[0]) for r in con.execute("SELECT callable_id FROM flow_steps WHERE flow_id LIKE '%shapes%'")}
+    assert {"pkg.shapes.Mixin.name", "pkg.shapes.Rect.name"} <= steps, steps
+
+
+def test_a_function_that_calls_several_routes_of_one_registrar_is_linked_for_each(tmp_path):
+    """One link per route called: a minimal API registers its routes in one function, and a client calling three
+    of them was linked once, with the first address only."""
+    con = _map(tmp_path, {
+        "Api/Api.csproj": CSPROJ,
+        "Api/Minimal.cs": ("namespace Api;\npublic static class Minimal {\n    public static void Map(WebApplication app) {\n"
+                           "        app.MapGet(\"/api/v2/things/{id}\", (int id) => id);\n"
+                           "        app.MapPost(\"/api/v2/things\", () => 1);\n"
+                           "        app.MapGet(\"/ping\", () => \"pong\");\n    }\n}\n"),
+        "Api/Client.cs": ("namespace Api;\npublic class Client {\n    private readonly HttpClient _http = new HttpClient();\n"
+                          "    public async Task Go() {\n        await _http.GetAsync(\"/api/v2/things/1\");\n"
+                          "        await _http.PostAsync(\"/api/v2/things\", null);\n        await _http.GetAsync(\"/ping\");\n"
+                          "    }\n}\n"),
+    })
+    got = {json.loads(r[2])["address"] for r in con.execute(
+        "SELECT src_id, dst_id, attrs FROM edges WHERE kind = 'communicates' AND src_id LIKE '%Client.Go()'")}
+    assert got == {"GET /api/v2/things/{id}", "POST /api/v2/things", "GET /ping"}, got
+
+
+def test_go_a_parameter_or_variable_of_a_type_from_another_package_is_read(tmp_path):
+    """`s *store.Store` and `var c store.Cache` are how Go names a type from another package; only an unqualified
+    type was read, so `s.Save` was a guess between the two types with a Save."""
+    con = _map(tmp_path, {
+        "go.mod": "module example.com/app\n\ngo 1.22\n",
+        "store/store.go": ("package store\n\ntype Store struct{}\n\nfunc (s *Store) Save(n int) {}\n"
+                           "func (s *Store) Fetch() int { return 1 }\n\ntype Cache struct{}\n\nfunc (c *Cache) Save(n int) {}\n"),
+        "main.go": ("package main\n\nimport \"example.com/app/store\"\n\n"
+                    "func Run(s *store.Store) {\n\ts.Save(2)\n\ts.Fetch()\n}\n\n"
+                    "func Keep() {\n\tvar c store.Cache\n\tc.Save(3)\n}\n\nfunc main() {}\n"),
+    })
+    got = calls(con)
+    assert got[("main.Run", "store.store.Store.Save")] == "heuristic", got
+    assert got[("main.Run", "store.store.Store.Fetch")] == "heuristic", got
+    assert got[("main.Keep", "store.store.Cache.Save")] == "heuristic", got
+    assert ("main.Run", "store.store.Cache.Save") not in got
+
+
+def test_csharp_a_wrapper_request_with_a_relative_path_reaches_its_route(tmp_path):
+    """Get<T>("api/orders/all") is said against a base address as GetAsync("api/orders/all") is; only a path with a
+    leading slash was read through the project's own wrapper."""
+    con = _map(tmp_path, {
+        "Api/Api.csproj": CSPROJ,
+        "Api/OrdersController.cs": ("namespace Api;\n[Route(\"api/orders\")]\npublic class OrdersController : ControllerBase {\n"
+                                    "    [HttpGet(\"all\")]\n    public string All() => \"\";\n}\n"),
+        "Api/Calls.cs": ("namespace Api;\npublic class Calls {\n    public async Task<T> Get<T>(string path) { return default; }\n"
+                         "    public async Task Everything() { await Get<string>(\"api/orders/all\"); }\n}\n"),
+    })
+    assert http(con)["Api.Calls.Everything()"] == ("Api.OrdersController.All()", "GET /api/orders/all"), http(con)

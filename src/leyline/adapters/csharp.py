@@ -883,6 +883,8 @@ class _Walker:
             # A request through the project's own wrapper (Get<T>("/api/items/1")): a path a route may serve.
             path = (_cs_strings(first) or [""])[0]
             path = path[2:] if path.startswith("{}/") else path
+            if not path.startswith("/"):   # Get<T>("api/orders/all"), against a base address, as GetAsync takes it
+                path = _relative_url(path) or path
             if path.startswith("/") and path.count("/") >= 2 and not any(ch.isspace() for ch in path) \
                     and "." not in path.rsplit("/", 1)[-1]:
                 self.res.endpoints.append(Endpoint("http", "maybe", cid, path.split("?", 1)[0], line, None))

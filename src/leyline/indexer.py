@@ -2037,8 +2037,10 @@ class Indexer:
                     self.edges.append(Edge(kind, ref.src_id, tid, "heuristic", attrs))
 
     # -- calls ---------------------------------------------------------------
-    def _chain(self, type_id: Optional[str]) -> list[str]:
-        """A type, its bases, and its enclosing types, nearest first."""
+    def _chain(self, type_id: Optional[str], enclosing: bool = True) -> list[str]:
+        """A type, its bases, and (unless `enclosing` is off) its enclosing types, nearest first. A name written bare
+        inside a nested type can mean the enclosing type's static member; a call on a receiver (`this`, `self`, a
+        typed variable) reaches only the receiver's own type and its bases."""
         out, queue = [], [type_id] if type_id else []
         while queue:
             t = queue.pop(0)
@@ -2047,7 +2049,7 @@ class Indexer:
             out.append(t)
             queue.extend(self.bases.get(t, []))
             parent = self.nodes[t].parent_id
-            if parent in self.nodes and self.nodes[parent].kind == "type":
+            if enclosing and parent in self.nodes and self.nodes[parent].kind == "type":
                 queue.append(parent)
         return out
 
@@ -2088,8 +2090,8 @@ class Indexer:
             fit = [c for c in fit if score(c) == best]
         return fit or cands
 
-    def _methods(self, type_id: Optional[str], name: str, argc: int) -> list[Node]:
-        for t in self._chain(type_id):
+    def _methods(self, type_id: Optional[str], name: str, argc: int, enclosing: bool = True) -> list[Node]:
+        for t in self._chain(type_id, enclosing):
             cands = self.members.get(t, {}).get(name)
             if cands:
                 return self._pick(cands, argc)
@@ -2419,8 +2421,8 @@ class Indexer:
         (re.compile(r"\b([A-Z]\w*)(?:<[^<>;=()]*>)?(?:\[\])?\??\s*[*&]?\s+(\w+)\s*(?=[=;,)]|$)"), 2, 1),      # Foo x  (C#, Java, C++)
         (re.compile(r"\b(\w+)\s*:\s*&?(?:mut\s+|readonly\s+)?\(?(?:[a-z_]\w*(?:::|\.))*([A-Z]\w*)"), 1, 2),                          # x: Foo, x: &mod::Foo  (TS, Kotlin, Swift, Rust, Python)
         (re.compile(r"\b(\w+)\s*(?::=|=)\s*(?:new\s+|&|await\s+)?([A-Z]\w*)(?:<[^<>]*>)?(?:::new)?\s*[({]"), 1, 2),  # x = new Foo( / Foo{ / Foo::new(
-        (re.compile(r"\b(\w+)\s+\*?([A-Z]\w*)\s*[,)]"), 1, 2),                                                     # (x *Foo)  (Go parameters)
-        (re.compile(r"\bvar\s+(\w+)\s+\*?([A-Z]\w*)"), 1, 2),                                                      # var x Foo  (Go)
+        (re.compile(r"\b(\w+)\s+\*?(?:[a-z_]\w*\.)?([A-Z]\w*)\s*[,)]"), 1, 2),                                     # (x *Foo, s *store.Store)  (Go parameters)
+        (re.compile(r"\bvar\s+(\w+)\s+\*?(?:[a-z_]\w*\.)?([A-Z]\w*)"), 1, 2),                                      # var x Foo, var c store.Cache  (Go)
         # built-in types, which tell an overload apart: int x, boolean b[], x int, err error
         (re.compile(r"\b(byte|short|int|long|float|double|boolean|bool|char|string|str|rune)(?:\[\])?\s+(\w+)\s*(?=[=;,)])"), 2, 1),
         (re.compile(r"\b(\w+)\s+(byte|int|int32|int64|uint|float32|float64|bool|string|rune|error)\s*[,)]"), 1, 2),
@@ -2890,7 +2892,8 @@ class Indexer:
         if tid and lang == "python" and tid in self.nodes and self.nodes[tid].kind == "callable":
             return [self.nodes[tid]] if name == "__call__" else None   # a function value: only calling it means anything
         if tid:
-            found = self._methods(tid, name, argc)
+            # `self.go()` in a nested class is not the enclosing class's `go`: a receiver reaches its own type and bases
+            found = self._methods(tid, name, argc, enclosing=False)
             if found:
                 return found
             if lang == "csharp":
@@ -2943,26 +2946,49 @@ class Indexer:
     def _resolve_overrides(self) -> None:
         """Link each method to the base or interface method it implements, by name and arity."""
         self.implementers: dict[str, list[str]] = defaultdict(list)
+        linked = set()
+
+        def link(impl_id: str, base_method: str) -> None:
+            if (impl_id, base_method) not in linked:
+                linked.add((impl_id, base_method))
+                self.edges.append(Edge("overrides", impl_id, base_method, "heuristic"))
+                self.implementers[base_method].append(impl_id)
         for tid, bases in list(self.bases.items()):
             if not bases:
                 continue
+            chain = [base for base in self._chain(tid, enclosing=False)[1:]
+                     if self.nodes[base].kind == "type" and base != self.nodes[tid].parent_id]
+            python = self.nodes[tid].language == "python"
             for name, impls in self.members.get(tid, {}).items():
                 if name in (".ctor", ".dtor"):
                     continue
                 for impl in impls:
                     if impl.kind != "callable":
                         continue
-                    for base in self._chain(tid)[1:]:
-                        if self.nodes[base].kind != "type" or base == self.nodes[tid].parent_id:
-                            continue
+                    for base in chain:
                         # Python and TypeScript have no overloads at run time: a method replaces the base's of that name,
                         # whatever it takes
                         cands = [c for c in self.members.get(base, {}).get(name, [])
                                  if impl.language in ("python", "typescript") or c.attrs.get("argc_max") == impl.attrs.get("argc_max")]
                         if cands:
-                            self.edges.append(Edge("overrides", impl.id, cands[0].id, "heuristic"))
-                            self.implementers[cands[0].id].append(impl.id)
-                            break
+                            link(impl.id, cands[0].id)
+                            # With several bases (a mixin and a base class), a Python method replaces the one
+                            # each of them declares: a call on the base class's `self` runs it too.
+                            if not python:
+                                break
+            if not python:
+                continue
+            # A name the class inherits from a mixin shadows the same name on a later base: for a call from that
+            # base's own code, the mixin's method is the one that runs.
+            declared: dict[str, list[Node]] = defaultdict(list)
+            for base in chain:
+                for name, cands in self.members.get(base, {}).items():
+                    if name not in (".ctor", ".dtor") and name not in self.members.get(tid, {}):
+                        declared[name].extend(c for c in cands if c.kind == "callable")
+            for name, methods in declared.items():
+                for later in methods[1:]:
+                    if later.parent_id != methods[0].parent_id:
+                        link(methods[0].id, later.id)
 
     # -- channels ------------------------------------------------------------
     def _event_field(self, type_id: Optional[str], name: str) -> Optional[str]:
@@ -3227,7 +3253,9 @@ class Indexer:
             elif cands and not chosen:
                 http["ambiguous"] += 1
             for r in chosen:
-                key = (req.src_id, r.src_id)
+                # one link per route called: a function that calls several routes of one handler (a minimal API's
+                # registrar, a router) is linked for each of them
+                key = (req.src_id, r.src_id, r.address, req.method or r.method)
                 if key not in seen and req.src_id != r.src_id:
                     seen.add(key)
                     http["links"] += 1
