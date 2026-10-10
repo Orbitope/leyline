@@ -254,6 +254,17 @@ def test_a_jest_command_runs_each_test_file_by_its_path(tmp_path):
     assert not any(re.search(p, str(root / p), re.I) for p in paths)
 
 
+def test_tests_with_no_runner_are_counted_past_the_forty_kept(tmp_path):
+    con = store.connect(tmp_path / "s.db")
+    tests = [{"name": f"Test_{i:03}", "repo": "w", "path": "Shop.Tests/CartTests.cs"} for i in range(119)]
+    [cmd] = affected.commands(con, tests)
+    assert cmd["command"] is None and cmd["tests"] == 119
+    page = affected.text({"change_id": "c", "basis": "the map", "note": "",
+                          "tests": [{**t, "why": "its path on the map passes through the change"} for t in tests],
+                          "commands": [cmd]})
+    assert "No runner recognized for: Test_000, Test_001, Test_002, Test_003, Test_004, Test_005 and 113 more." in page, page
+
+
 def test_istanbul_reports_tie_what_ran_to_a_test_file(tmp_path, monkeypatch):
     root = tmp_path / "js"
     ops = ("export function add(a: number, b: number): number {\n  return a + b;\n}\n\n"
