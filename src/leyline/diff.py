@@ -212,9 +212,27 @@ def moved_on(con, name: str) -> bool:
         before.close()
 
 
+class DamagedBaseline(sqlite3.DatabaseError):
+    """A baseline (a snapshot) that SQLite cannot read: the store beside it is not the one damaged."""
+
+
 def _open(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
     con.row_factory = sqlite3.Row
+    try:   # told apart from damage to the store: not a database, or cut off short of the pages its header counts
+        con.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        pages, size = con.execute("PRAGMA page_count").fetchone()[0], con.execute("PRAGMA page_size").fetchone()[0]
+        short = Path(path).stat().st_size < pages * size and not Path(str(path) + "-wal").exists()   # pages in a WAL count too
+        ok = "cut off" if short else "ok"
+    except sqlite3.OperationalError:
+        con.close()
+        raise
+    except sqlite3.DatabaseError as e:
+        ok = str(e)
+    if ok != "ok":
+        con.close()
+        raise DamagedBaseline(f"the baseline kept at {path} is damaged ({ok}). Delete that file, then take a new baseline:"
+                              " plan the change again on the code as it was before it.")
     return con
 
 

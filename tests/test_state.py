@@ -172,3 +172,17 @@ def test_check_says_when_the_baseline_was_taken_by_another_version(repo):
     snap.close()
     v = loop.check(db, ch)
     assert v["baseline_other_version"] and "another version of Leyline" in (ch / "leyline.md").read_text()
+
+
+def test_a_damaged_baseline_is_named_not_the_store(repo, capsys):
+    """A baseline cut off (a disk error, a copy that stopped) made `check` say the store was damaged and should be
+    deleted, which would throw away the findings, test runs and views kept in a store that was fine."""
+    from leyline import cli
+    work, ch, db = repo
+    loop.plan(db, ch)
+    snap = work / ".leyline" / "snapshots" / "spec-report-queued.db"
+    data = snap.read_bytes()
+    snap.write_bytes(data[:len(data) // 3])
+    assert cli.main(["check", "report-queued"]) == 2
+    err = capsys.readouterr().err
+    assert "spec-report-queued.db" in err and "the store is damaged" not in err, err

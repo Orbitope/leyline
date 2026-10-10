@@ -465,7 +465,10 @@ def main(argv=None) -> int:
 
 def _store_problem(e: Exception) -> str:
     """What a person can do about an error from the store, in place of the traceback."""
+    from .diff import DamagedBaseline
     msg = str(e)
+    if isinstance(e, DamagedBaseline):
+        return msg
     if "locked" in msg or "busy" in msg:
         return ("the store is in use: another leyline run (a map, plan or check) is writing it. Try again when that"
                 " run finishes.")
