@@ -201,6 +201,16 @@ def test_a_path_to_a_target_and_through_a_node(notes):
     assert gone["found"] is False and "No path on the map" in gone["note"]
 
 
+def test_the_command_says_when_there_is_no_path(notes):
+    """The CLI printed nothing at all (and exited 0) when no path joins the two: the note the JSON carries is printed."""
+    _, db, _ = notes
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert cli.main(["--db", str(db), "explain-path", "listNotes", "--to", "putNote"]) == 0
+    assert "No path on the map from one to the other" in out.getvalue(), out.getvalue()
+    assert "Next: Try explain_path from the second one alone" in out.getvalue()
+
+
 def test_a_stored_flow_is_followed_and_helpers_are_counted(notes, monkeypatch):
     _, _, con = notes
     r = explain.explain_path(con, "flow:" + node(con, "test_export_prints_the_arguments"))

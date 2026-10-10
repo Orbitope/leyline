@@ -970,6 +970,8 @@ def _with_store(args, con) -> int:
             r = explain.explain_path(con, args.start, args.to, args.through, args.steps)
             text = (r.get("text", "") + ("\n\n```mermaid\n" + r["mermaid"] + "\n```" if r.get("mermaid") else "")
                     if "error" not in r else r["error"])
+            if not text and r.get("found") is False:   # no path between the two: say so, as the JSON does
+                text = r.get("note", "") + (f"\nNext: {r['next']}" if r.get("next") else "")
             if "candidates" in r and r["candidates"]:
                 text += "\nDid you mean: " + ", ".join(c["id"] for c in r["candidates"][:5])
         else:
