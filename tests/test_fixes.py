@@ -424,6 +424,20 @@ def test_the_tour_reads_code_with_its_tests_beside_it_as_code(tmp_path):
     assert "2 of the 4 functions outside test code" in tested, tested
 
 
+def test_the_tour_tells_two_modules_of_the_same_name_apart(tmp_path):
+    from leyline import tours
+    con = _map(tmp_path, {
+        "src/lib/units.ts": "export function toBase(x: number): number {\n  return x * 1000;\n}\n",
+        "src/app/main.ts": 'import { toBase } from "../lib/units";\n\nexport function run() {\n  return toBase(1);\n}\n',
+        "scripts/lib/args.ts": "export function parse(a: string[]): string {\n  return a[0];\n}\n",
+        "scripts/tool/migrate.ts": 'import { parse } from "../lib/args";\n\nexport function go() {\n  return parse([]);\n}\n',
+    })
+    repo = con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchone()[0]
+    text = " ".join(s["title"] + " " + s["narrative"] for s in tours.get(con, f"tour:orientation:{repo}")["stops"])
+    assert "src/lib" in text and "scripts/lib" in text, text
+    assert "Module: lib " not in text and "The foundation: lib " not in text, text
+
+
 def test_state_counts_writers_in_code_with_its_tests_beside_it(tmp_path):
     from leyline import query
     con = _map(tmp_path, {

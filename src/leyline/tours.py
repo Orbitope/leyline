@@ -11,7 +11,7 @@ import datetime
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -65,7 +65,11 @@ def generate(con, repo_id: str) -> dict:
         return {"error": f"no repo {repo_id!r}"}
     # In id order, not the order the rows were written in: a module an incremental run adds is written last, and a
     # tie between modules must be settled as a full run would settle it.
-    mods = {r["id"]: r for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY id", repo_id)}
+    mods = {r["id"]: dict(r) for r in q("SELECT id, name, path FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY id", repo_id)}
+    named = Counter(m["name"] for m in mods.values())
+    for m in mods.values():   # two modules called lib (src/lib, scripts/lib) are told apart by their paths
+        if named[m["name"]] > 1 and m["path"]:
+            m["name"] = m["path"]
     if not mods:
         with con:   # nothing to tour: the tour of an earlier map, which names modules that are gone, goes too
             con.execute("DELETE FROM tour_stops WHERE tour_id = ?", (f"tour:orientation:{repo_id}",))
