@@ -226,7 +226,11 @@ the other: `import werkzeug` in Flask reaches Werkzeug's source (a package under
 name), a Flask class extends Werkzeug's, and a Werkzeug method that calls `self.open()` dispatches
 into Flask's override. Ids keep their own repo's prefix, so a store indexed one repository at a time
 reads the same. The store remembers its members: indexing any one of them later indexes all of them
-again, which keeps the links between them. A member whose directory has gone is left as stored.
+again, which keeps the links between them. A member whose directory has gone is left as stored, and `map` says so.
+Name its new place and it is the same member, under its old id, not a second copy, when Leyline can tell it is the
+same repository: both are git repositories with the same first commit, and the same `origin` where both have one.
+Anything less sure (not under git, or a store mapped before Leyline recorded first commits) is mapped as a new
+member; drop the old one with `leyline map --forget <id>`.
 
 `overview` lists the links between repositories; the `cross_repo` tool adds the functions most called
 across and the flows that cross and come back. An edge between repositories carries `to_repo`;

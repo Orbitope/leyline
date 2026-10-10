@@ -252,6 +252,41 @@ def test_an_lcov_file_is_read_with_windows_paths_and_per_test_names(tmp_path):
         con.close()
 
 
+def _members(db) -> tuple[dict, dict]:
+    from leyline import store
+    con = store.connect(db)
+    try:
+        counts = dict(con.execute("SELECT repo_id, COUNT(*) FROM nodes WHERE layer = 'fact' GROUP BY repo_id").fetchall())
+        return {r: Path(p).resolve() for r, p in store.roots(con).items()}, counts
+    finally:
+        con.close()
+
+
+def test_a_moved_workspace_member_is_moved_not_added_and_another_repository_is_not_taken_for_it(tmp_path, monkeypatch,
+                                                                                                capsys):
+    ws = tmp_path / "ws"
+    _repo(ws / "alpha")
+    _repo(ws / "beta", CORE.replace("helper", "bhelper"))
+    monkeypatch.chdir(ws)
+    assert run("map", "alpha", "beta")[0] == 0
+    db = ws / ".leyline/leyline.db"
+    _, before = _members(db)
+    (ws / "alpha").rename(ws / "alpha-renamed")
+    capsys.readouterr()
+    code, out = run("map", "alpha-renamed", "beta")
+    assert code == 0, out
+    assert "alpha-renamed is workspace member alpha" in capsys.readouterr().err
+    roots, counts = _members(db)
+    assert roots == {"alpha": (ws / "alpha-renamed").resolve(), "beta": (ws / "beta").resolve()}, roots
+    assert counts == before, counts            # the same code once, not twice
+    # a different repository of the same shape (its own first commit) is a new member, not the moved one
+    (ws / "alpha-renamed").rename(ws / "gone-again")
+    _repo(ws / "stranger", CORE + "\n# another project\n")
+    assert run("map", "stranger", "beta")[0] == 0
+    roots, _ = _members(db)
+    assert sorted(roots) == ["alpha", "beta", "stranger"], roots
+
+
 def test_a_file_with_no_partners_reads_as_a_sentence():
     from leyline import coupling
     out = coupling.text({"path": "a.py", "changes": 2, "about": "from the last 2 commits", "partners": [], "total": 0,

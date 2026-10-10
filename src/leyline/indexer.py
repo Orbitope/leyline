@@ -3527,6 +3527,41 @@ def _normalize(parts: tuple) -> list[str]:
     return out
 
 
+def first_commit(root: Path) -> Optional[str]:
+    """The repository's first commit (the earliest of its root commits), which a moved or renamed clone keeps."""
+    out = _git(root, "rev-list", "--max-parents=0", "HEAD", timeout=60)
+    return sorted(out.split())[0] if out else None
+
+
+def _moved_members(con, given: list[tuple[Path, str]], stored: list[str]) -> list[tuple[Path, str]]:
+    """A directory named to map that is a stored member moved or renamed keeps that member's id, so its code is
+    not added a second time. It is that member when the member's directory is gone and both are git repositories
+    with the same first commit and, where both have an origin, the same origin. Anything less sure (no git, a
+    store that never recorded the first commit) is a new member; `leyline map --forget <id>` drops the old one."""
+    held = store.roots(con)
+    names = {rid for _, rid in given}
+    gone = [rid for rid in stored if rid not in names and not (held.get(rid) and Path(held[rid]).is_dir())]
+    if not gone:
+        return given
+    out = []
+    for root, rid in given:
+        if rid not in stored and root not in {Path(p).resolve() for p in held.values()}:
+            first = first_commit(root)
+            url = _git(root, "remote", "get-url", "origin")
+            for old in list(gone):
+                was = con.execute("SELECT value FROM meta WHERE key = ?", (f"first_commit:{old}",)).fetchone()
+                attrs = con.execute("SELECT attrs FROM nodes WHERE id = ? AND kind = 'repo'", (old,)).fetchone()
+                old_url = (json.loads(attrs[0] or "{}") if attrs else {}).get("url")
+                if first and was and was[0] == first and (not url or not old_url or url == old_url):
+                    print(f"leyline: {root.name} is workspace member {old}, moved from {held.get(old)}; mapped as {old}",
+                          file=sys.stderr)
+                    rid = old
+                    gone.remove(old)
+                    break
+        out.append((root, rid))
+    return out
+
+
 def workspace(con, roots: list[str | Path], repo_id: Optional[str] = None) -> list[tuple[Path, str]]:
     """The (root, repo id) pairs to index together. Repositories named together make the store a workspace,
     and it remembers them: indexing any one of them later indexes all of them again, so the links between
@@ -3536,6 +3571,7 @@ def workspace(con, roots: list[str | Path], repo_id: Optional[str] = None) -> li
     stored = json.loads(row[0]) if row else []
     if len(given) == 1 and not stored:
         return given
+    given = _moved_members(con, given, stored)
     out = list(given)
     for rid in stored:
         here = store.roots(con).get(rid)
@@ -3586,6 +3622,11 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         with con:   # so the overview and the map page can say what is not in the map
             for r, v in left.items():
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"left_out:{r}", json.dumps(v)))
+            for r, r_root in ix.repos.items():   # who each member is, to know it again if its folder moves
+                if con.execute("SELECT 1 FROM meta WHERE key = ?", (f"first_commit:{r}",)).fetchone() is None:
+                    first = first_commit(r_root)
+                    if first:
+                        con.execute("INSERT INTO meta VALUES (?, ?)", (f"first_commit:{r}", first))
         # Everything from here reads the store. Letting the indexer go first keeps its memory (most of a GB on a
         # large repo) from adding to what clustering and the pattern matchers hold.
         repo, timing, repos = ix.repo, ix.timing, dict(ix.repos)
