@@ -239,3 +239,168 @@ def test_check_after_a_plan_that_did_not_finish_says_to_plan_again(repo, monkeyp
     loop.plan(db, ch)   # as the error says: the first baseline stays, so the check compares with the code as it was
     v = loop.check(db, ch, diff.parse_test_output(AFTER))
     assert v["done_as_agreed"], v["why_not"]
+
+
+def test_a_baseline_deleted_by_hand_is_not_taken_again_quietly(repo):
+    """A snapshot deleted by hand after the change was implemented: plan took the changed code as the new baseline
+    and said "ready", so check then found nothing done. A baseline that was not forgotten on purpose is lost, and
+    taking a new one needs --new-baseline."""
+    from test_signalfix import implement
+    from leyline import cli
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    (work / ".leyline" / "snapshots" / "spec-report-queued.db").unlink()
+    b = loop.plan(db, ch)
+    assert "--new-baseline" in b.get("error", ""), b.get("error")
+    assert not (work / ".leyline" / "snapshots" / "spec-report-queued.db").exists()
+    assert loop.plan(db, ch, new_baseline=True)["baseline"] == "new"
+
+
+def test_a_forgotten_baseline_is_taken_again_by_plan(repo):
+    """`leyline spec forget` then `plan` starts over, as the README says."""
+    from leyline import cli
+    work, ch, db = repo
+    loop.plan(db, ch)
+    assert cli.main(["--db", str(db), "spec", "forget", "report-queued"]) == 0
+    assert loop.plan(db, ch)["baseline"] == "new"
+
+
+def test_a_scenario_whose_results_are_older_than_the_code_is_not_said_to_have_no_test(repo):
+    """Checked done, then edited, then checked with no new test output: the scenario's test exists (its results carry
+    its name), but the page said "no test", as if one had to be written."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    core = work / "srv" / "core.py"
+    core.write_text(core.read_text().replace("return len(items)\n", "return len(list(items))\n", 1))
+    v = loop.check(db, ch)
+    s = v["scenarios"][0]
+    assert v["tests_old"] and s["state"] == "results older than the code", s
+    assert "older than the code" in s["verdict_why"]
+
+
+def _finished(db):
+    from leyline import related, store
+    con = store.connect(db)
+    try:
+        return {x["change_id"] for x in related.index(con, spec._Names(con))}
+    finally:
+        con.close()
+
+
+def _attrs(db):
+    import json
+    from leyline import store
+    con = store.connect(db)
+    try:
+        row = con.execute("SELECT status, attrs FROM change_proposals WHERE id = 'spec-report-queued'").fetchone()
+        return row[0], json.loads(row[1])
+    finally:
+        con.close()
+
+
+def test_a_check_that_fails_after_one_that_passed_is_not_finished(repo):
+    """A change checked done and then broken by a later edit kept `verified`, so it was listed as a finished
+    earlier change while its last check failed."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    assert "spec-report-queued" in _finished(db)
+    core = work / "srv" / "core.py"
+    core.write_text(core.read_text().replace("    def queued(self, items):", "    def queued_items(self, items):"))
+    assert not loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    status, attrs = _attrs(db)
+    assert status != "verified" and "verified" not in attrs and [c["done"] for c in attrs["checks"]] == [True, False]
+    assert "spec-report-queued" not in _finished(db)
+
+
+def test_planning_again_after_a_passing_check_reopens_the_change(repo):
+    """Planning a checked change again (the spec changed) reset its status and dropped when it was checked: the
+    history went, and a reopened change still read as finished from its page."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    loop.plan(db, ch)
+    status, attrs = _attrs(db)
+    assert status == "reopened" and attrs["checks"][-1]["done"] and attrs.get("reopened")
+    assert "spec-report-queued" not in _finished(db)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    assert _attrs(db)[0] == "verified" and "spec-report-queued" in _finished(db)
+
+
+class _Unclosed:
+    """The connections the code under test left for the garbage collector to close."""
+
+    def __enter__(self):
+        import gc
+        import warnings
+        gc.collect()
+        self._w = warnings.catch_warnings(record=True)
+        self.seen = self._w.__enter__()
+        warnings.simplefilter("always", ResourceWarning)
+        return self
+
+    def __exit__(self, *exc):
+        import gc
+        gc.collect()
+        self._w.__exit__(*exc)
+        self.leaks = [str(w.message) for w in self.seen if issubclass(w.category, ResourceWarning)]
+        return False
+
+
+def test_a_store_that_cannot_be_opened_does_not_leave_its_connection_open(tmp_path):
+    """store.connect on a file that is not a store raised with the connection it had made still open."""
+    from leyline import store
+    bad = tmp_path / "bad.db"
+    bad.write_text("this is not a database")
+    with _Unclosed() as u:
+        with pytest.raises(Exception):
+            store.connect(bad)
+    assert not u.leaks, u.leaks
+
+
+def test_a_run_that_waited_too_long_closes_the_cache(tmp_path, monkeypatch):
+    """A run that gave up waiting for another one raised from Run.__init__, leaving its cache connection open: the
+    caller never got the run to abandon."""
+    import sqlite3
+    from leyline import incremental
+    from leyline.indexer import index
+    from test_incremental import copy
+    root = copy(tmp_path, "fixture2")
+    db = tmp_path / "s.db"
+    index(root, db, "w")
+    other = sqlite3.connect(incremental.cache_path(db), isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")   # as a run in progress holds it
+    monkeypatch.setenv("LEYLINE_WAIT", "0")
+    try:
+        with _Unclosed() as u:
+            with pytest.raises(RuntimeError):
+                index(root, db, "w")
+        assert not u.leaks, u.leaks
+    finally:
+        other.close()
+
+
+def test_drift_closes_the_baselines_it_opens(repo):
+    """Drift opens a change's baseline to tell a renamed name from a new one, and left each open."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d, drift
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    core = work / "srv" / "core.py"
+    core.write_text(core.read_text().replace("def queued(self, items):", "def queued_now(self, items):"))
+    with _Unclosed() as u:
+        drift.run(db, work)
+    assert not u.leaks, u.leaks

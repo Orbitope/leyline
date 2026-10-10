@@ -290,6 +290,11 @@ def plan(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] =
             return bad
         cid = "spec-" + parsed["id"]
         prune_baselines(con)
+        if not new_baseline and diff.lost(con, cid):
+            return {"error": f"the baseline of {parsed['id']} (.leyline/snapshots/{cid}.db) is gone, and was not forgotten"
+                             " with `leyline spec forget`: planning now would take the code as it is as the start, and"
+                             " check could no longer see what the change did. If the code is still as it was before the"
+                             f" change, or you mean to start over, run `leyline plan {parsed['id']} --new-baseline`."}
         # Results passed in are the start only while the code is as it was when first planned (or a new baseline is
         # taken now). They are recorded before the brief, which reads them to find tests the map does not know.
         kept = not new_baseline and diff.snapshot_path(con, cid).exists() and diff.moved_on(con, cid)
@@ -411,7 +416,8 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         # Results recorded earlier describe code that has since changed: they prove nothing about it.
         tested = con.execute("SELECT value FROM meta WHERE key = ?", ("tested:" + after,)).fetchone()
         old = results is None and has(after) and (tested[0] != code if tested else bool(reindexed))
-        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None)
+        v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None,
+                        old_run=after if old else None)
         if "error" in v:
             return v
         v["reindexed"] = bool(reindexed)

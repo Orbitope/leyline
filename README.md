@@ -338,14 +338,18 @@ blocking = ["contradicted", "inconclusive", "partial", "needs a person"]   # eve
 A tick in `tasks.md` never clears an item: the agent ticks tasks as it goes.
 
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
-the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
+the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over. The code has moved
+on when any source file on the map has changed: a constant at the top of a module counts, and so, to be safe, does a
+comment.
 That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once, holding only what the
 comparison reads (nodes and their hashes, links, flows, a hash per source line) and what a diagram of the code
 as it was needs (the line of each call, the order of each flow, each channel link's channel). It stays after the
 change is checked done as agreed, so `check` can run again after a later edit, and is deleted with
 `leyline spec forget <id>` or once the change folder is archived or removed (a folder that a local branch not checked
-out still holds is not removed: it is back when that branch is). `leyline map` writes
-`.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
+out still holds is not removed: it is back when that branch is). A baseline deleted any other way (by hand, or with
+the snapshots folder) is lost, not forgotten: `plan` will not quietly take the code as it is now as the start, which
+after the change is implemented would leave `check` nothing to find, and asks for `--new-baseline` to take a new one.
+`leyline map` writes `.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.
 
@@ -510,6 +514,8 @@ Both `leyline pr` and `leyline plan` list **Earlier changes to this code**: up t
 (archived, or checked) and earlier pull request reviews that touched the same functions or types, newest first, with
 the names they share; the facts carry them as `related_changes`. A repository with no such history gets the commits
 before the change that changed the same files instead (of the last 500 that touched them), most overlap first.
+"Checked" means its latest check found it done as agreed: a check that fails after one that passed makes it unfinished
+again, and so does planning it again (it is then reopened; the store keeps each check's time and verdict).
 
 ### Learning from rejected findings
 

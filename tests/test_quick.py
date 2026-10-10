@@ -240,3 +240,22 @@ def test_done_after_a_start_that_did_not_finish_says_to_start_again(repo, monkey
     code, page = run("quick", "--done", "quick-make-the-retry-count-3")
     assert code != 0 and "there are: quick-make-the-retry-count-3" not in page, page
     assert "did not finish" in page, page
+
+
+def test_starting_again_after_a_constant_changed_keeps_the_first_tests_and_source(repo):
+    """An edit to a module-level constant only (the flagship "make the retry count 3") did not count as the code moving
+    on: starting the change again recorded the tests from the edited code as the "before" run, and kept the edited
+    file's text as the source from before."""
+    db = repo / ".leyline/leyline.db"
+    first = quick.start(db, "make the retry count 3", ["RETRIES"], diff.parse_test_output(PASSING))
+    assert first["tests_recorded"]
+    edit(repo, "app/net.py", "RETRIES = 5", "RETRIES = 3")
+    again = quick.start(db, "make the retry count 3", ["RETRIES"], diff.parse_test_output("FAIL test_get\nPASS test_count\n"))
+    assert again["baseline"] == "kept" and not again["tests_recorded"]
+    con = store.connect(db)
+    try:
+        assert [r[0] for r in con.execute("SELECT status FROM test_results WHERE run = ? AND name = 'test_get'",
+                                          ("before:" + first["change_id"],))] == ["pass"]
+        assert "RETRIES = 5" in quick._old_source(con, first["change_id"])("app/net.py")
+    finally:
+        con.close()

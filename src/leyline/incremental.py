@@ -216,7 +216,11 @@ class Run:
         self.ix, self.con = ix, con
         from .indexer import max_file_bytes
         self.cache = _Cache(cache_path(db_path))
-        self._take(con, db_path)
+        try:
+            self._take(con, db_path)
+        except BaseException:   # waited too long for another run, or stopped: the caller never gets this run to abandon
+            self.cache.con.close()
+            raise
         self.key = json.dumps([code_version(), sorted((r, str(p)) for r, p in ix.repos.items()),
                                ix.exact_mode, sorted(ix.scip_paths), max_file_bytes()])
         gen = con.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()

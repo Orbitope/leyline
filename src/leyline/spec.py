@@ -538,6 +538,7 @@ def brief(con, change_dir: str | Path, write: bool = True, new_baseline: bool = 
               "shared_state": state, "left_alone": others, "patterns": patterns, "usually_changes_with": history,
               "rules_failing_now": [r for r in rule_state["rules"] if not r["passes"]],
               "findings": findings(con, cid)["findings"], "gaps": gaps,
+              "learnings_unreadable": _learnings_unreadable(con),
               "baseline": report.get("snapshot"), "reviews": reviews(con, cid),
               "baseline_tests": con.execute("SELECT 1 FROM test_results WHERE run = ? LIMIT 1",
                                             (run_label(cid, "before"),)).fetchone() is not None,
@@ -1096,6 +1097,17 @@ def _past_decision(l: dict) -> str:
     return f"Matches a past decision: {l['reason']}"
 
 
+def _learnings_unreadable(con) -> list[str]:
+    from . import learnings
+    return learnings.unreadable(con)
+
+
+def unreadable_lines(problems: Optional[list[str]]) -> list[str]:
+    """The page's word that past decisions could not be read, so their absence is not read as none applying."""
+    return ["", "Past decisions (learnings) were left out, so none are matched or listed here: "
+            + "; ".join(problems) + "."] if problems else []
+
+
 def review_lines(found: list[dict], kinds: list[str], full: bool = True) -> list[str]:
     """Each kind of review: whether it ran, and what it filed. Open findings in full; settled ones as the claim,
     then the decision."""
@@ -1247,6 +1259,7 @@ def brief_text(b: dict) -> str:
     else:
         L.append("No scenarios yet: nothing says what done means.")
     L += ["", "## Review findings", ""] + review_lines(b["findings"], b.get("reviews") or [])
+    L += unreadable_lines(b.get("learnings_unreadable"))
     st = brief_status(b)
     L += ["", "## Before implementation", ""]
     if st["blocking"]:
@@ -1336,8 +1349,10 @@ def findings(con, change_id: str) -> dict:
 
 
 # -- verification --------------------------------------------------------------------------------
-def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True) -> dict:
-    """After implementation and a re-index: was the change made as the spec says?"""
+def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True,
+           old_run: Optional[str] = None) -> dict:
+    """After implementation and a re-index: was the change made as the spec says? `old_run` names results left out
+    because the code changed after they ran: a scenario they carry has a test, whose results are out of date."""
     parsed = parse(change_dir)
     if "error" in parsed:
         return parsed
@@ -1371,6 +1386,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     test_names = diff.TestNames(con)
     results = {r["name"]: r for r in con.execute("SELECT * FROM test_results WHERE run = ?", (after_run,))} if after_run else {}
     index = _results_index(results.values())
+    older = _results_index(con.execute("SELECT * FROM test_results WHERE run = ?", (old_run,)).fetchall()) if old_run else None
     from . import coverage as measured
     own_checks = _self_tests(con, [r for r in (before_run, after_run) if r])
 
@@ -1383,6 +1399,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         scenario_ran[s["key"]] = bool(rows)
         failed = [r for r in rows if r["status"] == "fail"]
         state = ("fails" if failed else "passes" if any(r["status"] == "pass" for r in rows) else "skipped" if rows
+                 else "results older than the code" if older and _scenario_results(older, s["name"])
                  else "test exists, not run" if tid or gen else "no test")
         ran_change = None
         if tid and measured.has(con):
@@ -1542,14 +1559,21 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         head = re.sub(r"^\*\*State:.*$", lambda _: check_state(out), head, count=1, flags=re.M)
         _write(path, head + "\n\n" + verify_text(out))
         out["written"] = str(path)
+    # The latest check decides: the change is finished (verified) only while its last check found it done. Each check
+    # is kept in `checks`. Done, the baseline stays (it is small), so a later edit can be checked against the same
+    # start; it goes with `leyline spec forget`, or once the change folder is archived or removed.
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    attrs = json.loads(row[0] or "{}") if row else {}
+    at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    attrs["checks"] = (attrs.get("checks") or [])[-19:] + [{"at": at, "done": bool(out["done_as_agreed"])}]
     if out["done_as_agreed"]:
-        # Done. The baseline stays (it is small), so a later edit can be checked against the same start; it goes
-        # with `leyline spec forget`, or once the change folder is archived or removed.
-        row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
-        attrs = json.loads(row[0] or "{}") if row else {}
-        attrs["verified"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        with con:
-            con.execute("UPDATE change_proposals SET status = 'verified', attrs = ? WHERE id = ?", (json.dumps(attrs), cid))
+        attrs["verified"] = at
+    else:
+        attrs.pop("verified", None)
+    with con:
+        con.execute("UPDATE change_proposals SET status = ?, attrs = ? WHERE id = ?",
+                    ("verified" if out["done_as_agreed"] else "implemented", json.dumps(attrs), cid))
+    if out["done_as_agreed"]:
         from . import drift   # what each code name meant now that it is agreed: `leyline drift` compares later code with it
         out["anchors"] = drift.record(con, change_dir, write_file=write)
     return out
@@ -1735,6 +1759,7 @@ def review_facts(con, change_dir: str | Path, reviewer: Optional[str] = None) ->
     return {
         "change_id": b["change_id"], "title": b["title"],
         "learnings_that_apply": learnings.applying(con, b["change_id"], tasked),   # past decisions: read these first
+        "learnings_unreadable": learnings.unreadable(con),   # so an empty list above is not taken as "none apply"
         "related_changes": b.get("related_changes") or {},   # earlier changes to the same code
         "logic": {
             "must_edit_with_no_task": b["must_edit_uncovered"],

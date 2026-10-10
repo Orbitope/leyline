@@ -228,6 +228,9 @@ def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str
     if s["state"] != "passes":
         if s["state"] == "skipped":
             return INCONCLUSIVE, "its test was skipped, so no pass or fail was recorded"
+        if s["state"] == "results older than the code":
+            return INCONCLUSIVE, ("its test has results, but they are older than the code: run the tests again and"
+                                  " pass their output")
         if s["state"] == "no test":
             return INCONCLUSIVE, "it has no test, and no result carries its name"
         return INCONCLUSIVE, "no result for its test was recorded"

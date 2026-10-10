@@ -698,7 +698,8 @@ def review(db: str | Path, path: str | Path = ".", base: Optional[str] = None, a
                "dirty": dirty, "root": str(root), **facts,
                "house_rules": _house_rules(root, facts["changed"]["files"]),
                "other_files": _other_files(root, base_sha, facts["changed"]["files"] + facts["changed"]["files_removed"]),
-               "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid)}
+               "findings": spec.findings(con, cid)["findings"], "reviews": spec.reviews(con, cid),
+               "learnings_unreadable": spec._learnings_unreadable(con)}
         from . import coupling   # files that usually changed with what the branch changed, in the history before it
         ch = facts["changed"]
         out["usually_changes_with"] = coupling.for_pr(
@@ -841,6 +842,7 @@ def review_facts(con, cid: str, reviewer: Optional[str] = None) -> dict:
         "changed": f["changed"], "size": f["size"],
         "house_rules_to_read_first": _house_rules(Path(a.get("root") or "."), f["changed"]["files"]),
         "learnings_that_apply": learnings.applying(con, cid),   # past decisions on this code: read these first
+        "learnings_unreadable": learnings.unreadable(con),
         "logic": {
             "signature_changed_callers_not_edited": r["signature_changed_callers_not_edited"],
             "removed_but_still_called": r["removed_but_still_called"],
@@ -1183,4 +1185,5 @@ def text(r: dict) -> str:
     L += spec.review_lines(found, r.get("reviews") or [], full=True) if found or r.get("reviews") else [
         f"Not reviewed yet. `leyline spec facts {r['change_id']} --reviewer logic` (then `performance`) gives a reviewer"
         " its facts; the leyline-adversarial-review skill runs it."]
+    L += spec.unreadable_lines(r.get("learnings_unreadable"))
     return "\n".join(L) + "\n"

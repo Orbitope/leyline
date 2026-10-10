@@ -304,3 +304,26 @@ def test_a_learning_kept_before_fingerprints_is_unknown_not_stale(decided):
     # the file is read and written as before; confirming gives it a fingerprint
     assert run("learnings", "confirm", lid)[0] == 0 and "fingerprint" in _learning(root)
     assert learnings.listing(con)["learnings"][0]["code"] == "unchanged"
+
+
+def test_reviewers_and_the_pages_are_told_when_the_learnings_cannot_be_read(decided):
+    """With the learnings file unreadable, `learnings_that_apply` was an empty list in every reviewer's facts and the
+    pages said nothing: reviewers took it that no past decision applied."""
+    from leyline import pr
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    path.write_text("<<<<<<< HEAD\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    ch = root / "openspec/changes/count-bytes"
+    ch.mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Count bytes\n\n## Why\nBytes, not characters.\n\n## What Changes\nCount bytes.\n")
+    (ch / "tasks.md").write_text("## 1. Code\n- [ ] 1.1 Change `count` to count bytes\n")
+    con = store.connect(root / ".leyline/leyline.db")
+    try:
+        b = spec.brief(con, ch)
+        assert "could not be read" in (ch / "leyline.md").read_text() and b["learnings_unreadable"]
+        for facts in (spec.review_facts(con, ch, "logic"), pr.review_facts(con, "pr-feature", "logic")):
+            assert facts["learnings_that_apply"] == [] and "could not be read" in facts["learnings_unreadable"][0]
+    finally:
+        con.close()
+    code, page = run("pr", "main")
+    assert "could not be read" in (root / ".leyline/reviews/pr-feature.md").read_text()

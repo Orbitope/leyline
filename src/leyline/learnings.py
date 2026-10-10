@@ -116,7 +116,7 @@ def _all(con) -> dict:
     return out
 
 
-def _unreadable(con) -> list[str]:
+def unreadable(con) -> list[str]:
     """Why each learnings file that is there cannot be read: its learnings are missing from every list until it is fixed."""
     out = []
     for root in _roots(con).values():
@@ -574,7 +574,7 @@ def listing(con) -> dict:
     where = [str(path_for(r)) for r in _roots(con).values()]
     active = [l for l in items if l.get("status", "active") == "active"]
     return {"active": len(active), "stale": sum(l["stale"] for l in active), "learnings": items,
-            "files": [str(p) for p in files] or where, "problems": _unreadable(con)}
+            "files": [str(p) for p in files] or where, "problems": unreadable(con)}
 
 
 def confirm(con, lid: str) -> dict:
@@ -595,7 +595,7 @@ def confirm(con, lid: str) -> dict:
 
 
 def _not_found(con, lid: str) -> dict:
-    problems = _unreadable(con)
+    problems = unreadable(con)
     return {"error": f"no learning {lid!r}" + (f" in the files that can be read: {'; '.join(problems)}" if problems else
                                                "; `leyline learnings` lists them")}
 
