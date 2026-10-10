@@ -1336,6 +1336,13 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     if "error" in parsed:
         return parsed
     cid = "spec-" + parsed["id"]
+    planned = con.execute("SELECT 1 FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    if planned and parsed["tasks"] and not con.execute("SELECT 1 FROM spec_items WHERE change_id = ? LIMIT 1", (cid,)).fetchone():
+        # The plan stored the change, and stopped before its tasks and scenarios: there is nothing to judge.
+        kept = diff.snapshot_path(con, cid).exists()
+        return {"error": f"the last plan of {parsed['id']} did not finish, so its tasks were not stored.",
+                "next": [f"Next: run `leyline plan {parsed['id']}` again" + (" (the baseline it took is kept)" if kept else
+                         " on the code as it was before the change") + ", then check it again."]}
     review = diff.review(con, cid, before_run, after_run)
     if "error" in review:
         if review["error"].startswith("No change"):   # never planned, or the plan stopped at an error

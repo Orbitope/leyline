@@ -216,3 +216,25 @@ def test_the_map_server_closes_the_store_after_each_page(repo, monkeypatch):
         assert cli.main(["--db", str(db), "view"]) == 0
         gc.collect()
     assert not [w for w in seen if issubclass(w.category, ResourceWarning) and "database" in str(w.message)]
+
+
+def test_check_after_a_plan_that_did_not_finish_says_to_plan_again(repo, monkeypatch):
+    """A plan stopped after it stored the change and its baseline, but before it stored the tasks and scenarios: check
+    compared the code with no tasks at all."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff
+    work, ch, db = repo
+
+    def dies(*a, **k):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(spec, "_crossings", dies)
+        with pytest.raises(KeyboardInterrupt):
+            loop.plan(db, ch)
+    implement(work)
+    v = loop.check(db, ch, diff.parse_test_output(AFTER))
+    assert "error" in v and "plan" in v["error"], {k: v.get(k) for k in ("done_as_agreed", "tasks", "error")}
+    assert "the baseline it took is kept" in v["next"][0]
+    loop.plan(db, ch)   # as the error says: the first baseline stays, so the check compares with the code as it was
+    v = loop.check(db, ch, diff.parse_test_output(AFTER))
+    assert v["done_as_agreed"], v["why_not"]
