@@ -1052,9 +1052,11 @@ names, and the declared return type of the call a value came from (`a.Make().Run
 a.Make(); x.Run()`). In C#, extension methods are matched on the type of their `this` parameter,
 and overloads of equal length are narrowed by the arguments: a lambda's parameter count, the type
 of a literal, a `new` expression or a typed local, and explicit type arguments. In Python, packages
-under a source root are imported by their own name, names re-exported through `__init__.py` are
-followed, and a test parameter filled by a pytest fixture takes the fixture's return type. Three
-outcomes are counted per run:
+under a source root are imported by their own name, with or without an `__init__.py` (a namespace
+package), names re-exported through `__init__.py` are followed, and a test parameter filled by a pytest
+fixture takes the fixture's return type. In TypeScript and JavaScript, an import through the `paths` of
+the nearest `tsconfig.json` or `jsconfig.json` (`@ui/*`) is the local file, not a package; `extends` is
+not followed. Three outcomes are counted per run:
 
 - **resolved**: linked to a callable in the workspace
 - **external**: the receiver's type is outside the workspace, or nothing in the workspace has that name
