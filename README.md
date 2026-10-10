@@ -1147,10 +1147,11 @@ lists the channels a change crosses, with their address.
 
 ### Systems
 
-A module with at least 12 types is split into systems by Louvain community detection over calls,
-type use and inheritance between its types. A module that does not split cleanly (modularity under
-0.3) is left whole. Each proposed system is named after its most connected type until something
-better is written with `annotate`, using the keys `name` and `responsibility`.
+A module is split into systems by Louvain community detection over calls, type use and inheritance
+between its units: each top-level type, and each file for the functions that sit outside any type. A
+module with fewer than 12 units holding code, or one that does not split cleanly (modularity under
+0.3), is left whole. Each proposed system is named after its most connected unit (a type, or a file)
+until something better is written with `annotate`, using the keys `name` and `responsibility`.
 
 The grouping is deterministic. The names are not: they belong to the inferred layer.
 
