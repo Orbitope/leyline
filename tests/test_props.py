@@ -262,6 +262,18 @@ def test_remove_is_done_when_gone_and_no_longer_called(tmp_path):
     assert (t["state"], t["verdict"], t["verdict_why"]) == ("done", "proven", "`make_engine` is gone, and nothing still calls it")
 
 
+def test_a_removed_name_left_only_as_a_string_key_is_not_still_called(tmp_path):
+    work, ch, db, _ = _change(tmp_path, "- [ ] 1.1 Remove `make_engine`\n", "")
+    core, tests, init = work / "py/src/pkg/core.py", work / "py/tests/test_engine.py", work / "py/src/pkg/__init__.py"
+    after = [{"name": n, "status": "pass"} for n in ("test_start", "test_chain")]
+    edit(core, 'def make_engine():\n    return Engine("made")\n', "")
+    edit(tests, 'from pkg import make_engine\n', "")
+    edit(tests, 'assert make_engine().name == "made"', 'assert {"make_engine": 1}["make_engine"] == 1')
+    edit(init, "from .core import make_engine\n", "")
+    t = _verify(work, db, ch, after)["tasks"][0]
+    assert (t["state"], t["verdict"]) == ("done", "proven"), t["verdict_why"]
+
+
 def test_rename_needs_the_old_name_gone_the_new_there_and_its_callers_moved(tmp_path):
     work, ch, db, b = _change(tmp_path, "- [ ] 1.1 Rename `Engine.child` to `Engine.copy`\n", "")
     core, conf, tests = work / "py/src/pkg/core.py", work / "py/tests/conftest.py", work / "py/tests/test_engine.py"

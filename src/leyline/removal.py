@@ -10,7 +10,7 @@ So these two tasks are judged by what is left:
 
 Callers are those the baseline (the code as it was planned) linked to `X`: calls, and for a type or a file its
 uses and imports. A caller still calls `X` when it is still on the map and its text still has `X`'s name outside a
-comment. Only tasks written that way are judged so: "Remove a parameter from `X`" removes no `X`.
+comment and outside a string that is only the name (a key such as `row["X"]`). Only tasks written that way are judged so: "Remove a parameter from `X`" removes no `X`.
 """
 
 from __future__ import annotations
@@ -130,12 +130,14 @@ def _callers(con, names, base: _Baseline, i: str, leaf: str, removed: set, cache
     word = _word(name)
     # A caller of the same name (a pytest fixture `child` that calls `engine.child()`) declares it: not a use.
     own = re.compile(r"\b(?:def|function|fn|func|class|interface|struct|enum|sub)\s+" + re.escape(name) + r"(?![\w$])")
+    # A string that is just the name (a key: `{"about": ...}`, `row["about"]`) is not a use of it.
+    quoted = re.compile(r"([\"'`])" + re.escape(name) + r"\1")
     out = []
     for src, how in base.users(i):
         if src == i or src.startswith((i + ".", i + "/", i + "(")) or src in removed or src not in names.by_id:
             continue
         text = _text(con, src, cache)
-        if text and word.search(own.sub(" ", text)):
+        if text and word.search(quoted.sub(" ", own.sub(" ", text))):
             out.append((spec._label(names, src), how, names.in_tests(src)))
     return sorted(dict.fromkeys(out), key=lambda c: c[2])
 
