@@ -1055,7 +1055,8 @@ outcomes are counted per run:
 - **unresolved**: the name exists in the workspace but the receiver's type is unknown
 
 A call on a receiver of unknown type is linked by name only when exactly one declaration of that
-name is visible and the name was never seen on an outside type. Those links are stored with
+name is visible and the name was never seen on an outside type. In Python it is linked only to a method, and
+never by a name the built-in types have (`add`, `get`, `close`, `split`). Those links are stored with
 precision `guess`, not `heuristic`, and the map draws them differently.
 
 ### Channels

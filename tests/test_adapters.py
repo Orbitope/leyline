@@ -755,6 +755,41 @@ def test_python_a_call_on_an_object_is_not_guessed_onto_a_nested_or_module_funct
     assert [r[0] for r in con.execute("SELECT precision FROM calls WHERE dst_id LIKE '%pkg.parse.tokens'")] == ["heuristic"]
 
 
+def test_python_a_built_in_method_on_an_unknown_receiver_is_not_guessed_onto_ours(tmp_path):
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/out.py": (
+            "class Out:\n"
+            "    def add(self, x):\n"
+            "        return x\n"
+            "\n"
+            "    def close(self):\n"
+            "        return 0\n"
+            "\n"
+            "    def emit(self, x):\n"
+            "        return x\n"),
+        "pkg/walk.py": (
+            "from pkg.out import Out\n"
+            "\n"
+            "class Walker:\n"
+            "    def __init__(self):\n"
+            "        self.ids = set()\n"
+            "\n"
+            "    def visit(self, x, con, sink):\n"
+            "        self.ids.add(x)\n"
+            "        con.close()\n"
+            "        sink.emit(x)\n"
+            "\n"
+            "    def typed(self, out: Out):\n"
+            "        out.add(1)\n"),
+    })
+    got = calls(con)
+    assert ("pkg.walk.Walker.visit", "pkg.out.Out.add") not in got
+    assert ("pkg.walk.Walker.visit", "pkg.out.Out.close") not in got
+    assert got[("pkg.walk.Walker.visit", "pkg.out.Out.emit")] == "guess"    # a name of its own is still guessed
+    assert got[("pkg.walk.Walker.typed", "pkg.out.Out.add")] == "heuristic"
+
+
 def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
     con = _map(tmp_path, {
         "pkg/core.py": (

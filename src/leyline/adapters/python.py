@@ -174,6 +174,12 @@ def _defines(node) -> bool:
 MUTATORS = frozenset("""append extend insert remove pop clear add update discard sort reverse setdefault popitem
 popleft appendleft extendleft put put_nowait write writelines""".split())
 
+# Methods of the built-in types (str, list, dict, set, a file). A call to one on a receiver of unknown type is far more
+# often the built-in (`self.ids.add(x)`, `con.close()`) than the one method of that name in the repository.
+COMMON_METHODS = MUTATORS | frozenset("""get items keys values copy index count split rsplit splitlines join strip lstrip rstrip
+replace startswith endswith lower upper format encode decode find rfind partition rpartition read readline readlines close
+flush seek""".split())
+
 
 class _Walker:
     def __init__(self, repo: str, rel_path: str, file_id: str, src: bytes):
