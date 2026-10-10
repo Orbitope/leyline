@@ -790,6 +790,19 @@ def test_python_a_built_in_method_on_an_unknown_receiver_is_not_guessed_onto_our
     assert got[("pkg.walk.Walker.typed", "pkg.out.Out.add")] == "heuristic"
 
 
+def test_state_tells_apart_two_writing_types_of_the_same_name(tmp_path):
+    from leyline import query
+    walker = "from pkg.model import Result\n\nclass Walker:\n    def run(self, r: Result):\n        r.calls = []\n"
+    con = _map(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/model.py": "class Result:\n    def __init__(self):\n        self.calls = None\n",
+        "pkg/py.py": walker,
+        "pkg/ts.py": walker,
+    })
+    [f] = query.shared_state(con)["fields"]
+    assert f["written_from"] == ["Walker (pkg/py.py)", "Walker (pkg/ts.py)"], f
+
+
 def test_python_annotated_metadata_and_literal_values_are_not_types(tmp_path):
     con = _map(tmp_path, {
         "pkg/core.py": (

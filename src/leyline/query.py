@@ -608,6 +608,19 @@ def _data_access(con, row) -> dict:
     return {}
 
 
+def _told_apart(con, names: dict, ids: list[str]) -> list[str]:
+    """Names of nodes, with the file after each name that two of them share: `_Walker (src/adapters/python.py)`."""
+    seen = Counter(names.get(i, i) for i in ids)
+    out = []
+    for i in ids:
+        n = names.get(i, i)
+        if seen[n] > 1:
+            row = con.execute("SELECT path FROM nodes WHERE id = ?", (i,)).fetchone()
+            n += f" ({row[0]})" if row and row[0] else ""
+        out.append(n)
+    return out
+
+
 def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: bool = True) -> dict:
     """Fields assigned from outside the type that declares them, most widely written first.
     `scope` narrows to a module, type or path prefix of the field's id. `guesses=False` leaves out links found only
@@ -652,7 +665,7 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
         if not outside_types:
             continue
         rows.append({"id": f, "name": f"{names.get(own, '?')}.{names.get(f, f)}", "module": names.get(module.get(f), ""),
-                     "writers": len(product), "written_from": [names.get(t, t) for t in outside_types],
+                     "writers": len(product), "written_from": _told_apart(con, names, outside_types),
                      "writer_modules": sorted({names.get(module.get(w), "") for w in product}),
                      "readers": len(readers.get(f, ()))})
     # Two fields can read the same (a Builder class in each of four scripts): name the file of each such one.
