@@ -357,6 +357,21 @@ def test_tool_descriptions_name_every_argument(repo):
     serve(repo, script)
 
 
+def test_the_readme_lists_every_tool_with_every_argument():
+    """The README's MCP table names each tool as `name(arg, optional?, ...)`, every argument the server takes."""
+    import re
+    from leyline import server
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    table = readme.split("## MCP tools", 1)[1].split("\n\n", 2)[1]
+    listed = {m[1]: [a.strip() for a in m[2].split(",") if a.strip()]
+              for m in re.finditer(r"`(\w+)\(([^)]*)\)`", table)}
+    for t in asyncio.run(server.mcp.list_tools()):
+        schema, = [t.input_schema]
+        required = set(schema.get("required") or [])
+        args = [a + ("" if a in required else "?") for a in schema.get("properties") or {}]
+        assert listed.get(t.name) == args, (t.name, listed.get(t.name), args)
+
+
 def test_a_map_from_the_command_line_is_seen_by_a_running_server(repo):
     """The person re-maps with the CLI while the agent's server runs: the server answers from the new map."""
     async def script(a: Agent, tools, init):
