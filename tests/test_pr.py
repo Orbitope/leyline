@@ -433,6 +433,14 @@ def test_a_caller_linked_only_by_a_guess_does_not_block(tmp_path, monkeypatch):
     assert code == 1 and "`use.py.run` calls code whose signature changed" in gate_of(out)
 
 
+def test_files_are_grouped_by_folder_with_what_its_subfolders_hold():
+    ch = "openspec/changes/staple-slack/"
+    got = pr._by_folder([ch + "proposal.md", ch + "tasks.md", ch + "leyline.md", ch + "specs/standing/spec.md",
+                         ".firebaserc", "package-lock.json"])
+    assert got == [".firebaserc", "package-lock.json", ch + " (4 files)"], got
+    assert pr._by_folder(["a/x.md", "a/b/y.md"]) == ["a/b/y.md", "a/x.md"]   # fewer than three: named one by one
+
+
 def test_a_comment_edited_outside_any_function_is_not_code_outside_any_function(branch, monkeypatch):
     other = branch / "app/other.py"
     other.write_text("# Kept for the old importer.\n" + other.read_text())
