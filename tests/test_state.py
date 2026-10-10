@@ -186,3 +186,33 @@ def test_a_damaged_baseline_is_named_not_the_store(repo, capsys):
     assert cli.main(["check", "report-queued"]) == 2
     err = capsys.readouterr().err
     assert "spec-report-queued.db" in err and "the store is damaged" not in err, err
+
+
+def test_the_map_server_closes_the_store_after_each_page(repo, monkeypatch):
+    """`leyline view` runs until stopped and opens the store on every page load; each connection was left open."""
+    import gc
+    import http.server
+    import io
+    import warnings
+    from leyline import cli
+    work, ch, db = repo
+
+    class Server:
+        def __init__(self, address, handler):
+            self.handler = handler
+
+        def serve_forever(self):
+            h = object.__new__(self.handler)
+            h.wfile = io.BytesIO()
+            h.send_response = h.send_header = lambda *a: None
+            h.end_headers = lambda: None
+            for _ in range(3):
+                h.do_GET()
+            raise KeyboardInterrupt
+    monkeypatch.setattr(http.server, "HTTPServer", Server)
+    gc.collect()
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always", ResourceWarning)
+        assert cli.main(["--db", str(db), "view"]) == 0
+        gc.collect()
+    assert not [w for w in seen if issubclass(w.category, ResourceWarning) and "database" in str(w.message)]

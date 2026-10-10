@@ -760,6 +760,14 @@ def _main(argv=None) -> int:
         print(f"leyline: no store at {args.db}. Run `leyline map` first.", file=sys.stderr)
         return 2
     con = store.connect(args.db)
+    try:
+        return _with_store(args, con)
+    finally:
+        con.close()
+
+
+def _with_store(args, con) -> int:
+    """The commands that read or write one store, given open."""
     if args.cmd == "export":
         from . import export
         text = (export.fragment if args.fragment else export.page)(con, not args.no_sources)
@@ -772,7 +780,11 @@ def _main(argv=None) -> int:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # re-read the store on every load, so a re-index shows up on refresh
-                body = export.page(store.connect(args.db)).encode()
+                c = store.connect(args.db)
+                try:
+                    body = export.page(c).encode()
+                finally:   # the server runs until stopped: a connection per page load, left open, adds up
+                    c.close()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
