@@ -336,3 +336,71 @@ def test_planning_again_after_a_passing_check_reopens_the_change(repo):
     assert "spec-report-queued" not in _finished(db)
     assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
     assert _attrs(db)[0] == "verified" and "spec-report-queued" in _finished(db)
+
+
+class _Unclosed:
+    """The connections the code under test left for the garbage collector to close."""
+
+    def __enter__(self):
+        import gc
+        import warnings
+        gc.collect()
+        self._w = warnings.catch_warnings(record=True)
+        self.seen = self._w.__enter__()
+        warnings.simplefilter("always", ResourceWarning)
+        return self
+
+    def __exit__(self, *exc):
+        import gc
+        gc.collect()
+        self._w.__exit__(*exc)
+        self.leaks = [str(w.message) for w in self.seen if issubclass(w.category, ResourceWarning)]
+        return False
+
+
+def test_a_store_that_cannot_be_opened_does_not_leave_its_connection_open(tmp_path):
+    """store.connect on a file that is not a store raised with the connection it had made still open."""
+    from leyline import store
+    bad = tmp_path / "bad.db"
+    bad.write_text("this is not a database")
+    with _Unclosed() as u:
+        with pytest.raises(Exception):
+            store.connect(bad)
+    assert not u.leaks, u.leaks
+
+
+def test_a_run_that_waited_too_long_closes_the_cache(tmp_path, monkeypatch):
+    """A run that gave up waiting for another one raised from Run.__init__, leaving its cache connection open: the
+    caller never got the run to abandon."""
+    import sqlite3
+    from leyline import incremental
+    from leyline.indexer import index
+    from test_incremental import copy
+    root = copy(tmp_path, "fixture2")
+    db = tmp_path / "s.db"
+    index(root, db, "w")
+    other = sqlite3.connect(incremental.cache_path(db), isolation_level=None)
+    other.execute("BEGIN IMMEDIATE")   # as a run in progress holds it
+    monkeypatch.setenv("LEYLINE_WAIT", "0")
+    try:
+        with _Unclosed() as u:
+            with pytest.raises(RuntimeError):
+                index(root, db, "w")
+        assert not u.leaks, u.leaks
+    finally:
+        other.close()
+
+
+def test_drift_closes_the_baselines_it_opens(repo):
+    """Drift opens a change's baseline to tell a renamed name from a new one, and left each open."""
+    from test_signalfix import AFTER, implement
+    from leyline import diff as d, drift
+    work, ch, db = repo
+    loop.plan(db, ch)
+    implement(work)
+    assert loop.check(db, ch, d.parse_test_output(AFTER))["done_as_agreed"]
+    core = work / "srv" / "core.py"
+    core.write_text(core.read_text().replace("def queued(self, items):", "def queued_now(self, items):"))
+    with _Unclosed() as u:
+        drift.run(db, work)
+    assert not u.leaks, u.leaks

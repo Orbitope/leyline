@@ -68,6 +68,14 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Another leyline run may be writing (a map while a plan starts): wait for it rather than fail at once.
     con = sqlite3.connect(str(db_path), timeout=BUSY_SECONDS)
+    try:
+        return _prepare(con)
+    except BaseException:   # a store another run holds, or one that is not a store: the caller gets no connection
+        con.close()
+        raise
+
+
+def _prepare(con: sqlite3.Connection) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=OFF")  # edges may point at nodes written later in a run

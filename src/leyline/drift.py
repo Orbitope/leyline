@@ -299,6 +299,7 @@ class _Map:
     def __init__(self, con):
         self.con = con
         self.names = spec._Names(con)
+        self._snaps: dict = {}   # change -> its baseline, opened once (leyline.renames)
         self.repos = list(store.roots(con)) or sorted({r["id"].split(":", 1)[0] for r in self.names.rows})
         self.claimed: set = set()   # nodes some anchor still finds: not what another name was renamed to
         self._git = None
@@ -316,6 +317,12 @@ class _Map:
             if i and i in self.names.by_id:
                 return i
         return None
+
+    def close(self) -> None:
+        for db in self._snaps.values():
+            if db is not None:
+                db.close()
+        self._snaps.clear()
 
     def label(self, i: str) -> str:
         return spec._label(self.names, i)
@@ -460,6 +467,13 @@ def _index(anchors: dict) -> dict:
 def report(con, dirs: list[Path]) -> dict:
     """Every living spec, archived change and anchored change in these openspec/ folders, name by name."""
     m = _Map(con)
+    try:
+        return _report(con, dirs, m)
+    finally:
+        m.close()
+
+
+def _report(con, dirs: list[Path], m) -> dict:
     groups, problems, used = [], [], set()
     m.claimed = {i for osd in dirs for e in load(con, osd)[0].values() for a in e.get("anchors") or [] for i in [m.find(a)] if i}
     for osd in dirs:
@@ -515,6 +529,13 @@ def accept(con, dirs: list[Path]) -> dict:
     bring each change's anchors up to the code they found. Accepting cannot make code that is gone agree, so an
     anchor whose code is gone is kept as it was, and goes on being reported until the spec stops naming it."""
     m = _Map(con)
+    try:
+        return _accept(con, dirs, m)
+    finally:
+        m.close()
+
+
+def _accept(con, dirs: list[Path], m) -> dict:
     done = {}
     for osd in dirs:
         anchors, _ = load(con, osd)

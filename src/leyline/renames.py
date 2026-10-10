@@ -122,7 +122,7 @@ def _baseline_has(m, key: Optional[str], node_id: str) -> Optional[bool]:
     when there is no such baseline (a living spec's anchors, or a change that was forgotten)."""
     if not key or key.startswith("specs/"):
         return None
-    snaps = m.__dict__.setdefault("_snaps", {})
+    snaps = m._snaps   # closed with the map (drift._Map.close)
     if key not in snaps:
         from . import diff
         p = diff.snapshot_path(m.con, "spec-" + key)
