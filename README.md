@@ -166,7 +166,7 @@ claude mcp add -s user leyline -- leyline serve         # or: every project you 
 and `leyline skills install` to give Claude Code the skills (see [Working through an agent](#working-through-an-agent)).
 
 Claude Code starts the server in the directory it was opened in, and the server reads the store there,
-`.leyline/leyline.db`. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
+`.leyline/leyline.db`, or, from a folder inside the repository, the nearest such store above it. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
 installed in a virtual environment, give its full path (`-- /path/to/venv/bin/leyline serve`); for a
 store elsewhere, such as a workspace mapped from another directory, add `-e LEYLINE_DB=/full/path/leyline.db`
 before the `--`. `claude mcp list` should then show `leyline` as connected.
