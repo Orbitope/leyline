@@ -47,9 +47,7 @@ def _spec(con, args) -> int:
     if args.action == "facts":
         _print(spec.review_facts(con, args.target, args.reviewer))
     elif args.action == "findings":
-        cid = "spec-" + Path(args.target).name
-        for f in spec.findings(con, cid)["findings"]:
-            print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+        _findings(con, "spec-" + Path(args.target).name)
     elif args.action in ("finding", "file"):   # `file` is the older name
         r = spec.add_finding(con, "spec-" + Path(args.target).name, args.reviewer or "", args.severity or "", args.claim or "",
                              args.evidence, args.proposal)
@@ -62,6 +60,15 @@ def _spec(con, args) -> int:
     elif args.action == "resolve":
         _print(spec.resolve_finding(con, args.target, args.status, args.reason or ""))
     return 0
+
+
+def _findings(con, cid: str) -> None:
+    from . import spec
+    found = spec.findings(con, cid)["findings"]
+    for f in found:
+        print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+    if not found:
+        print(f"No findings filed for {cid}.")
 
 
 def _pr_spec(con, args) -> int:
@@ -77,8 +84,7 @@ def _pr_spec(con, args) -> int:
         _print(r)
         return 1 if "error" in r else 0
     if args.action == "findings":
-        for f in spec.findings(con, cid)["findings"]:
-            print(f"{f['id']}  {f['status']:<9} {f['severity']:<6} {f['reviewer']}: {f['claim']}")
+        _findings(con, cid)
         return 0
     if args.action in ("finding", "file"):
         r = spec.add_finding(con, cid, args.reviewer or "", args.severity or "", args.claim or "", args.evidence, args.proposal)
@@ -905,6 +911,8 @@ def _with_store(args, con) -> int:
         if args.confirm:
             _print(rules.confirm_rule(con, args.confirm))
         r = rules.check(con)
+        if not r["rules"]:
+            print("No rules yet; an agent adds one with the add_rule MCP tool, and `leyline rules --confirm ID` confirms it.")
         for x in r["rules"]:
             scope = x["from"] + (" -> " + x["to"] if x["to"] else "")
             print(f"{'ok  ' if x['passes'] else 'FAIL'}  #{x['id']} {x['kind']} {scope}  [{x['status']}]"
