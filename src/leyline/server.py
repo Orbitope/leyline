@@ -365,7 +365,8 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
                 r = Path(p).resolve()
             except (OSError, RuntimeError):
                 r = None
-            inside = next((root for root in roots if r is not None and root in r.parents), None)
+            # only a directory that exists: a path that does not must not fold onto the repository it would sit in
+            inside = next((root for root in roots if r is not None and r.is_dir() and root in r.parents), None)
             folded.append(str(inside) if inside is not None else p)
         paths = list(dict.fromkeys(folded))
     bad = [p for p in paths or [] if not Path(p).is_dir()]

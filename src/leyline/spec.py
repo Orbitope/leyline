@@ -346,7 +346,7 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
                 # A task about a test covers a scenario's test when it quotes the scenario's name. A task that quotes a
                 # value (`return "LOUD"`) is not held to writing a test, even when a scenario is named like the value.
                 "scenarios": [s["key"] for s in parsed["scenarios"]
-                              if re.search(r"\b(tests?|scenarios?)\b", t["text"], re.I)
+                              if (t["action"] == "add" or re.search(r"\b(tests?|scenarios?|checks?|asserts?)\b", t["text"], re.I))
                               and _norm(s["name"]) in {_norm(q) for q in re.findall(r'["\u201c]([^"\u201d]+)["\u201d]', t["text"])}]}
         roles = _roles(t["text"])
         mentioned = [(w, names.resolve(w)) for w, role in roles if role == "mention"]
