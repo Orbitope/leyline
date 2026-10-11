@@ -375,7 +375,14 @@ def _tests_arg(value: Optional[str]) -> Optional[list[dict]]:
     if value is None:
         return None
     from . import diff
-    return diff.parse_test_output(sys.stdin.read() if value == "-" else Path(value).read_text(encoding="utf-8", errors="replace"))
+    data = sys.stdin.buffer.read() if value == "-" else Path(value).read_bytes()
+    # A byte-order mark is not part of the first result's name: PowerShell's `>` writes UTF-16 with one, and some
+    # editors UTF-8 with one.
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16", errors="replace")
+    else:
+        text = data.decode("utf-8-sig", errors="replace")
+    return diff.parse_test_output(text.lstrip("﻿"))
 
 
 def _not_dirs(paths: list[str]) -> bool:

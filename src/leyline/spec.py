@@ -158,11 +158,15 @@ def parse(change_dir: str | Path) -> dict:
                 cur = {"key": key, "name": name,
                        "requirement": req, "capability": capability, "kind": section or "ADDED", "when": [], "then": []}
                 out["scenarios"].append(cur)
+            elif re.match(r"^#{1,6}\s*scenario\s*:", line, re.I):   # ####Scenario:, #### scenario :, ### Scenario:
+                cur = None   # not read as a scenario, and its steps are not the previous scenario's
+                out["problems"].append(f"{spec.relative_to(d)}: a scenario heading is written `#### Scenario: <name>`"
+                                       f" (four #, a space, then Scenario:), found: {line.strip()}")
+            elif line.startswith("#"):
+                cur = None   # any other heading ends the scenario: steps under it belong to no scenario
             elif cur is not None and STEP.match(line):
                 word = STEP.match(line)
                 (cur["then"] if word.group(1) == "THEN" or (word.group(1) == "AND" and cur["then"]) else cur["when"]).append(word.group(2))
-            elif re.match(r"^###\s+Scenario", line):
-                out["problems"].append(f"{spec.relative_to(d)}: a scenario heading needs four #, found three: {line.strip()}")
     for r in out["requirements"]:
         if r["kind"] != "REMOVED" and not any(s["requirement"] == r["name"] and s["capability"] == r["capability"] for s in out["scenarios"]):
             out["problems"].append(f"requirement \"{r['name']}\" has no scenario")
@@ -198,7 +202,10 @@ class _Names:
                 self.by_stem[re.sub(r"\.[^./]+$", "", r["name"])].append(r)
         self.module = {r["node_id"]: r["module_id"] for r in con.execute("SELECT node_id, module_id FROM ancestry")}
         self.test_files, self.test_modules = store.test_places(con)
-        self.roots = list(store.roots(con).values())
+        roots = store.roots(con)
+        self.roots = list(roots.values())
+        # a repository, by its id and by its folder's name: how a path in a workspace says which repository it is in
+        self.repo_by_dir = {**{Path(p).name: rid for rid, p in roots.items()}, **{rid: rid for rid in roots}}
 
     def in_tests(self, i: str) -> bool:
         """Test code: a test, anything in a file that holds tests, or in a module that is mostly such files."""
@@ -206,9 +213,16 @@ class _Names:
         return bool(n) and (n["kind"] == "test" or n["path"] in self.test_files or self.module.get(i) in self.test_modules)
 
     def file(self, written: str) -> list:
-        """File or module nodes a written path names: the whole path, or its end."""
+        """File or module nodes a written path names: the whole path, or its end. In a workspace, a path may start
+        with the repository's id or folder (`wslib/src/libpkg/core.py`): the only way to say which repository."""
         name = written.strip().lstrip("./")
-        return [r for r in self.rows if r["kind"] in ("file", "module") and (r["path"] == name or (r["path"] or "").endswith("/" + name))]
+        found = [r for r in self.rows if r["kind"] in ("file", "module") and (r["path"] == name or (r["path"] or "").endswith("/" + name))]
+        head, _, rest = name.partition("/")
+        repo = self.repo_by_dir.get(head) if rest else None
+        if rest and not found and repo is not None:
+            found = [r for r in self.rows if r["kind"] in ("file", "module") and r["id"].startswith(repo + ":")
+                     and (r["path"] == rest or (r["path"] or "").endswith("/" + rest))]
+        return found
 
     def on_disk(self, written: str) -> bool:
         name = written.strip().lstrip("./")
@@ -329,9 +343,11 @@ def _targets(names: _Names, parsed: dict) -> tuple[list[dict], list[dict]]:
     for t in parsed["tasks"]:
         link = {"key": t["key"], "text": t["text"], "action": t["action"], "nodes": [], "new": [], "ambiguous": [], "unknown": [],
                 "into": [], "notes": [], "mentions": [], "mention_ids": [],
-                # A task covers a scenario's test when it quotes the scenario's name.
+                # A task about a test covers a scenario's test when it quotes the scenario's name. A task that quotes a
+                # value (`return "LOUD"`) is not held to writing a test, even when a scenario is named like the value.
                 "scenarios": [s["key"] for s in parsed["scenarios"]
-                              if _norm(s["name"]) in {_norm(q) for q in re.findall(r'["\u201c]([^"\u201d]+)["\u201d]', t["text"])}]}
+                              if re.search(r"\b(tests?|scenarios?)\b", t["text"], re.I)
+                              and _norm(s["name"]) in {_norm(q) for q in re.findall(r'["\u201c]([^"\u201d]+)["\u201d]', t["text"])}]}
         roles = _roles(t["text"])
         mentioned = [(w, names.resolve(w)) for w, role in roles if role == "mention"]
         context = [i for _, r in mentioned for i in r.get("ids", [])]
@@ -416,8 +432,9 @@ def _tests(con) -> dict:
 
 
 def _norm(s: str) -> str:
-    # `test_` only where a name starts: `test_shortest_path` is "shortest path", not "shorpath"
-    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"(?<![a-z0-9])test_", "", s.lower())).strip()
+    # `test_` only where a name starts: `test_shortest_path` is "shortest path", not "shorpath". Letters of every
+    # script count: a scenario named 日本語 or Über is proven by the test of that name, not read as empty or "ber".
+    return re.sub(r"[\W_]+", " ", re.sub(r"(?<![^\W_])test_", "", s.casefold())).strip()
 
 
 def _result_keys(name: str) -> tuple[set, set]:
@@ -1413,6 +1430,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
         from .props import from_message   # a failing property test's smallest failing input
         ex = next((x for x in (from_message(r["message"]) for r in failed) if x), None)
         scenarios.append({"name": s["name"], "state": state, "test": tid, "generated": not tid and bool(gen),
+                          # written since the plan: a test the baseline does not hold (one the run before the change
+                          # merely left out is not new, and must reach the changed code to prove anything)
+                          "test_new": bool(tid) and not _in_baseline(con, cid, tid),
                           **({"counterexample": ex} if ex else {}),
                           "off_map": not tid and not gen and bool(rows), **({"script": script} if script else {}),
                           "results": len(rows), "reaches_the_change": static, "measured_running_the_change": ran_change,
@@ -1557,7 +1577,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     elif write:
         path = Path(parsed["dir"]) / "leyline.md"
         body = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-        head = body[body.index(BEGIN) + len(BEGIN):body.index(END)].strip() if BEGIN in body and END in body else ""
+        # The block runs to its end marker, or to the end of the file when a cut-off page lost the marker (as _write
+        # reads it): the plan above section 4 is kept either way.
+        start = body.find(BEGIN)
+        stop = body.find(END, start) if start >= 0 else -1
+        head = body[start + len(BEGIN):stop if stop >= 0 else len(body)].strip() if start >= 0 else ""
         head = head.split("\n## 4. Was it done as agreed")[0].rstrip()
         # The state at the top of the page is now the verdict.
         head = re.sub(r"^\*\*State:.*$", lambda _: check_state(out), head, count=1, flags=re.M)

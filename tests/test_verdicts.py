@@ -54,8 +54,9 @@ def test_config_default_override_and_mistakes(tmp_path):
 
 
 # -- scenarios, from the results ---------------------------------------------------------------------
-def _s(state="passes", test="t", static=True, measured=None):
-    return {"state": state, "test": test, "reaches_the_change": static, "measured_running_the_change": measured}
+def _s(state="passes", test="t", static=True, measured=None, new=None):
+    return {"state": state, "test": test, "reaches_the_change": static, "measured_running_the_change": measured,
+            **({"test_new": new} if new is not None else {})}
 
 
 P, F, SK = {"status": "pass"}, {"status": "fail"}, {"status": "skip"}
@@ -69,6 +70,10 @@ P, F, SK = {"status": "pass"}, {"status": "fail"}, {"status": "skip"}
     (_s("test exists, not run"), [], [P], "inconclusive", "no result"),
     (_s("no test", test=None), [], [], "inconclusive", "has no test"),
     (_s(static=False), [P], [], "proven", "new since the plan"),
+    (_s(static=False, new=True), [P], [], "proven", "new since the plan"),
+    # the baseline holds the test: the run before merely left it out, so it must reach the change to prove anything
+    (_s(static=False, new=False), [P], [], "needs a person", "does not reach the changed code"),
+    (_s(static=True, new=False), [P], [], "proven", "runs the changed code"),
     (_s(static=False), [P], [F], "proven", "failed before"),
     (_s(), [P], [P], "proven", "runs the changed code, as it did before"),
     (_s(static=False, measured=True), [P], [P], "proven", "runs the changed code"),

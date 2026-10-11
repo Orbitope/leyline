@@ -240,10 +240,11 @@ def _open(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
     con.row_factory = sqlite3.Row
     try:   # told apart from damage to the store: not a database, or cut off short of the pages its header counts
-        con.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        tables = con.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
         pages, size = con.execute("PRAGMA page_count").fetchone()[0], con.execute("PRAGMA page_size").fetchone()[0]
         short = Path(path).stat().st_size < pages * size and not Path(str(path) + "-wal").exists()   # pages in a WAL count too
-        ok = "cut off" if short else "ok"
+        # SQLite reads an empty file as an empty database: a baseline with nothing in it is damaged too
+        ok = "cut off" if short else "empty: it holds no tables" if not tables else "ok"
     except sqlite3.OperationalError:
         con.close()
         raise
@@ -967,8 +968,9 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
         # A file's top level (imports, constants, tables, calls outside any function) has a node of its own only in
         # some languages, so the file stands for it.
         fb = {r[0]: r[1] for r in before.execute("SELECT id, content_hash FROM nodes WHERE kind = 'file' AND layer = 'fact'")}
-        files = [r for r in con.execute("SELECT id, name, path, content_hash, span_end FROM nodes WHERE kind = 'file' AND layer = 'fact'")
-                 if fb.get(r["id"]) != r["content_hash"]]
+        now_files = con.execute("SELECT id, name, path, content_hash, span_end FROM nodes WHERE kind = 'file' AND layer = 'fact'").fetchall()
+        files = [r for r in now_files if fb.get(r["id"]) != r["content_hash"]]
+        files_gone = set(fb) - {r["id"] for r in now_files}   # a file removed since the snapshot: it changed
         own = own_changes(before, con, changed_ids + [f["id"] for f in files])
     finally:
         before.close()
@@ -1012,7 +1014,7 @@ def review(con, change_id: str, before_run: Optional[str] = None, after_run: Opt
     not_predicted = [n for n in not_predicted if not (n.get("own") and explained(n, spans.get(n.get("path"), []), names_of))]
     untouched = [{"id": i, "name": m.get("name", i), "note": m.get("note", "")} for i, m in sorted(predicted.items())
                  if i not in touched]
-    gone = {n["id"] for n in d["nodes"]["removed"]} | {n["id"] for n in d["nodes"]["added"]}   # new since the snapshot: it changed
+    gone = {n["id"] for n in d["nodes"]["removed"]} | {n["id"] for n in d["nodes"]["added"]} | files_gone   # new since the snapshot: it changed
     untouched = [u for u in untouched if u["id"] not in gone]
     removed_predicted = [n for n in d["nodes"]["removed"] if n["id"] in predicted]
     not_predicted += [{**n, "why": "removed"} for n in d["nodes"]["removed"] if n["id"] not in predicted]
