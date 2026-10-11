@@ -281,7 +281,8 @@ def test_the_base_archive_keeps_no_entry_reached_through_a_link(tmp_path):
     buf.seek(0)
     with tarfile.open(fileobj=buf) as t:
         kept = list(pr._safe_members(t, into))
-        t.extractall(into, members=kept, filter="fully_trusted")   # as an unfiltered extraction does
+        # as an unfiltered extraction does; `filter` came with 3.12 and the late 3.10/3.11 patch releases
+        t.extractall(into, members=kept, **({"filter": "fully_trusted"} if hasattr(tarfile, "fully_trusted_filter") else {}))
     assert not (tmp_path / "evil.txt").exists()
     assert "w/evil.txt" not in [m.name for m in kept] and "h" not in [m.name for m in kept]
 

@@ -149,6 +149,9 @@ def test_a_read_only_repository_says_to_keep_the_store_elsewhere_and_can_then_be
     import os
     import stat
     import pytest
+    import sys
+    if sys.platform == "win32":
+        pytest.skip("a read-only folder does not stop writes on Windows, and there is no geteuid")
     if os.geteuid() == 0:
         pytest.skip("root writes anywhere")
     root = _repo(tmp_path / "ro")
