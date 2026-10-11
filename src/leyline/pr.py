@@ -155,9 +155,10 @@ def _archive(root: Path, sha: str) -> bytes:
         bare = Path(tmp)
         _git(bare, "init", "-q", "--bare")
         (bare / "objects" / "info").mkdir(parents=True, exist_ok=True)
-        (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n")
+        # git reads these byte for byte: a "\r\n" ending, as Windows writes text, would make the objects path "...\r"
+        (bare / "objects" / "info" / "alternates").write_text(str(objects) + "\n", newline="\n")
         (bare / "info").mkdir(exist_ok=True)
-        (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
+        (bare / "info" / "attributes").write_text("* -export-ignore -export-subst\n", newline="\n")
         return _git(bare, *eol, "archive", "--format=tar", sha, binary=True)
 
 
