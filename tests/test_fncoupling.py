@@ -38,6 +38,10 @@ def reader_py(v: dict) -> str:
 def repo(tmp_path):
     """check and read are made together and change together in 4 commits; check alone in 1 more; inner (nested in check) alone in 3;
     helper and write made together and changed together once more (2: too few to report); other alone in 3."""
+    return make_repo(tmp_path, "reader.py")
+
+
+def make_repo(tmp_path, reader: str):
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q", "-b", "main")
@@ -48,7 +52,7 @@ def repo(tmp_path):
             v[k] += 1
         (root / "src").mkdir(exist_ok=True)
         (root / "src" / "rules.py").write_text(rules(v))
-        (root / "src" / "reader.py").write_text(reader_py(v))
+        (root / "src" / reader).write_text(reader_py(v))
         git(root, "add", "-A")
         git(root, "commit", "-qm", msg)
     step("start")
@@ -91,6 +95,19 @@ def test_a_function_couples_to_the_function_that_changed_with_it_and_to_nothing_
         m = fncoupling.missed(con, "r", root, sha, [check], lambda g: False)
         assert fncoupling.line(m["functions"][0]) == "`reader.py.read` changed in 5 of the 6 commits that changed `rules.py.check`"
         assert fncoupling.missed(con, "r", root, sha, [check], lambda g: g == read)["functions"] == []
+    finally:
+        con.close()
+
+
+def test_a_file_whose_name_has_a_space_is_read_like_any_other(tmp_path):
+    """git ends a `+++ b/<path>` line with a tab when the path has a space in it: the hunks must still be the file's."""
+    root, db = make_repo(tmp_path, "my reader.py")
+    con = store.connect(db)
+    try:
+        check, read = ids(con, "check", "read")
+        sha = coupling.head(root)
+        assert [(x["partner_id"], x["together"]) for x in fncoupling.compute(con, "r", root, sha, [check])["functions"]] == [(read, 5)]
+        assert [(x["partner_id"], x["together"]) for x in fncoupling.compute(con, "r", root, sha, [read])["functions"]] == [(check, 5)]
     finally:
         con.close()
 

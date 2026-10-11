@@ -87,12 +87,16 @@ def _code_names(text: str) -> list[str]:
 
 def _change_names(folder: Path) -> dict[str, list[str]]:
     """written name -> where in a change folder it is named: tasks.md, or specs/<capability>/spec.md. A task that
-    removes or renames code names something meant to be gone, so the code right after its verb is left out."""
+    removes or renames code names something meant to be gone, so the code right after its verb is left out (only that:
+    "Remove `X` and update `Y`" keeps `Y`)."""
+    from . import removal
     out: dict[str, list[str]] = defaultdict(list)
     parsed = spec.parse(folder)
     for t in parsed.get("tasks", []):
+        found = removal._targets(t["text"]) if t["action"] in ("remove", "rename") else None
+        gone = set(found[1]) if found else set()
         for w, role in spec._roles(t["text"]):
-            if not (role == "lead" and t["action"] in ("remove", "rename")) and "tasks.md" not in out[w.strip()]:
+            if not (role == "lead" and w in gone) and "tasks.md" not in out[w.strip()]:
                 out[w.strip()].append("tasks.md")
     specs = folder / "specs"
     for f in sorted(specs.rglob("spec.md")) if specs.is_dir() else []:
@@ -212,11 +216,13 @@ def read_file(openspec: Optional[Path]) -> tuple[dict, Optional[str]]:
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
         return dict(data.get("anchors") or {}), None
-    except (ValueError, AttributeError) as e:
-        return {}, f"{f} could not be read ({e}); its anchors were left out"
+    except (ValueError, AttributeError, RecursionError) as e:
+        return {}, f"{f} could not be read ({type(e).__name__}: {e}); its anchors were left out"
 
 
 def _write_file(openspec: Path, anchors: dict) -> Path:
+    if (why := store.escapes(openspec)):
+        raise store.UntrustedStore(why)
     f = openspec / ANCHOR_FILE
     data = {"about": "Written by Leyline (`leyline check`, `leyline drift --accept`): what each code name in these specs"
                      " meant when it was last known to be right. `leyline drift` compares the code with it. Commit it"
@@ -224,7 +230,7 @@ def _write_file(openspec: Path, anchors: dict) -> Path:
             "anchors": anchors, "version": 1}
     text = json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
     if not f.is_file() or f.read_text(encoding="utf-8", errors="replace") != text:
-        f.write_text(text, encoding="utf-8")
+        store.write_file(f, text)
     return f
 
 
@@ -264,7 +270,9 @@ def _put(con, openspec: Optional[Path], key: str, anchors: list[dict], write_fil
     entry = {"recorded": old["recorded"] if old and old.get("anchors") == anchors else _today(), "anchors": anchors}
     _store(con, _place(openspec), key, entry)
     out = {"key": key, "count": len(anchors), **({"problem": problem} if problem else {})}
-    if openspec is not None and write_file and not problem:
+    if openspec is not None and write_file and not problem and (why := store.escapes(openspec)):
+        out["problem"] = why
+    elif openspec is not None and write_file and not problem:
         held[key] = entry
         if not anchors:
             held.pop(key)
@@ -295,6 +303,7 @@ class _Map:
     def __init__(self, con):
         self.con = con
         self.names = spec._Names(con)
+        self._snaps: dict = {}   # change -> its baseline, opened once (leyline.renames)
         self.repos = list(store.roots(con)) or sorted({r["id"].split(":", 1)[0] for r in self.names.rows})
         self.claimed: set = set()   # nodes some anchor still finds: not what another name was renamed to
         self._git = None
@@ -312,6 +321,12 @@ class _Map:
             if i and i in self.names.by_id:
                 return i
         return None
+
+    def close(self) -> None:
+        for db in self._snaps.values():
+            if db is not None:
+                db.close()
+        self._snaps.clear()
 
     def label(self, i: str) -> str:
         return spec._label(self.names, i)
@@ -456,6 +471,13 @@ def _index(anchors: dict) -> dict:
 def report(con, dirs: list[Path]) -> dict:
     """Every living spec, archived change and anchored change in these openspec/ folders, name by name."""
     m = _Map(con)
+    try:
+        return _report(con, dirs, m)
+    finally:
+        m.close()
+
+
+def _report(con, dirs: list[Path], m) -> dict:
     groups, problems, used = [], [], set()
     m.claimed = {i for osd in dirs for e in load(con, osd)[0].values() for a in e.get("anchors") or [] for i in [m.find(a)] if i}
     for osd in dirs:
@@ -511,6 +533,13 @@ def accept(con, dirs: list[Path]) -> dict:
     bring each change's anchors up to the code they found. Accepting cannot make code that is gone agree, so an
     anchor whose code is gone is kept as it was, and goes on being reported until the spec stops naming it."""
     m = _Map(con)
+    try:
+        return _accept(con, dirs, m)
+    finally:
+        m.close()
+
+
+def _accept(con, dirs: list[Path], m) -> dict:
     done = {}
     for osd in dirs:
         anchors, _ = load(con, osd)

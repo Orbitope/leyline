@@ -36,7 +36,8 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
-from . import query, store
+from . import diff, query, store
+from .diagrams import cut as diagrams_cut
 
 WEIGHTS = {"calls": 1.0, "overrides": 1.0, "communicates": 1.0, "extends": 0.8, "implements": 0.8,
            "instantiates": 0.6, "uses_type": 0.4, "reads": 0.3, "writes": 0.3}
@@ -224,7 +225,17 @@ def _change_nodes(con, cid: str) -> list[str]:
             ids += json.loads(nodes or "[]")
         except ValueError:
             pass
-    return list(dict.fromkeys(ids))
+    out = []
+    for i in dict.fromkeys(ids):
+        if con.execute("SELECT 1 FROM nodes WHERE id = ?", (i,)).fetchone() is None and i.endswith(")"):
+            # A method marked when the change was planned whose parameters have changed since: the same owner and name
+            base = diff._base(i)
+            out += [r[0] for r in con.execute("SELECT id FROM nodes WHERE id > ? AND id < ? AND kind = 'callable'",
+                                              (base + "(", base + "*"))
+                    if diff._base(r[0]) == base]
+        else:
+            out.append(i)
+    return list(dict.fromkeys(out))
 
 
 def _is_change(con, cid: str) -> bool:
@@ -432,11 +443,14 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     budget_chars = budget * 4
     head_names = [f["focus"] for f in found if "ids" in f]
     header = f"Code around {', '.join(head_names)[:200]}: declarations, the most related files first; > marks the focus."
-    reserve = len(header) + 520          # the header, the summary line and the left-out line
+    # What the focus named that is not on the map is said at the end, and counts against the budget too.
+    missing = [f"Not found: {diagrams_cut(f['focus'], 60)!r} ({f['error']})." for f in found if "error" in f]
+    reserve = len(header) + 520 + sum(len(m) + 1 for m in missing)   # the header, the summary and left-out lines
     chosen: set[int] = set()
     lines_of: dict[int, tuple] = {}      # node -> (declaration, notes)
     files: dict[str, float] = {}         # path -> best score in it, for the order of files
     used, misses, left = reserve, 0, []
+    shown_path: dict[str, str] = {}      # a path shortened to fit the focus into a small budget
 
     def cost(u):
         decl, note = lines_of.get(u) or (_declaration(g, u, sources), _notes(g, u, fset, names))
@@ -447,6 +461,17 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     for pos, u in enumerate(order):
         need = [a for a in _ancestors(g, u) if a not in chosen] + [u]
         c = sum(cost(x) for x in need) + (0 if g.path[u] in files else len(g.path[u]) + 2)
+        if used + c > budget_chars and u in fset and not chosen:
+            # The focus is always shown: when it does not fit, shorten its file's path (keeping the end, which names
+            # the file) and its lines to what the budget has left.
+            room = budget_chars - used - sum(cost(x) - len(lines_of[x][0]) - len(lines_of[x][1]) for x in need) - 2
+            plen = min(len(g.path[u]), max(24, room // 3))
+            shown_path[g.path[u]] = g.path[u] if plen >= len(g.path[u]) else "..." + g.path[u][-(plen - 3):]
+            per = max(16, (room - plen) // sum(1 + bool(lines_of[x][1]) for x in need))
+            for x in need:
+                d, note = lines_of[x]
+                lines_of[x] = (diagrams_cut(d, per), diagrams_cut(note, per) if note else note)
+            c = sum(cost(x) for x in need) + len(shown_path[g.path[u]]) + 2
         if used + c > budget_chars and not (u in fset and not chosen):
             left.append(u)
             misses += 1
@@ -461,7 +486,7 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     # Render: files by their best score, inside each by line, members under their type.
     out = [header, ""]
     for path in sorted(files, key=lambda p: (-files[p], p)):
-        out.append(path)
+        out.append(shown_path.get(path, path))
         for u in sorted((x for x in chosen if g.path[x] == path), key=lambda x: (g.line[x], len(_ancestors(g, x)))):
             depth = len(_ancestors(g, u))
             decl, note = lines_of.get(u) or (_declaration(g, u, sources), _notes(g, u, fset, names))
@@ -475,15 +500,13 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     left_files = sorted({g.path[u] for u in related})
     out.append(f"Shown: {len(chosen)} symbol{'s' * (len(chosen) != 1)} in {len(files)} file{'s' * (len(files) != 1)}.")
     if related:
-        top = ", ".join(f"{_short(g, u)} ({g.path[u]})" for u in related[:3])
+        top = diagrams_cut(", ".join(f"{_short(g, u)} ({g.path[u]})" for u in related[:3]), 260)
         out.append(f"Left out: {direct} more symbol{'s' * (direct != 1)} linked directly to the focus and"
                    f" {len(related) - direct} two links away, in {len(left_files)} file{'s' * (len(left_files) != 1)};"
                    f" the nearest: {top}. Raise the budget to see more.")
     else:
         out.append("Left out: nothing within two links of the focus.")
-    for f in found:
-        if "error" in f:
-            out.append(f"Not found: {f['focus']!r} ({f['error']}).")
+    out += missing
     text = "\n".join(out).rstrip() + "\n"
     return {"focus": found, "budget_tokens": budget, "tokens": len(text) // 4, "text": text,
             "shown": {"symbols": len(chosen), "files": len(files)},

@@ -44,13 +44,16 @@ def _select(con, selector: str) -> set[str]:
                 "WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT n.id FROM nodes n JOIN d ON n.parent_id = d.id)"
                 " SELECT id FROM d", (u[0],))}
         return out
+    # A name or prefix as written: LIKE would read `_` and `%` in it as patterns, and ignore case.
     if kind == "external":
-        return {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external' AND (name = ? OR name LIKE ?)",
-                                          (value, value + ".%"))}
+        return {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'external' AND (name = ? OR substr(name, 1, ?) = ?)",
+                                          (value, len(value) + 1, value + "."))}
     if kind == "path":
-        return {r[0] for r in con.execute("SELECT id FROM nodes WHERE path = ? OR path LIKE ?", (value, value.rstrip("/") + "/%"))}
+        under = value.rstrip("/") + "/"
+        return {r[0] for r in con.execute("SELECT id FROM nodes WHERE path = ? OR substr(path, 1, ?) = ?",
+                                          (value, len(under), under))}
     if kind == "id":
-        return {r[0] for r in con.execute("SELECT id FROM nodes WHERE id LIKE ?", (value + "%",))}
+        return {r[0] for r in con.execute("SELECT id FROM nodes WHERE substr(id, 1, ?) = ?", (len(value), value))}
     return set()
 
 

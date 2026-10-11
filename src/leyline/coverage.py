@@ -12,6 +12,9 @@ Formats read:
 - Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`, c8, nyc). It
   is one file per run, not per test. Run one test file at a time and import each result with `test` naming the file,
   and every function is tied to the test file that ran it (not to the single test inside it).
+- lcov (`lcov.info`: c8, vitest and jest `--coverage.reporter=lcov`, `go tool`/llvm-cov exports, genhtml's input). Its
+  `SF:`, `DA:`, `FN:` and `FNDA:` records give the lines and functions that ran; a `TN:` before them names the test,
+  and its records are tied to that test (by pytest node id or by name), else the file is one run like Istanbul's.
 """
 
 from __future__ import annotations
@@ -130,7 +133,7 @@ def import_file(con, path: str | Path, run: str = "default", test: Optional[str]
     tests_seen, tests_matched, files_matched, files_unknown = set(), set(), 0, 0
     if head.startswith(b"SQLite format 3"):
         fmt = "coverage.py"
-        src = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        src = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)   # quoted: `#`, `?`, `%` in a folder's name
         contexts = dict(src.execute("SELECT id, context FROM context"))
         cache: dict = {}
         per: dict[tuple, set] = defaultdict(set)       # (file path, context id) -> lines
@@ -181,7 +184,7 @@ def import_file(con, path: str | Path, run: str = "default", test: Optional[str]
     elif head.lstrip().startswith(b"{"):
         try:
             data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except ValueError:
+        except (ValueError, RecursionError):
             data = None
         if not _istanbul(data):
             return {"error": "a JSON file, but not Istanbul's coverage-final.json (vitest --coverage.reporter=json,"
@@ -210,9 +213,72 @@ def import_file(con, path: str | Path, run: str = "default", test: Optional[str]
         for file, lines in per_file.items():
             for node, n in _owners(funcs[file], lines).items():
                 rows.append((run, "", None, node, n))
+    elif head.lstrip().startswith((b"TN:", b"SF:")):
+        fmt = "lcov"
+        per_test: dict[tuple, set] = defaultdict(set)   # (test name, file) -> lines run
+        seen_files: dict[str, Optional[tuple]] = {}
+        state = {"test": "", "file": None, "lines": set(), "fns": {}}
+
+        def close() -> None:
+            # as for Istanbul: a line inside a function that never ran did not run (v8's conversion counts a
+            # declaration or closing-brace line as run when the file loads); FN gives the end line from lcov 2.0
+            rel, fns = state["file"], list(state["fns"].values())
+            if rel:
+                for line in state["lines"]:
+                    inner = [x for x in fns if x[1] is not None and x[0] <= line <= x[1]]
+                    if inner and not max(inner, key=lambda x: (x[0], -x[1]))[2]:
+                        continue
+                    per_test[(state["test"], rel)].add(line)
+            state.update(file=None, lines=set(), fns={})
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            key, _, val = line.partition(":")
+            try:
+                if key == "TN":
+                    state["test"] = val.strip()
+                elif key == "SF":
+                    name = val.strip()
+                    if name not in seen_files:
+                        seen_files[name] = _relative(name, roots, known)
+                    state.update(file=seen_files[name], lines=set(), fns={})
+                elif key == "FN":
+                    parts = val.split(",")
+                    if len(parts) >= 3 and parts[1].strip().isdigit():   # FN:<start>,<end>,<name>
+                        state["fns"][",".join(parts[2:])] = [int(parts[0]), int(parts[1]), 0]
+                    elif len(parts) >= 2:                                  # FN:<start>,<name>
+                        state["fns"][",".join(parts[1:])] = [int(parts[0]), None, 0]
+                elif key == "FNDA":
+                    count, _, name = val.partition(",")
+                    if name in state["fns"]:
+                        state["fns"][name][2] = float(count or 0)
+                elif key == "DA":
+                    parts = val.split(",")
+                    if len(parts) >= 2 and float(parts[1] or 0) > 0:
+                        state["lines"].add(int(parts[0]))
+                elif line == "end_of_record":
+                    close()
+            except ValueError:   # a malformed record line: the rest of the file is still read
+                continue
+        close()
+        files_matched = len({v for v in seen_files.values() if v})
+        files_unknown = sum(1 for v in seen_files.values() if not v)
+        home = max(roots, key=lambda r: sum(1 for v in seen_files.values() if v and v[0] == r)) if len(roots) > 1 else ""
+        cache: dict = {}
+        merged = defaultdict(int)
+        for (name, file), lines in per_test.items():
+            for node, n in _owners(funcs[file], lines).items():
+                merged[(name, node)] += n
+        for (name, node), n in merged.items():
+            tid = _test_node(con, name, cache, home) if name else None
+            if name:
+                tests_seen.add(name)
+                if tid:
+                    tests_matched.add(name)
+            rows.append((run, name, tid, node, n))
     else:
-        return {"error": "not a coverage.py data file, a Cobertura XML report or Istanbul's coverage-final.json"}
-    if test and fmt != "coverage.py":   # a run of one test file: everything that ran, ran under that file
+        return {"error": "not a coverage.py data file, a Cobertura XML report, Istanbul's coverage-final.json or an"
+                         " lcov file"}
+    if test and fmt != "coverage.py" and not tests_seen:   # a run of one test file: everything that ran, ran under it
         tid = _test_file_node(con, test, roots)
         rows = [(r[0], test, tid, r[3], r[4]) for r in rows]
         tests_seen, tests_matched = {test}, ({test} if tid else set())

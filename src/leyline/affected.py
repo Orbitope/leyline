@@ -140,9 +140,11 @@ def _label(con, i: str) -> str:
     return f"{n['owner']}.{n['name']}" if n["owner_kind"] in ("type", "callable") else n["name"]
 
 
-def _some(xs: list[str], k: int = 3) -> str:
+def _some(xs: list[str], k: int = 3, total: int = 0) -> str:
+    """The first k, and how many more: of `total` when the list was cut before it got here."""
     xs = sorted(xs)
-    return ", ".join(xs[:k]) + (f" and {len(xs) - k} more" if len(xs) > k else "")
+    more = max(total, len(xs)) - k
+    return ", ".join(xs[:k]) + (f" and {more} more" if more > 0 else "")
 
 
 def _taken_before(con, run: Optional[str], change_id: str) -> bool:
@@ -267,6 +269,13 @@ def _test_row(con, i: str) -> Optional[dict]:
     return out
 
 
+def _as_ran(test: str, row: dict) -> bool:
+    """Whether a pytest node id as the run named it can stand for a test on the map: only when it names the test's
+    file by its path in the repository. pytest run from a folder below (`backend/`) names it from there, and the
+    command runs from the repository's root."""
+    return "::" in test and bool(row.get("pytest")) and test.split("::", 1)[0] == row["path"]
+
+
 def _file_repo(con, path: str) -> Optional[str]:
     r = con.execute("SELECT repo_id FROM nodes WHERE kind = 'file' AND (path = ? OR ? LIKE '%/' || path) ORDER BY length(path) DESC",
                     (path, path)).fetchone()
@@ -297,7 +306,7 @@ def select(con, change_id: str) -> dict:
                 path = r["test"].split("::", 1)[0]
                 row = {"name": r["test"].split("::")[-1], "id": None, "repo": _file_repo(con, path), "path": path,
                        **({"pytest": r["test"]} if "::" in r["test"] and PY_TEST.search(path) else {"file_only": True})}
-            elif "::" in r["test"] and row.get("pytest"):
+            elif _as_ran(r["test"], row):
                 row["pytest"] = r["test"]          # exactly as pytest named it when it ran
             add(row["id"] or row.get("pytest") or row["path"], row,
                 "ran the changed code when coverage was measured" + (" (measured per test file)" if row.get("file_only") else ""))
@@ -355,7 +364,7 @@ def measured_tests(con, ids) -> list[dict]:
         row = (_test_row(con, r["test_id"]) if r["test_id"] else None) or {
             "name": r["test"].split("::")[-1], "id": None, "repo": _file_repo(con, r["test"].split("::", 1)[0]),
             "path": r["test"].split("::", 1)[0]}
-        if "::" in r["test"] and PY_TEST.search(row["path"]):
+        if (_as_ran(r["test"], row) if row.get("id") else "::" in r["test"] and PY_TEST.search(row["path"])):
             row["pytest"] = r["test"]
         out.append({**row, "functions": r["hits"]})
     return out
@@ -380,9 +389,42 @@ def _js_runner(root: Path, path: str) -> tuple[Optional[str], Path]:
         here = here.parent
 
 
+CS_TEST = re.compile(r"\.cs$")
+
+
+def _csproj(root: Path, path: str) -> Optional[str]:
+    """The test project a C# test file is in: the nearest folder above it with a .csproj, relative to the root."""
+    d = (root / path).parent
+    while True:
+        found = sorted(d.glob("*.csproj")) if d.is_dir() else []
+        if found:
+            return str(found[0].relative_to(root)).replace("\\", "/")
+        if d == root or root not in d.parents:
+            return None
+        d = d.parent
+
+
+def _dotnet_name(t: dict) -> tuple[str, str]:
+    """("FullyQualifiedName", Ns.Class.Method) from the test's id, or ("Name", Method) when it has none."""
+    i = t.get("id") or ""
+    if ":csharp:" in i:
+        return ("FullyQualifiedName", i.split("::")[-1].split("(")[0])
+    return ("Name", t["name"].split("(")[0])
+
+
+def _dotnet_filter(names) -> str:
+    """`dotnet test --filter`: one test by name each, joined by |; the filter's own operators escaped."""
+    esc = lambda v: re.sub(r"([\\(),|&=!~])", r"\\\1", v)
+    if len(names) > 200:   # too long for one command line: run their classes
+        names = {("FullyQualifiedName~" if k == "FullyQualifiedName" else "Name~", v.rsplit(".", 1)[0] if k == "FullyQualifiedName" else v)
+                 for k, v in names}
+        return "|".join(k + esc(v) for k, v in sorted(names))
+    return "|".join(f"{k}={esc(v)}" for k, v in sorted(names))
+
+
 def commands(con, tests: list[dict]) -> list[dict]:
-    """One command per runner and directory: pytest node ids, `npx vitest run <files>`, `npx jest <files>`, `go test
-    -run`. Tests no runner was recognized for are listed by name instead."""
+    """One command per runner and directory: pytest node ids, `npx vitest run <files>`, `npx jest --runTestsByPath <files>`, `go test
+    -run`, `dotnet test <project> --filter`. Tests no runner was recognized for are listed by name instead."""
     roots = store.roots(con)
     groups: dict[tuple, list] = defaultdict(list)
     other = []
@@ -395,6 +437,12 @@ def commands(con, tests: list[dict]) -> list[dict]:
             groups[("pytest", str(root))].append(t.get("pytest") or path)
         elif GO_TEST.search(path):
             groups[("go", str(root))].append((str(Path(path).parent), t["name"]))
+        elif CS_TEST.search(path):
+            proj = _csproj(Path(root), path)
+            if proj is None:
+                other.append(f"{t['name']} ({path})")
+            else:
+                groups[("dotnet", str(root))].append((proj, _dotnet_name(t)))
         elif JS_TEST.search(path):
             runner, cwd = _js_runner(Path(root), path)
             if runner:
@@ -405,20 +453,29 @@ def commands(con, tests: list[dict]) -> list[dict]:
             other.append(f"{t['name']} ({path})")
     out = []
     for (runner, cwd), items in sorted(groups.items()):
-        items = list(dict.fromkeys(items))
+        # a path that starts with - (a folder named --config=x) is a file to the runner, not an option
+        items = list(dict.fromkeys(i if not isinstance(i, str) or not i.startswith("-") else "./" + i for i in items))
         if runner == "pytest":
             if len(items) > 200:   # too long for one command line: run their files
                 items = list(dict.fromkeys(i.split("::", 1)[0] for i in items))
             cmd = "pytest " + " ".join(shlex.quote(i) for i in items)
         elif runner == "vitest":
             cmd = "npx vitest run " + " ".join(shlex.quote(i) for i in items)
+        elif runner == "dotnet":
+            by_proj = defaultdict(set)
+            for proj, name in items:
+                by_proj[proj].add(name)
+            cmd = " && ".join("dotnet test " + shlex.quote(proj) + " --filter " + shlex.quote(_dotnet_filter(names))
+                              for proj, names in sorted(by_proj.items()))
         elif runner == "jest":
-            cmd = "npx jest " + " ".join(shlex.quote(i) for i in items)
+            # by path: jest reads a plain argument as a pattern (`[id].test.tsx` is a character class)
+            cmd = "npx jest --runTestsByPath " + " ".join(shlex.quote(i) for i in items)
         else:
             by_dir = defaultdict(list)
             for d, name in items:
                 by_dir[d].append(name)
-            cmd = " && ".join(f"go test ./{d if d != '.' else ''} -run " + shlex.quote("^(" + "|".join(sorted(set(ns))) + ")$")
+            cmd = " && ".join("go test " + shlex.quote("./" + (d if d != "." else "")) + " -run "
+                              + shlex.quote("^(" + "|".join(sorted(set(ns))) + ")$")
                               for d, ns in sorted(by_dir.items()))
         out.append({"runner": runner, "cwd": cwd, "command": cmd, "tests": len(items)})
     if other:
@@ -447,6 +504,6 @@ def text(r: dict) -> str:
             L.append(f"  cd {_quote(c['cwd'])} && {c['command']}")
     for c in r["commands"]:
         if not c["command"]:
-            L += ["", "No runner recognized for: " + _some(c["unrecognized"], 6) + "."]
+            L += ["", "No runner recognized for: " + _some(c["unrecognized"], 6, c["tests"]) + "."]
     L += ["", r["note"]]
     return "\n".join(L)

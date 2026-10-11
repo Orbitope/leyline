@@ -210,6 +210,265 @@ not ok 2 - setup fails
     assert {r["name"]: r["status"] for r in diff.parse_test_output(tap14)} == {"group > inner one": "pass", "group > inner two": "skip"}
 
 
+def test_pytest_names_end_where_the_message_starts():
+    """A parameter id with ` - ` in it was cut there, and XFAIL and XPASS kept their reason in the test's name."""
+    out = {r["name"]: r for r in diff.parse_test_output(
+        "PASSED t.py::test_p[a - b]\nFAILED t.py::test_f[p - q] - AssertionError: bad - thing\n"
+        "XFAIL t.py::TestK::test_xf - known - bug\nXPASS t.py::TestK::test_xp - flaky\nFAILED t.py::test_g[c: d]\n")}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "t.py::test_p[a - b]": "pass", "t.py::test_f[p - q]": "fail", "t.py::TestK::test_xf": "skip",
+        "t.py::TestK::test_xp": "pass", "t.py::test_g[c: d]": "fail"}
+    assert out["t.py::test_f[p - q]"]["message"] == "AssertionError: bad - thing"
+    assert spec._result_keys("t.py::TestK::test_xp")[0] >= {"xp"}
+
+
+def test_a_pytest_collection_error_is_recorded_under_its_file():
+    """`ERROR tests/x.py - ModuleNotFoundError: ...` (pytest 7) was a test named `tests/x.py - ModuleNotFoundError`."""
+    text = ("PASSED tests/test_ok.py::test_fine\n"
+            "ERROR tests/test_bad.py - ModuleNotFoundError: No module named 'nosuchmodule_xyz'\n"
+            "ERROR tests/sub/test_worse.py - ImportError: cannot import name 'a' - b\n"
+            "ERROR tests/test_plain.py\n")   # pytest 8 and 9 print no message here
+    out = {r["name"]: r for r in diff.parse_test_output(text)}
+    assert set(out) == {"tests/test_ok.py::test_fine", "tests/test_bad.py", "tests/sub/test_worse.py", "tests/test_plain.py"}
+    assert out["tests/test_bad.py"]["status"] == "fail"
+    assert out["tests/test_bad.py"]["message"] == "ModuleNotFoundError: No module named 'nosuchmodule_xyz'"
+    assert out["tests/sub/test_worse.py"]["message"] == "ImportError: cannot import name 'a' - b"
+
+
+# `go test -v ./...` and `go test ./...` on a package with a passing, a failing, a table and a skipped test, and a
+# second package that passes, as go 1.2x prints them.
+GO_V = """=== RUN   TestStart
+--- PASS: TestStart (0.00s)
+=== RUN   TestShout
+    engine_test.go:8: want "X!", got "X"
+--- FAIL: TestShout (0.00s)
+=== RUN   TestTable
+=== RUN   TestTable/upper_case
+=== RUN   TestTable/empty
+    engine_test.go:15: empty name
+--- FAIL: TestTable (0.00s)
+    --- PASS: TestTable/upper_case (0.00s)
+    --- FAIL: TestTable/empty (0.00s)
+=== RUN   TestSkipped
+    engine_test.go:21: later
+--- SKIP: TestSkipped (0.00s)
+FAIL
+FAIL\texample.com/engine\t0.252s
+=== RUN   TestFine
+--- PASS: TestFine (0.00s)
+PASS
+ok  \texample.com/engine/ok\t0.377s
+?   \texample.com/engine/cmd\t[no test files]
+FAIL
+"""
+GO_PLAIN = """--- FAIL: TestShout (0.00s)
+    engine_test.go:8: want "X!", got "X"
+--- FAIL: TestTable (0.00s)
+    --- FAIL: TestTable/empty (0.00s)
+        engine_test.go:15: empty name
+FAIL
+FAIL\texample.com/engine\t0.136s
+ok  \texample.com/engine/ok\t0.263s
+FAIL\texample.com/engine/broken [build failed]
+FAIL
+"""
+
+
+def test_go_test_output_is_read_test_by_test():
+    """`--- PASS: TestX` lines were not read, and the package lines `ok  <pkg>` and `FAIL <pkg>` were read as tests."""
+    out = {r["name"]: r for r in diff.parse_test_output(GO_V)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "TestStart": "pass", "TestShout": "fail", "TestTable > upper_case": "pass", "TestTable > empty": "fail",
+        "TestSkipped": "skip", "TestFine": "pass"}
+    assert out["TestShout"]["message"] == 'engine_test.go:8: want "X!", got "X"'
+    assert out["TestTable > empty"]["message"] == "engine_test.go:15: empty name"
+    out = {r["name"]: r for r in diff.parse_test_output(GO_PLAIN)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "TestShout": "fail", "TestTable > empty": "fail", "example.com/engine/broken": "fail"}
+    assert out["TestShout"]["message"] == 'engine_test.go:8: want "X!", got "X"'
+    assert out["TestTable > empty"]["message"] == "engine_test.go:15: empty name"
+    assert out["example.com/engine/broken"]["message"] == "build failed"
+    assert spec._result_keys("TestTable > upper_case")[0] >= {"upper case"}
+
+
+# Jest's default reporter, as `jest --verbose` prints it for two files (one failing) and a file that cannot load;
+# without --verbose only the file lines and the `●` sections are printed.
+JEST = """ PASS  src/engine.test.js
+  Engine
+    start
+      ✓ returns upper case (2 ms)
+      ○ skipped is quiet
+      ✎ todo whispers
+ FAIL  src/shout.test.js (5.123 s)
+  Engine
+    shout
+      ✓ is loud (1 ms)
+      ✕ adds a bang (3 ms)
+  ✓ top level (1 ms)
+
+  ● Engine › shout › adds a bang
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: "X!"
+    Received: "X"
+
+      3 | describe("Engine", () => {
+    > 5 |   expect(shout("x")).toBe("X!");
+
+      at Object.<anonymous> (src/shout.test.js:5:20)
+
+ FAIL  src/broken.test.js
+  ● Test suite failed to run
+
+    Cannot find module './nope' from 'src/broken.test.js'
+
+Test Suites: 2 failed, 1 passed, 3 total
+Tests:       1 failed, 1 skipped, 1 todo, 3 passed, 6 total
+Snapshots:   0 total
+Time:        6.2 s
+Ran all test suites.
+"""
+JEST_SHORT = """ PASS  src/engine.test.js
+ FAIL  src/shout.test.js
+  ● Engine › shout › adds a bang
+
+    expect(received).toBe(expected) // Object.is equality
+
+Test Suites: 1 failed, 1 passed, 2 total
+"""
+
+
+def test_jest_output_is_read_test_by_test():
+    """Jest's ` PASS  file` lines were read as tests named for the file, and its ✓ and ✕ lines not at all."""
+    out = {r["name"]: r for r in diff.parse_test_output(JEST)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "src/engine.test.js > Engine > start > returns upper case": "pass",
+        "src/engine.test.js > Engine > start > is quiet": "skip",
+        "src/engine.test.js > Engine > start > whispers": "skip",
+        "src/shout.test.js > Engine > shout > is loud": "pass",
+        "src/shout.test.js > Engine > shout > adds a bang": "fail",
+        "src/shout.test.js > top level": "pass",
+        "src/broken.test.js": "fail"}
+    assert out["src/shout.test.js > Engine > shout > adds a bang"]["message"] == \
+        "expect(received).toBe(expected) // Object.is equality"
+    assert out["src/broken.test.js"]["message"] == "Cannot find module './nope' from 'src/broken.test.js'"
+    out = {r["name"]: r["status"] for r in diff.parse_test_output(JEST_SHORT)}
+    assert out == {"src/shout.test.js > Engine > shout > adds a bang": "fail"}
+
+
+# dotnet test --logger "console;verbosity=detailed" on an xUnit project: a fact, a theory's rows, a failure.
+DOTNET = """  Passed Shop.Tests.CartTests.Total_adds_the_lines [3 ms]
+  Passed Shop.Tests.CartTests.Parses_a_price(text: "1.50", expected: 150) [< 1 ms]
+  Skipped Shop.Tests.CartTests.Slow_one [1 ms]
+  Failed Shop.Tests.CartTests.Empty_cart_is_free [107 ms]
+  Error Message:
+   Assert.Equal() Failure: Values differ
+Expected: 0
+  Stack Trace:
+     at Shop.Tests.CartTests.Empty_cart_is_free() in /src/Shop.Tests/CartTests.cs:line 30
+
+Test Run Failed.
+Total tests: 4
+     Passed: 2
+     Failed: 1
+"""
+
+
+def test_dotnet_test_output_is_read_test_by_test(tmp_path):
+    """dotnet test prints `Passed Ns.Class.Method [3 ms]`: none of it was read, so `plan` found no test results."""
+    out = {r["name"]: r for r in diff.parse_test_output(DOTNET)}
+    assert {n: r["status"] for n, r in out.items()} == {
+        "Shop.Tests.CartTests > Total_adds_the_lines": "pass",
+        'Shop.Tests.CartTests > Parses_a_price(text: "1.50", expected: 150)': "pass",
+        "Shop.Tests.CartTests > Slow_one": "skip",
+        "Shop.Tests.CartTests > Empty_cart_is_free": "fail"}
+    assert out["Shop.Tests.CartTests > Empty_cart_is_free"]["message"] == "Assert.Equal() Failure: Values differ"
+    root = tmp_path / "repo"
+    (root / "Shop.Tests").mkdir(parents=True)
+    (root / "Shop.Tests/Shop.Tests.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    (root / "Shop.Tests/CartTests.cs").write_text(
+        "using Xunit;\nnamespace Shop.Tests;\npublic class CartTests\n{\n"
+        "    [Fact] public void Total_adds_the_lines() { }\n"
+        "    [Theory] [InlineData(\"1.50\", 150)] public void Parses_a_price(string text, int expected) { }\n"
+        "    [Fact] public void Slow_one() { }\n"
+        "    [Fact] public void Empty_cart_is_free() { }\n}\n")
+    db = tmp_path / "s.db"
+    index(root, db, "shop")
+    con = store.connect(db)
+    assert diff.record_tests(con, "after", list(out.values()))["matched_to_test_nodes"] == 4
+
+
+# node --test --test-reporter=tap (node 26) on test("tab\there"), test("back\\slash t"), test("new\nline"),
+# test("parses {"), describe("suite {", () => test("inside")) and test("hash # here").
+NODE_ESCAPED = """TAP version 13
+# Subtest: tab\\\\there
+ok 1 - tab\\\\there
+  ---
+  duration_ms: 0.4
+  ...
+# Subtest: back\\\\slash t
+ok 2 - back\\\\slash t
+# Subtest: new\\\\nline
+ok 3 - new\\\\nline
+# Subtest: parses {
+ok 4 - parses {
+  ---
+  duration_ms: 0.1
+  ...
+# Subtest: suite {
+    # Subtest: inside
+    ok 1 - inside
+    1..1
+ok 5 - suite {
+# Subtest: hash \\# here
+ok 6 - hash \\# here
+1..6
+"""
+
+
+def test_node_test_names_are_read_as_the_runner_meant(tmp_path):
+    """node:test prints a tab as `\\\\t` and a newline as `\\\\n`, kept as a backslash and a letter; and a name ending in
+    ` {` lost it, read as vitest's brace that opens a block."""
+    got = [r["name"] for r in diff.parse_test_output(NODE_ESCAPED)]
+    assert got == ["tab\there", "back\\slash t", "new\nline", "parses {", "suite { > inside", "hash # here"]
+    # The map keeps a test's name as written in the source (`"tab\\there"`): the result still finds it.
+    work = tmp_path / "js"
+    (work / "test").mkdir(parents=True)
+    (work / "test/a.test.mjs").write_text('import { test } from "node:test";\ntest("tab\\there", () => {});\n'
+                                          'test("parses {", () => {});\n')
+    index(work, tmp_path / "s.db", "r")
+    names = diff.TestNames(store.connect(tmp_path / "s.db"))
+    assert names.node("tab\there") and names.node("parses {")
+
+
+def test_a_suite_named_for_a_method_is_not_a_file(tmp_path):
+    """node:test prints no file, so `Engine.start > returns upper case` read `Engine.start` as the test's file and
+    tied the result to no test."""
+    work = tmp_path / "js"
+    (work / "src").mkdir(parents=True)
+    (work / "test").mkdir()
+    (work / "src/engine.js").write_text("export class Engine {\n  start() { return 'X'; }\n}\n")
+    (work / "test/engine.test.js").write_text(
+        "import { describe, it } from 'vitest';\nimport { Engine } from '../src/engine.js';\n"
+        "describe('Engine.start', () => {\n  it('returns upper case', () => { new Engine().start(); });\n});\n")
+    index(work, tmp_path / "s.db", "r")
+    names = diff.TestNames(store.connect(tmp_path / "s.db"))
+    assert diff.result_parts("Engine.start > returns upper case")["file"] is None
+    want = names.node("test/engine.test.js > Engine.start > returns upper case")
+    assert want and names.node("Engine.start > returns upper case") == want
+
+
+def test_node_test_names_and_messages_as_printed():
+    """node:test escapes `#` in a `# Subtest:` line too, and prints a failure's message as `error:`."""
+    text = ("TAP version 13\n# Subtest: Engine \\#start\n    # Subtest: fails\n    not ok 1 - fails\n      ---\n"
+            "      error: '1 == 2'\n      stack: |-\n        at x\n      ...\n    1..1\nnot ok 1 - Engine \\#start\n"
+            "# Subtest: block\nnot ok 2 - block\n  ---\n  error: |-\n    multi\n  ...\n1..2\n")
+    out = {r["name"]: r for r in diff.parse_test_output(text)}
+    assert set(out) == {"Engine #start > fails", "block"}
+    assert out["Engine #start > fails"]["message"] == "1 == 2" and not out["block"]["message"]
+
+
 def test_pytest_parameters_are_separate_results():
     """Finding 2: `test_x[a]` was stored as `test_x`, so a failing parameter hid behind a passing one."""
     out = {r["name"]: r["status"] for r in diff.parse_test_output(pytest_out(["a", "zero"], fail="zero"))}
@@ -315,6 +574,18 @@ def test_drift_is_still_reported(repo):
     out = loop.check(db, ch, diff.parse_test_output(tap(AFTER) + pytest_out(["a", "zero"])))
     assert sorted(n["name"] for n in out["drift"]) == ["<top-level>", "other"] and not out["done_as_agreed"]
     assert "the top level of tool/checks.py" in (ch / "leyline.md").read_text()
+
+
+def test_a_comment_edited_outside_any_function_is_not_an_edit_outside_the_spec(repo):
+    work, ch, db = repo
+    loop.plan(db, ch, diff.parse_test_output(tap(BEFORE) + pytest_out(["a"])))
+    implement(work)
+    v = work / "tool/validator.ts"
+    v.write_text("/**\n * Validation of items.\n */\n// counts are checked elsewhere\n" + v.read_text())
+    c = work / "tool/checks.py"
+    c.write_text("# Checks, kept small.\n" + c.read_text())
+    out = loop.check(db, ch, diff.parse_test_output(tap(AFTER) + pytest_out(["a", "zero"])))
+    assert [n["name"] for n in out["drift"]] == [], out["drift"]
 
 
 def test_findings_show_the_claim_then_the_decision_and_reviews_that_found_nothing(repo):

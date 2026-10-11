@@ -11,6 +11,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Optional
 
+from . import store
+
 KEEP_ATTRS = ("framework", "runner", "native_kind", "visibility", "signature", "declared_type", "trigger", "is_static",
               "is_abstract", "marker", "ecosystem", "category", "also_in", "namespace", "version",
               "target_framework", "url", "is_test")
@@ -183,7 +185,6 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
     except Exception:  # a store written before tours existed
         tour_list = []
     sources = {}
-    from . import store
     roots = {k: str(v) for k, v in store.roots(con).items()}
     # The folder mapped is where the code is; git's origin is shown apart, and only when it is a URL (a clone of a
     # local folder has that folder as its origin, which is not this one).
@@ -201,7 +202,7 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 try:
                     # numbered as the parsers number lines, so a span points at the same text in the page
-                    text = "\n".join(source_lines(p)) if p.is_file() else None
+                    text = "\n".join(source_lines(p)) if p.is_file() and store.inside(p, roots[r["repo_id"]]) else None
                 except OSError:
                     text = None
                 if text is not None:
@@ -274,7 +275,7 @@ def changes(con, index: dict, roots: dict) -> list[dict]:
              "checked": review["created"] if review else None, "tasks": [], "scenarios": [], "page": None, "folder": None}
         for root in roots.values():   # the change folder sits in one of the mapped repositories
             folder = Path(root) / "openspec" / "changes" / name
-            if (folder / "leyline.md").is_file():
+            if (folder / "leyline.md").is_file() and store.inside(folder / "leyline.md", root):
                 c["page"] = (folder / "leyline.md").read_text(encoding="utf-8", errors="replace")
                 c["folder"] = f"openspec/changes/{name}/"
                 break
@@ -407,7 +408,7 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
     if memory and memory.is_file():
         try:
             old = json.loads(memory.read_text(encoding="utf-8")).get("levels", {})
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError, RecursionError):
             old = {}
     width = lambda i: _box_width(N, i, kids)
     out, keep = {}, {}
@@ -420,7 +421,7 @@ def layout(g: dict, memory: Optional[Path] = None) -> dict:
         try:
             body = json.dumps({"version": 1, "levels": keep}, separators=(",", ":"), sort_keys=True)
             if not memory.is_file() or memory.read_text(encoding="utf-8") != body:
-                memory.write_text(body, encoding="utf-8")
+                store.write_file(memory, body)
         except OSError:
             pass
     return out
@@ -656,7 +657,9 @@ def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, 
         # A big map goes in gzipped: the page unpacks it with the browser's own DecompressionStream.
         data, kind = base64.b64encode(gzip.compress(data.encode(), 6, mtime=0)).decode(), "application/gzip+base64"
     else:
-        data = data.replace("</", "<\\/")
+        # No `<` at all inside the script element: `</script>` would end it, and `<!--` then `<script` in some
+        # source text would make the browser read past its real end tag and into the viewer's code.
+        data = data.replace("<", "\\u003c")
     repos = [r["id"] for r in g["repos"]] or ["repo"]
     name = repos[0] if len(repos) == 1 else " + ".join(repos[:3]) + (f" and {len(repos) - 3} more" if len(repos) > 3 else "")
     return (template.replace("__LEYLINE_REPO__", html.escape(name))

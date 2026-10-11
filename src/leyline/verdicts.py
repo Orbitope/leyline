@@ -228,6 +228,9 @@ def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str
     if s["state"] != "passes":
         if s["state"] == "skipped":
             return INCONCLUSIVE, "its test was skipped, so no pass or fail was recorded"
+        if s["state"] == "results older than the code":
+            return INCONCLUSIVE, ("its test has results, but they are older than the code: run the tests again and"
+                                  " pass their output")
         if s["state"] == "no test":
             return INCONCLUSIVE, "it has no test, and no result carries its name"
         return INCONCLUSIVE, "no result for its test was recorded"
@@ -236,7 +239,10 @@ def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str
     if ran is False:
         return PERSON, ("its test passes, but measured per-test coverage shows it never ran the changed code, so it"
                         " would pass whatever the change did")
-    if before is not None and (not before or any(r["status"] == "fail" for r in before)):
+    # No result before: the test is new since the plan when the baseline does not hold it. One the baseline holds was
+    # merely left out of the run before (a subset was passed), so it is judged by whether it reaches the change.
+    new_test = s.get("test") is None or s.get("test_new", True)
+    if before is not None and (any(r["status"] == "fail" for r in before) or (not before and new_test)):
         return PROVEN, ("its test failed before the change and passes now" if before
                         else "its test is new since the plan, and passes")
     if ran or measured or (measured is None and static):
@@ -248,6 +254,9 @@ def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str
     if before is None:
         return PERSON, ("its test passes, but no run from before the change was recorded, and the test is not on the"
                         " map, so whether it tests the change cannot be told")
+    if not before:
+        return PERSON, ("its test passes, but the run before the change left it out, and it is not on the map, so"
+                        " whether it runs the changed code cannot be told")
     return PERSON, ("its test passed before the change too, and it is not on the map, so whether it runs the changed"
                     " code cannot be told")
 

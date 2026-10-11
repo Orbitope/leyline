@@ -29,11 +29,119 @@ def _current(con) -> bool:
     return row is not None and row[0] == SCHEMA_VERSION
 
 
+def write_file(path: str | Path, data: str | bytes) -> None:
+    """Write a file Leyline makes inside a repository (a page, the store's folder, a skill) without following a link
+    at its name. The repository may be someone else's, and a link committed where Leyline writes (`.leyline/map.html`
+    pointing at ~/.bashrc) would otherwise have Leyline write over the file it points at. The text goes to a new
+    file beside it, which then takes the name's place: a link there is replaced, not written through."""
+    import os
+    import tempfile
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # The mode of the file it replaces, unless that is a link: a temporary file is private; the file it becomes is not.
+    mode = path.stat().st_mode & 0o777 if path.is_file() and not path.is_symlink() else 0o644
+    fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        # Also whole or not at all: a write that fails part way (a full disk, a killed process) leaves the file as it was.
+        with os.fdopen(fd, "wb" if isinstance(data, bytes) else "w",
+                       **({} if isinstance(data, bytes) else {"encoding": "utf-8", "newline": "\n"})) as f:
+            f.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def inside(path: str | Path, root: str | Path, resolved: bool = False) -> bool:
+    """Whether `path`, links followed, is `root` or under it: a file Leyline reads from a repository into a page or an
+    answer (a README, a change's proposal) must not be a link to one outside it, such as ~/.aws/credentials.
+    `resolved`: root is already the real path (a caller checking many files under it resolves it once)."""
+    try:
+        real, top = Path(path).resolve(), (Path(root) if resolved else Path(root).resolve())
+    except (OSError, RuntimeError):
+        return False
+    return real == top or top in real.parents
+
+
+class UntrustedStore(RuntimeError):
+    """A store folder Leyline will not use: the repository tracks files in it, or it links outside the repository."""
+
+
+TRUST_ENV = "LEYLINE_TRUST_STORE"
+_TRACKED: dict = {}   # (folder, the git index's mtime) -> the files git tracks in the folder
+
+
+def check_folder(folder: str | Path) -> None:
+    """Refuse a .leyline/ folder that is not Leyline's own. Its files are local and rebuilt by `leyline map`, so a
+    repository that tracks some (a pull request can commit a store with annotations, resolved findings and rules of
+    its making, or a snapshot or review page, and checking it out writes over the ignored copy) is supplying them,
+    and a .leyline that is a link to a folder outside the repository would have Leyline write there.
+    LEYLINE_TRUST_STORE=1 uses the folder anyway. A store kept anywhere else (--db) is the person's choice."""
+    import os
+    import subprocess
+    folder = Path(folder).absolute()
+    if folder.name != ".leyline" or os.environ.get(TRUST_ENV) == "1":
+        return
+    if folder.is_symlink() and not inside(folder, folder.parent):
+        raise UntrustedStore(f"{folder} is a link to {folder.resolve()}, outside the repository: Leyline does not write"
+                             f" its store there. Remove the link (or keep the store elsewhere with --db or LEYLINE_DB),"
+                             f" or set {TRUST_ENV}=1 if you made it.")
+    top = next((d for d in folder.parents if (d / ".git").exists()), None)
+    if top is None or not folder.is_dir():
+        return
+    try:
+        stamp = (top / ".git" / "index").stat().st_mtime_ns if (top / ".git").is_dir() else (top / ".git").stat().st_mtime_ns
+    except OSError:
+        stamp = None
+    key = (str(folder), stamp)
+    if key not in _TRACKED:
+        try:
+            run = subprocess.run(["git", "-C", str(folder), "ls-files", "-z", "--full-name", "--", "."],
+                                 capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+            listed = [n for n in run.stdout.decode("utf-8", "replace").split("\0") if n] if run.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            listed = []
+        _TRACKED.clear() if len(_TRACKED) > 100 else None
+        _TRACKED[key] = listed
+    tracked = _TRACKED[key]
+    if tracked:
+        shown = ", ".join(tracked[:5]) + (f" and {len(tracked) - 5} more" if len(tracked) > 5 else "")
+        raise UntrustedStore(f"the repository at {top} tracks files in Leyline's store folder ({shown}). They are not"
+                             " Leyline's: a store, snapshot or review page committed there may say whatever its author"
+                             " wanted. Stop tracking them (`git rm -r --cached .leyline`, then map again), or keep the"
+                             " store outside the repository (--db /elsewhere/leyline.db, or LEYLINE_DB), or set"
+                             f" {TRUST_ENV}=1 to use them as they are.")
+
+
+def escapes(folder: str | Path) -> Optional[str]:
+    """Why Leyline writes nothing into `folder` (a change folder, openspec/), or None: it is a link, or under one, to a
+    place outside the repository it sits in (the folder above openspec/, else the nearest with .git). A repository
+    can commit openspec/changes/x as a link to any folder, and the page written there would land outside it."""
+    folder = Path(folder).absolute()
+    chain = [folder, *folder.parents]
+    top = (next((p.parent for p in chain if p.name == "openspec"), None)
+           or next((p for p in chain if (p / ".git").exists()), None))
+    if top is None or inside(folder, top):
+        return None
+    return (f"{folder} is a link to {folder.resolve()}, outside the repository at {top}: Leyline writes nothing there"
+            " (a repository can commit such a link to have files written anywhere)")
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     db_path = Path(db_path)
+    check_folder(db_path.parent)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Another leyline run may be writing (a map while a plan starts): wait for it rather than fail at once.
     con = sqlite3.connect(str(db_path), timeout=BUSY_SECONDS)
+    try:
+        return _prepare(con)
+    except BaseException:   # a store another run holds, or one that is not a store: the caller gets no connection
+        con.close()
+        raise
+
+
+def _prepare(con: sqlite3.Connection) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=OFF")  # edges may point at nodes written later in a run
@@ -293,9 +401,10 @@ def refresh_stale(con) -> int:
 
 
 def write_coverage(con, repo_id, extractor, version, status, commit, stats: dict) -> None:
+    # Keys sorted: the counts are added up in another order by an incremental run than by a full one.
     con.execute(
         "INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
-        (repo_id, extractor, version, status, commit, json.dumps(stats)),
+        (repo_id, extractor, version, status, commit, json.dumps(stats, sort_keys=True)),
     )
 
 

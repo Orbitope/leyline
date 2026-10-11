@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import sqlite3
 from collections import defaultdict
 from typing import Optional
 
@@ -278,7 +279,10 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
                     f" AND test != '' GROUP BY test ORDER BY hits DESC, test", sorted(touched)):
                 if r["test_id"] and r["test_id"] in nodes and r["test_id"] not in have:
                     have.add(r["test_id"])
-                    flows.append({"id": f"flow:{r['test_id']}", "name": nodes[r["test_id"]]["name"], "kind": "test",
+                    # its test flow: flow:<test>, or flow:<test>#test when the test is an entry point too
+                    fid = con.execute("SELECT id FROM flows WHERE entry_id = ? AND json_extract(attrs, '$.kind') = 'test'"
+                                      " ORDER BY id LIMIT 1", (r["test_id"],)).fetchone()
+                    flows.append({"id": fid[0] if fid else f"flow:{r['test_id']}", "name": nodes[r["test_id"]]["name"], "kind": "test",
                                   "trigger": "measured", "touched_steps": r["hits"], "entry": r["test_id"], "measured": True})
                     mark(r["test_id"], "test", "ran the changed code when coverage was measured; run it", None)
                 elif r["test_id"] in have:
@@ -365,7 +369,7 @@ def assess(con, intent: str, targets: list[dict], depth: int = 4, test_entries: 
                     "depth": depth},
         "risks": risks,
         "must_edit": [brief(m) for m in ordered if m["role"] in ("must_edit", "contract")][:80],
-        "tests_to_run": [{"name": f["name"], "id": f["entry"], "touched_steps": f["touched_steps"],
+        "tests_to_run": [{"name": f["name"], "id": f["entry"], "flow": f["id"], "touched_steps": f["touched_steps"],
                           **({"measured": True} if f.get("measured") else {})} for f in tests],
         # a script's body is named by its file, never by the map's id for it (`app.tools.run.<module>`); the
         # product's own entry points before scripts, benchmarks and examples
@@ -405,11 +409,20 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
     kept = have and diff.moved_on(con, cid)
     old = con.execute("SELECT base_commit FROM change_proposals WHERE id = ?", (cid,)).fetchone() if kept else None
     base = old[0] if old else (commit[0] if commit else None)
+    # Planned again after a check: the checks so far stay, and a change its last check found done is reopened.
+    was = con.execute("SELECT status, attrs FROM change_proposals WHERE id = ?", (cid,)).fetchone()
+    was_attrs = json.loads(was[1] or "{}") if was else {}
+    history = {k: was_attrs[k] for k in ("checks",) if k in was_attrs}
+    status = "draft"
+    if was and was[0] == "verified":
+        status = "reopened"
+        history["reopened"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with con:
         con.execute("INSERT OR REPLACE INTO change_proposals (id, intent, status, base_commit, head_commit, attrs)"
                     " VALUES (?,?,?,?,NULL,?)",
-                    (cid, intent, "draft", base,
-                     json.dumps({"title": title, "targets": targets, "report": {k: v for k, v in report.items() if k != "marks"}})))
+                    (cid, intent, status, base,
+                     json.dumps({"title": title, "targets": targets, **history,
+                                 "report": {k: v for k, v in report.items() if k != "marks"}})))
     marks = report["marks"]
     if kept:   # what the earlier brief predicted stays predicted: by now those things exist and look like plain edits
         prior = con.execute("SELECT spec FROM views WHERE id = ?", ("view-" + cid,)).fetchone()
@@ -435,8 +448,9 @@ def propose(con, intent: str, targets: list[dict], title: Optional[str] = None, 
         try:  # keep the graph as it was when the change was proposed, to compare against later
             diff.snapshot(con, cid)
             report["snapshot"] = "new"
-        except Exception:
+        except (OSError, sqlite3.Error) as e:   # a full disk, a folder that cannot be written
             report["snapshot"] = False
+            report["snapshot_error"] = f"{type(e).__name__}: {e}"
     report["change_id"], report["view_id"] = cid, view.get("id")
     report["marks"] = report["marks"][:60]
     return report

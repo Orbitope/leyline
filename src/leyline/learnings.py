@@ -29,9 +29,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +37,8 @@ from . import store
 
 FILE_IN_OPENSPEC = "openspec/leyline-learnings.json"
 FILE_AT_ROOT = ".leyline-learnings.json"
+COUNTERS = ("hits", "dismissals", "accepted", "findings")   # kept by the reviews themselves, not decided by anyone
+FOR_ITS_FINDING = "the finding it came from was marked"
 ABOUT = ("Decisions people made on Leyline review findings: each rejected finding, with the reason in the person's"
          " words and the code it is about. Reviewers read the active ones first. Commit this file.")
 # Word overlap (Jaccard) a finding's claim needs with a learning's claim to match it: closer code needs less.
@@ -69,12 +69,24 @@ def path_for(root: Path) -> Path:
     return root / FILE_IN_OPENSPEC if (root / "openspec").is_dir() else root / FILE_AT_ROOT
 
 
-def _read(path: Path) -> list[dict]:
+class Unreadable(OSError):
+    """A learnings file that is there but cannot be read (a merge left conflict markers in it): it is not written over."""
+
+
+def _read(path: Path, strict: bool = False) -> list[dict]:
+    """The learnings in a file. `strict`, for a read that will be written back: a file that is there and cannot be
+    read raises Unreadable, so the decisions in it are not replaced by a file holding only the new one."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, RecursionError) as e:
+        if strict:
+            raise Unreadable(f"{path} could not be read ({e}); fix it by hand, then decide again")
         return []
     items = data.get("learnings") if isinstance(data, dict) else None
+    if strict and not isinstance(items, list):
+        raise Unreadable(f"{path} could not be read (no list of learnings in it); fix it by hand, then decide again")
     return [x for x in items if isinstance(x, dict) and x.get("id")] if isinstance(items, list) else []
 
 
@@ -84,16 +96,9 @@ def _write(path: Path, items: list[dict]) -> None:
     items = sorted(({k: v for k, v in x.items() if not k.startswith("_")} for x in items),
                    key=lambda x: (x.get("created", ""), x["id"]))
     body = json.dumps({"about": ABOUT, "learnings": items}, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(body)
-        os.chmod(tmp, path.stat().st_mode & 0o777 if path.exists() else 0o644)   # a temp file is private; this is not
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    if (why := store.escapes(path.parent)):
+        raise store.UntrustedStore(why)
+    store.write_file(path, body)
 
 
 def _roots(con) -> dict:
@@ -113,6 +118,70 @@ def _all(con) -> dict:
         if p.is_file():
             out[p] = _read(p)
     return out
+
+
+def unreadable(con) -> list[str]:
+    """Why each learnings file that is there cannot be read: its learnings are missing from every list until it is fixed."""
+    out = []
+    for root in _roots(con).values():
+        p = path_for(root)
+        if p.is_file():
+            try:
+                _read(p, strict=True)
+            except Unreadable as e:
+                out.append(str(e).replace("; fix it by hand, then decide again", "; fix it by hand"))
+    return out
+
+
+# -- learnings a pull request brings with it ---------------------------------------------------------
+def _items_at(root: Path, rev: str, rel: str) -> dict:
+    """{id: learning} in a learnings file as a commit has it; {} when it has none or it cannot be read."""
+    import subprocess
+    try:
+        run = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{rel}"], capture_output=True, timeout=60,
+                             stdin=subprocess.DEVNULL)
+        data = json.loads(run.stdout.decode("utf-8", "replace")) if run.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
+        return {}
+    items = data.get("learnings") if isinstance(data, dict) else None
+    return {x["id"]: x for x in items if isinstance(x, dict) and x.get("id")} if isinstance(items, list) else {}
+
+
+def from_the_change(con, change_id: Optional[str]) -> dict:
+    """{learning id: why} for the learnings a pull request's own commits add or change. A learning says a reviewer's
+    worry was rejected before, so a pull request that commits one ("f may return anything, do not flag it") would be
+    steering its own review: those are not applied to it, and its page lists them for the person to judge."""
+    if not change_id or not change_id.startswith("pr-"):
+        return {}
+    row = con.execute("SELECT attrs FROM change_proposals WHERE id = ?", (change_id,)).fetchone()
+    a = json.loads(row[0] or "{}") if row else {}
+    if not a.get("root") or not a.get("base_sha") or not Path(a["root"]).is_dir():
+        return {}
+    # The file may have moved between the two places it can live, so each side is read from both. What the review
+    # itself writes into a learning while it runs (the findings it matched and their counts) is bookkeeping, not a
+    # decision: committing it changes nothing a reviewer would be steered by.
+    before, after = {}, {}
+    for rel in (FILE_IN_OPENSPEC, FILE_AT_ROOT):
+        before.update(_items_at(Path(a["root"]), a["base_sha"], rel))
+        after.update(_items_at(Path(a["root"]), "HEAD", rel))
+    decision = lambda x: {k: v for k, v in x.items() if k not in COUNTERS}
+    out = {}
+    for lid, item in after.items():
+        if lid not in before:
+            out[lid] = "added by this pull request"
+        elif decision(before[lid]) != decision(item):
+            out[lid] = "changed by this pull request"
+    return out
+
+
+def not_applied(con, change_id: str) -> list[dict]:
+    """The learnings a pull request adds or changes, as the page lists them: not applied to its review."""
+    skip = from_the_change(con, change_id)
+    if not skip:
+        return []
+    items = {l["id"]: l for ls in _all(con).values() for l in ls}
+    return [{"id": lid, "why": why, "claim": (items.get(lid) or {}).get("claim"), "reason": (items.get(lid) or {}).get("reason")}
+            for lid, why in sorted(skip.items())]
 
 
 # -- where a finding points ----------------------------------------------------------------------
@@ -147,6 +216,14 @@ def scope_of(con, ids: list[str]) -> dict:
         if row["path"]:
             s["paths"].add(row["path"])
     return {k: sorted(v) for k, v in s.items()}
+
+
+def _in_repo(con, ids: list[str], repo: Optional[str]) -> list[str]:
+    """The ids of nodes in one repository. A learnings file's ids leave the repository's id out, so in a workspace
+    another repository can hold a node of the same id: a learning is compared only with code in its own."""
+    if repo is None:
+        return list(ids)
+    return [i for i in ids if (con.execute("SELECT repo_id FROM nodes WHERE id = ?", (i,)).fetchone() or [None])[0] == repo]
 
 
 def _nested(a: str, b: str) -> bool:
@@ -386,14 +463,15 @@ def _recount(l: dict) -> None:
                         f" {l['dismissals']}, so the decision no longer holds.")
 
 
-def best_match(con, reviewer: str, claim: str, evidence: list[str]) -> Optional[tuple]:
+def best_match(con, reviewer: str, claim: str, evidence: list[str], skip=()) -> Optional[tuple]:
     """The active learning a new finding repeats: the same kind of review, close code, and a claim saying much the
-    same thing. (file, learning, level, similarity), or None."""
-    here = scope_of(con, evidence)
+    same thing. (file, learning, level, similarity), or None. Learnings in `skip` are not compared."""
+    repos = _repos(con)
     best = None
     for path, items in _all(con).items():
+        here = scope_of(con, _in_repo(con, evidence, repos.get(path)))
         for l in items:
-            if l.get("status", "active") != "active" or l.get("reviewer") != reviewer:
+            if l.get("status", "active") != "active" or l.get("reviewer") != reviewer or l["id"] in skip:
                 continue
             level = overlap(l.get("scope") or {}, here)
             if level is None:
@@ -414,11 +492,12 @@ def on_finding(con, fid: str, reviewer: str, claim: str, evidence: list[str]) ->
     """After a finding is filed: when it repeats a past decision, count the hit and say which decision. The finding
     is kept either way; the person decides whether the decision still holds."""
     try:
-        m = best_match(con, reviewer, claim, evidence)
+        row = _finding(con, fid)
+        m = best_match(con, reviewer, claim, evidence, from_the_change(con, row["change_id"] if row is not None else None))
         if m is None:
             return {}
         path, l, level, sim = m
-        items = _read(path)
+        items = _read(path, strict=True)
         mine = next((x for x in items if x["id"] == l["id"]), None)
         if mine is None:
             return {}
@@ -442,7 +521,7 @@ def on_finding(con, fid: str, reviewer: str, claim: str, evidence: list[str]) ->
                 note += " Whether its code changed since is not known: it was kept before Leyline recorded that."
         return {"learned": {"id": mine["id"], "reason": mine.get("reason", ""), "claim": mine.get("claim", ""),
                             "close_on": level, "similarity": round(sim, 2), **code, "note": note}}
-    except OSError as e:
+    except (OSError, store.UntrustedStore) as e:
         return {"learned_error": f"could not read or write the learnings file: {e}"}
 
 
@@ -466,11 +545,16 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
                 elif (l.get("source") or {}).get("finding") == finding_id:
                     matched = changed = True
                     out["learning"] = l["id"]
-                    if status == "rejected" and resolution.strip():
-                        l["reason"] = resolution.strip()
-                    elif status != "rejected" and l.get("status", "active") == "active":
+                    if status == "rejected":
+                        if resolution.strip():
+                            l["reason"] = resolution.strip()
+                        if l.get("status") == "retired" and FOR_ITS_FINDING in (l.get("retired") or ""):
+                            l["status"] = "active"   # rejected again after being reopened or accepted for a while
+                            del l["retired"]
+                    elif status == "accepted" and l.get("status", "active") == "active":
                         l["status"] = "retired"
-                        l["retired"] = f"{now()[:10]}: the finding it came from was marked {status} instead."
+                        l["retired"] = f"{now()[:10]}: {FOR_ITS_FINDING} {status} instead."
+                    # reopened or deferred: no decision yet, so the learning stands as it is
             if changed:
                 _write(path, items)
         if matched or status != "rejected":
@@ -486,7 +570,7 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
         if root is None:
             return {"learning_note": "No learning was kept: the repository the evidence is in was not found."}
         path = path_for(root)
-        items = _read(path)
+        items = _read(path, strict=True)
         lid = "l-" + hashlib.sha1(f"{finding_id}|{row['claim']}".encode()).hexdigest()[:6]
         items = [x for x in items if x["id"] != lid]
         scope = scope_of(con, evidence)
@@ -498,16 +582,17 @@ def on_resolve(con, finding_id: str, status: str, resolution: str) -> dict:
                       "hits": 0, "dismissals": 0, "accepted": 0, "findings": {}})
         _write(path, items)
         return {"learning": lid, "learning_file": str(path)}
-    except OSError as e:
+    except (OSError, store.UntrustedStore) as e:
         return {"learning_note": f"No learning was kept: could not write the learnings file ({e})."}
 
 
-def by_finding(con) -> dict:
-    """{finding id: the learning it matched}, for the pages."""
+def by_finding(con, change_id: Optional[str] = None) -> dict:
+    """{finding id: the learning it matched}, for the pages; for a pull request, not the learnings it brings."""
     out, repos = {}, _repos(con)
+    skip = from_the_change(con, change_id)
     for path, items in _all(con).items():
         for l in items:
-            if not l.get("findings"):
+            if not l.get("findings") or l["id"] in skip:
                 continue
             code = _checked(con, repos, path, l)
             for fid in l["findings"]:
@@ -523,11 +608,13 @@ def _marks(con, change_id: str) -> list[str]:
 def applying(con, change_id: str, nodes: Optional[list[str]] = None, limit: int = 20) -> list[dict]:
     """Active learnings about code the change touches or reaches, closest first: what reviewers read before filing."""
     try:
-        here = scope_of(con, list(dict.fromkeys([*(nodes or []), *_marks(con, change_id)])))
+        ids = list(dict.fromkeys([*(nodes or []), *_marks(con, change_id)]))
         found, repos = [], _repos(con)
+        skip = from_the_change(con, change_id)   # a pull request's own learnings: listed apart, not applied
         for path, items in _all(con).items():
+            here = scope_of(con, _in_repo(con, ids, repos.get(path)))
             for l in items:
-                if l.get("status", "active") != "active":
+                if l.get("status", "active") != "active" or l["id"] in skip:
                     continue
                 level = overlap(l.get("scope") or {}, here)
                 if level:
@@ -550,7 +637,7 @@ def listing(con) -> dict:
     where = [str(path_for(r)) for r in _roots(con).values()]
     active = [l for l in items if l.get("status", "active") == "active"]
     return {"active": len(active), "stale": sum(l["stale"] for l in active), "learnings": items,
-            "files": [str(p) for p in files] or where}
+            "files": [str(p) for p in files] or where, "problems": unreadable(con)}
 
 
 def confirm(con, lid: str) -> dict:
@@ -563,11 +650,28 @@ def confirm(con, lid: str) -> dict:
                 was = _checked(con, repos, path, l)["code"]
                 l["fingerprint"] = fingerprint(con, repos.get(path), (l.get("scope") or {}).get("nodes", []))
                 l["confirmed"] = now()
-                _write(path, items)
+                if (problem := _write_back(path, items)):
+                    return problem
                 gone = sorted(n for n, h in l["fingerprint"].items() if h is None)
                 return {"id": lid, "status": l.get("status", "active"), "file": str(path), "was": was,
                         **({"not_in_map": gone} if gone else {})}
-    return {"error": f"no learning {lid!r}; `leyline learnings` lists them"}
+    return _not_found(con, lid)
+
+
+def _write_back(path: Path, items: list[dict]) -> Optional[dict]:
+    """Write a decision into its file, or say why it could not be (a folder linked outside the repository, a file
+    that cannot be written): an error, not a traceback, for the command and the tool."""
+    try:
+        _write(path, items)
+    except (OSError, store.UntrustedStore) as e:
+        return {"error": f"could not write the learnings file: {e}"}
+    return None
+
+
+def _not_found(con, lid: str) -> dict:
+    problems = unreadable(con)
+    return {"error": f"no learning {lid!r}" + (f" in the files that can be read: {'; '.join(problems)}" if problems else
+                                               "; `leyline learnings` lists them")}
 
 
 def retire(con, lid: str, why: str = "") -> dict:
@@ -577,18 +681,22 @@ def retire(con, lid: str, why: str = "") -> dict:
             if l["id"] == lid:
                 l["status"] = "retired"
                 l["retired"] = f"{now()[:10]}: retired by hand" + (f": {why.strip()}" if why.strip() else ".")
-                _write(path, items)
+                if (problem := _write_back(path, items)):
+                    return problem
                 return {"id": lid, "status": "retired", "file": str(path)}
-    return {"error": f"no learning {lid!r}; `leyline learnings` lists them"}
+    return _not_found(con, lid)
 
 
 def text(r: dict) -> str:
+    problems = [f"Left out: {p}." for p in r.get("problems") or []]
+    if problems and not r["learnings"]:
+        return "\n".join(problems)
     if not r["learnings"]:
         return ("No learnings yet. One is kept when a person rejects a review finding with a reason"
                 " (`leyline spec resolve <finding> rejected \"why\"`). They go in " + " or ".join(r["files"] or [FILE_AT_ROOT]) + ".")
     L = [f"{r['active']} active of {len(r['learnings'])}"
          + (f" ({r['stale']} about code that has changed since)" if r.get("stale") else "")
-         + ", in " + ", ".join(r["files"]) + ".", ""]
+         + ", in " + ", ".join(r["files"]) + ".", *problems, ""]
     for l in r["learnings"]:
         where = ", ".join((l.get("scope") or {}).get("paths", [])[:3]) or "?"
         L.append(f"{l['id']}  {l.get('status', 'active'):<7} {l.get('reviewer', '')}, {where}")
@@ -632,4 +740,4 @@ def cli(con, args) -> int:
         print(json.dumps(r, indent=2, ensure_ascii=False))
     else:
         print(text(r))
-    return 0
+    return 1 if r["problems"] else 0   # a file left out is a failure to read, not an empty list

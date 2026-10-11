@@ -87,15 +87,19 @@ WRAPPERS = {"Optional", "Union", "Iterator", "Iterable", "Generator", "AsyncIter
 
 def _annotation_types(text: str) -> list[str]:
     """Class names in an annotation, without the typing wrappers around them: Iterator[Flask] -> [Flask].
-    What `Callable[..., Flask]` or `type[Flask]` holds is not an instance of Flask, so those are left out."""
-    m = re.search(r"\b(Callable|type|Type)\[", text)
+    What `Callable[..., Flask]` or `type[Flask]` holds is not an instance of Flask, so those are left out, and so
+    are the values of a `Literal[...]` and the metadata after the type in `Annotated[Flask, Field("...")]`."""
+    m = re.search(r"\b(Callable|type|Type|Literal|Annotated)\[", text)
     while m:
-        depth, i = 1, m.end()
+        depth, i, comma = 1, m.end(), None
         while i < len(text) and depth:
-            depth += {"[": 1, "]": -1}.get(text[i], 0)
+            depth += {"[": 1, "]": -1, "(": 1, ")": -1}.get(text[i], 0)
+            if text[i] == "," and depth == 1 and comma is None:
+                comma = i
             i += 1
-        text = text[:m.start()] + text[i:]
-        m = re.search(r"\b(Callable|type|Type)\[", text)
+        keep = text[m.end():comma] if m.group(1) == "Annotated" and comma is not None else ""
+        text = text[:m.start()] + keep + text[i:]
+        m = re.search(r"\b(Callable|type|Type|Literal|Annotated)\[", text)
     names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)
     return [x for x in names if x.lstrip("_")[:1].isupper() and x not in WRAPPERS]   # _Private classes too
 
@@ -151,10 +155,30 @@ def _narrowing(cond) -> list[tuple]:
 
 OVERLOAD = re.compile(r"@(typing\.|t\.)?overload$")
 
+COMPOUND = ("if_statement", "try_statement", "with_statement", "for_statement", "while_statement")
+CLAUSES = ("elif_clause", "else_clause", "except_clause", "except_group_clause", "finally_clause")
+DEFINITIONS = ("function_definition", "class_definition", "decorated_definition")
+
+
+def _defines(node) -> bool:
+    """Whether a compound statement's blocks, or those of one inside them, define a function or a class."""
+    for c in node.children:
+        if c.type in ("block",) + CLAUSES and _defines(c):
+            return True
+        if node.type == "block" and (c.type in DEFINITIONS or c.type in COMPOUND and _defines(c)):
+            return True
+    return False
+
 
 # Methods that change the collection they are called on. A field used this way is written, not only read.
 MUTATORS = frozenset("""append extend insert remove pop clear add update discard sort reverse setdefault popitem
 popleft appendleft extendleft put put_nowait write writelines""".split())
+
+# Methods of the built-in types (str, list, dict, set, a file). A call to one on a receiver of unknown type is far more
+# often the built-in (`self.ids.add(x)`, `con.close()`) than the one method of that name in the repository.
+COMMON_METHODS = MUTATORS | frozenset("""get items keys values copy index count split rsplit splitlines join strip lstrip rstrip
+replace startswith endswith lower upper format encode decode find rfind partition rpartition read readline readlines close
+flush seek""".split())
 
 
 class _Walker:
@@ -238,10 +262,24 @@ class _Walker:
                     attrs={"trigger": "cli", "address": self.path}))
                 self.res.edges.append(Edge("exposes", self.top_id + "#entry", self.top_id))
                 self._body(c, cid, class_id, scope)
+            elif t in COMPOUND and _defines(c):
+                self._compound(c, parent_id, qual, class_id, cid, scope, top)
             else:
                 self._body(c, cid, None if cid == self.top_id else class_id, scope)
         if cid == self.top_id and any(c.src_id == cid for c in self.res.calls[calls_before:]):
             self.top_used = True
+
+    def _compound(self, node, parent_id, qual, class_id, cid, scope, top) -> None:
+        """An if, try, with or loop at the top of a module or class whose blocks define functions or classes (a
+        fallback when an import fails, one definition per platform): those are declared as if written outside it,
+        and the rest is walked as it would be."""
+        for c in node.children:
+            if c.type == "block":
+                self._block(c, parent_id, qual, class_id, cid, scope, top)
+            elif c.type in CLAUSES:
+                self._compound(c, parent_id, qual, class_id, cid, scope, top)
+            else:
+                self._body(c, cid, None if cid == self.top_id else class_id, scope)
 
     def _class(self, node, outer, parent_id, qual, decorators, run_cid=None) -> None:
         """run_cid: the function whose code runs the class statement (the module body, at the top level).
@@ -509,10 +547,12 @@ class _Walker:
             receiver, rtype = "." + inner, self.self_types.get(class_id or "", {}).get(inner)
         elif obj.type == "call":
             receiver, chain = "?", self._site(obj, cid, class_id, scope)
+            rtype = _class_name(obj.child_by_field_name("function"))   # Box().size: a Box
+            chain = None if rtype else chain
         else:
             receiver = "?"
         cur, up = node, parent
-        while up is not None and up.type in ("pattern_list", "tuple_pattern", "tuple", "parenthesized_expression"):
+        while up is not None and up.type in ("pattern_list", "tuple_pattern", "list_pattern", "tuple", "parenthesized_expression"):
             cur, up = up, up.parent
         access = "r"
         if up is not None:
@@ -598,8 +638,9 @@ class _Walker:
                 rtype = self.self_types.get(class_id or "", {}).get(attr)
                 site = CallSite(cid, name, "." + attr, rtype, argc, line, class_id, col)
             elif obj is not None and obj.type == "call":
-                site = CallSite(cid, name, "?", None, argc, line, class_id, col,
-                                chain=self._site(obj, cid, class_id, scope))  # a.make().run()
+                inner = self._site(obj, cid, class_id, scope)   # a.make().run(): typed by what make returns
+                made = _class_name(obj.child_by_field_name("function"))   # Box().size(): a Box, __init__ or not
+                site = CallSite(cid, name, "?", made, argc, line, class_id, col, chain=None if made else inner)
             elif obj is not None and obj.type == "attribute":
                 # app.config.load(), flask.g.get(): typed by the attribute read in front, once that is resolved.
                 inner = self._callee(obj, -1, line, col, cid, class_id, scope)
@@ -641,9 +682,11 @@ class _Walker:
         """Is this call one end of an HTTP or file channel?"""
         full = _text(fn)
         last = full.rsplit(".", 1)[-1]
-        if node.parent is not None and node.parent.type == "decorator" and cid not in self.fn_nodes:
-            # @app.post("/x") at the top of a module declares a route and requests nothing. Inside a test it is kept:
-            # the test declares the route to call it, often as client.get() with the path left out.
+        if node.parent is not None and node.parent.type == "decorator" and not (cid in self.fn_nodes and (
+                self.is_test_file or self.fn_nodes[cid].attrs.get("is_test") or self.fn_nodes[cid].attrs.get("is_fixture"))):
+            # @app.post("/x") at the top of a module, or in an app factory, declares a route and requests nothing.
+            # Inside a test it is kept: the test declares the route to call it, often as client.get() with the path
+            # left out.
             return
         first = args.named_children[0] if args is not None and args.named_children else None
         if fn.type == "attribute" and last in HTTP_VERBS | {"open"} and first is not None and first.type == "string":
@@ -773,6 +816,11 @@ class _Walker:
                 attr = _text(left.child_by_field_name("attribute"))
                 if _text(obj) == "self" and attr:
                     self._field(class_id, attr, node, node, scope, cid)
+            elif left is not None and left.type in ("pattern_list", "tuple_pattern", "list_pattern") and class_id is not None:
+                # self.w, self.h = w, h: each is a field, of no type the right side says outright.
+                for el in left.named_children:
+                    if el.type == "attribute" and _text(el.child_by_field_name("object")) == "self":
+                        self._field(class_id, _text(el.child_by_field_name("attribute")), node)
             for c in node.children:
                 if right is None or c.start_byte != right.start_byte or c.end_byte != right.end_byte:
                     self._body(c, cid, class_id, scope, qual)

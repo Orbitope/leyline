@@ -29,7 +29,8 @@ and stop. If a tool says nothing is mapped, run `map` first.
    a dialogue: from the editor's Save to the file on disk").
 2. **Call `find_flows`** with the question in plain words. Each candidate has its kind (route handler, UI event
    handler, program entry, message handler, test, function), `at` (file:line), `why` it matched, and the flows that
-   start there or reach it.
+   start there (`flows`); where none starts, the entry points' flows that reach it (`reached_from`) and the tests'
+   (`tests_reaching`).
 3. **Pick the start.** When `ambiguous` is true, or the first few candidates are different things (a UI handler, a
    route, a test), show the person two to four of them, one line each, and ask which they mean; or pick one and say
    why in a sentence. A UI or command handler is usually the best start for "what happens when"; a route handler when

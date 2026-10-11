@@ -153,6 +153,36 @@ def test_retire_by_hand_and_the_source_finding_changing_its_mind(decided):
     assert l["status"] == "retired" and "marked accepted" in l["retired"]
 
 
+def test_a_learnings_file_that_cannot_be_read_is_left_as_it_is(decided):
+    """A file a merge left conflict markers in is the team's decisions, half merged: a new rejection must not
+    write a file holding only itself over it, and a matched finding must not either."""
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    broken = "<<<<<<< HEAD\n" + path.read_text(encoding="utf-8") + "=======\n>>>>>>> other\n"
+    path.write_text(broken, encoding="utf-8")
+    con = store.connect(root / ".leyline/leyline.db")
+    f = spec.add_finding(con, "pr-feature", "logic", "low", "first ignores every line after the first one",
+                         [_id(con, "first")])
+    r = spec.resolve_finding(con, f["id"], "rejected", "only the first line is wanted")
+    assert path.read_text(encoding="utf-8") == broken
+    assert "learning" not in r and "could not be read" in r["learning_note"]
+
+
+def test_a_learnings_file_that_cannot_be_read_is_not_listed_as_none(decided):
+    """`leyline learnings` said "No learnings yet" over a file a merge left conflict markers in, and retire and confirm
+    said the learning did not exist: the team's decisions looked gone, with nothing saying why."""
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    path.write_text("<<<<<<< HEAD\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    con = store.connect(root / ".leyline/leyline.db")
+    r = learnings.listing(con)
+    assert any("could not be read" in p for p in r["problems"])
+    page = learnings.text(r)
+    assert "No learnings yet" not in page and "could not be read" in page
+    for result in (learnings.retire(con, lid, "why"), learnings.confirm(con, lid)):
+        assert "could not be read" in result["error"]
+
+
 def test_a_spec_review_lists_the_learnings_that_apply(decided):
     """A learning made on a pull request applies to a spec change that names the same code."""
     root, lid = decided
@@ -274,3 +304,76 @@ def test_a_learning_kept_before_fingerprints_is_unknown_not_stale(decided):
     # the file is read and written as before; confirming gives it a fingerprint
     assert run("learnings", "confirm", lid)[0] == 0 and "fingerprint" in _learning(root)
     assert learnings.listing(con)["learnings"][0]["code"] == "unchanged"
+
+
+def test_reviewers_and_the_pages_are_told_when_the_learnings_cannot_be_read(decided):
+    """With the learnings file unreadable, `learnings_that_apply` was an empty list in every reviewer's facts and the
+    pages said nothing: reviewers took it that no past decision applied."""
+    from leyline import pr
+    root, lid = decided
+    path = root / ".leyline-learnings.json"
+    path.write_text("<<<<<<< HEAD\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    ch = root / "openspec/changes/count-bytes"
+    ch.mkdir(parents=True)
+    (ch / "proposal.md").write_text("# Count bytes\n\n## Why\nBytes, not characters.\n\n## What Changes\nCount bytes.\n")
+    (ch / "tasks.md").write_text("## 1. Code\n- [ ] 1.1 Change `count` to count bytes\n")
+    con = store.connect(root / ".leyline/leyline.db")
+    try:
+        b = spec.brief(con, ch)
+        assert "could not be read" in (ch / "leyline.md").read_text() and b["learnings_unreadable"]
+        for facts in (spec.review_facts(con, ch, "logic"), pr.review_facts(con, "pr-feature", "logic")):
+            assert facts["learnings_that_apply"] == [] and "could not be read" in facts["learnings_unreadable"][0]
+    finally:
+        con.close()
+    code, page = run("pr", "main")
+    assert "could not be read" in (root / ".leyline/reviews/pr-feature.md").read_text()
+
+
+def test_a_reopened_finding_leaves_its_learning_standing_and_a_second_rejection_revives_it(decided):
+    """Marking the source finding open again is no decision: the learning stopped applying for good after that, and
+    rejecting the finding again did not bring it back. Only accepting the finding retires it."""
+    root, lid = decided
+    con = store.connect(root / ".leyline/leyline.db")
+    try:
+        fid = con.execute("SELECT id FROM findings WHERE change_id = 'pr-feature'").fetchone()[0]
+        spec.resolve_finding(con, fid, "open", "")
+        assert _learning(root)["status"] == "active"
+        spec.resolve_finding(con, fid, "deferred", "later")
+        assert _learning(root)["status"] == "active"
+        spec.resolve_finding(con, fid, "accepted", "changed our mind")
+        assert _learning(root)["status"] == "retired" and "marked accepted" in _learning(root)["retired"]
+        spec.resolve_finding(con, fid, "rejected", "no, the default encoding stays")
+        l = _learning(root)
+        assert l["status"] == "active" and "retired" not in l and l["reason"] == "no, the default encoding stays"
+    finally:
+        con.close()
+
+
+def test_a_learnings_file_in_a_folder_linked_outside_is_an_error_not_a_traceback(branch, monkeypatch, tmp_path):
+    """The finding and its resolution are written before the learning is: when the learnings file sits in an
+    openspec folder that links outside the repository, the refusal to write there is reported, not raised."""
+    monkeypatch.chdir(branch)
+    assert run("pr", "main")[0] == 0
+    elsewhere = tmp_path / "outside" / "openspec"
+    elsewhere.mkdir(parents=True)
+    (branch / "openspec").symlink_to(elsewhere)
+    con = store.connect(branch / ".leyline/leyline.db")
+    try:
+        f = spec.add_finding(con, "pr-feature", "logic", "high", CLAIM, [_id(con, "count")], "pass utf-8")
+        r = spec.resolve_finding(con, f["id"], "rejected", REASON)
+        assert r["status"] == "rejected" and "learning" not in r
+        assert "No learning was kept" in r["learning_note"] and "link" in r["learning_note"], r
+        # a file already there is read, and a decision on one of its learnings is refused with the reason
+        (elsewhere / "leyline-learnings.json").write_text(json.dumps({"learnings": [
+            {"id": "l-there", "status": "active", "created": "2026-01-01T00:00:00", "reviewer": "logic", "claim": CLAIM,
+             "reason": REASON, "scope": learnings.scope_of(con, [_id(con, "count")]), "hits": 0, "dismissals": 0,
+             "accepted": 0, "findings": {}}]}))
+        assert [l["id"] for l in learnings.listing(con)["learnings"]] == ["l-there"]
+        f2 = spec.add_finding(con, "pr-feature", "logic", "high", CLAIM, [_id(con, "count")], "pass utf-8")
+        assert "could not read or write the learnings file" in f2["learned_error"], f2
+        for result in (learnings.retire(con, "l-there", "why"), learnings.confirm(con, "l-there")):
+            assert "link" in result["error"] and "Leyline" in result["error"], result
+    finally:
+        con.close()
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["leyline-learnings.json"]
+    assert json.loads((elsewhere / "leyline-learnings.json").read_text())["learnings"][0]["status"] == "active"

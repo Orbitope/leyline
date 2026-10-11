@@ -402,3 +402,64 @@ def test_entry_points_are_named_by_file_and_the_product_comes_first(tmp_path):
     f = con.execute("SELECT id FROM nodes WHERE name = 'attribute'").fetchone()[0]
     names = [e["name"] for e in change.assess(con, "x", [{"id": f, "action": "behavior"}])["entry_points_affected"]]
     assert names == ["src/index.ts", "scripts/bench-sheet.ts"], names
+
+
+# -- the tour reads code with its tests beside it as code ------------------------------------------------------
+def test_the_tour_reads_code_with_its_tests_beside_it_as_code(tmp_path):
+    from leyline import tours
+    con = _map(tmp_path, {
+        "src/lib/grocery.ts": "export function weeksSince(d: number): number {\n  return d / 7;\n}\n"
+                              "export function isDue(d: number): boolean {\n  return weeksSince(d) >= 1;\n}\n",
+        "src/lib/units.ts": "export function toBase(x: number): number {\n  return x * 1000;\n}\n",
+        "src/lib/grocery.test.ts": 'import { it, expect } from "vitest";\nimport { isDue } from "./grocery";\n\n'
+                                   'it("is due after a week", () => {\n  expect(isDue(8)).toBe(true);\n});\n',
+        "src/screens/List.ts": 'import { isDue } from "../lib/grocery";\nimport { toBase } from "../lib/units";\n\n'
+                               "export function show(d: number) {\n  return isDue(d) ? toBase(d) : 0;\n}\n",
+    })
+    repo = con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchone()[0]
+    stops = tours.get(con, f"tour:orientation:{repo}")["stops"]
+    titles = [s["title"] for s in stops]
+    assert "The foundation: lib" in titles, titles
+    tested = next(s["narrative"] for s in stops if s["title"] == "How it is tested")
+    assert "2 of the 4 functions outside test code" in tested, tested
+
+
+def test_the_tour_tells_two_modules_of_the_same_name_apart(tmp_path):
+    from leyline import tours
+    con = _map(tmp_path, {
+        "src/lib/units.ts": "export function toBase(x: number): number {\n  return x * 1000;\n}\n",
+        "src/app/main.ts": 'import { toBase } from "../lib/units";\n\nexport function run() {\n  return toBase(1);\n}\n',
+        "scripts/lib/args.ts": "export function parse(a: string[]): string {\n  return a[0];\n}\n",
+        "scripts/tool/migrate.ts": 'import { parse } from "../lib/args";\n\nexport function go() {\n  return parse([]);\n}\n',
+    })
+    repo = con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchone()[0]
+    text = " ".join(s["title"] + " " + s["narrative"] for s in tours.get(con, f"tour:orientation:{repo}")["stops"])
+    assert "src/lib" in text and "scripts/lib" in text, text
+    assert "Module: lib " not in text and "The foundation: lib " not in text, text
+
+
+def test_the_tour_writes_each_language_by_its_own_name(tmp_path):
+    from leyline import tours
+    con = _map(tmp_path, {
+        "a/one.py": "def one():\n    return 1\n", "a/two.py": "def two():\n    return 2\n",
+        "b/three.ts": "export function three(): number {\n  return 3;\n}\n",
+        "c/four.go": "package c\n\nfunc Four() int {\n\treturn 4\n}\n",
+    })
+    repo = con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchone()[0]
+    first = tours.get(con, f"tour:orientation:{repo}")["stops"][0]["narrative"]
+    assert "written in Python, " in first and "TypeScript" in first and "Go" in first, first
+    assert "typescript" not in first and " go" not in first, first
+
+
+def test_state_counts_writers_in_code_with_its_tests_beside_it(tmp_path):
+    from leyline import query
+    con = _map(tmp_path, {
+        "src/lib/types.ts": "export interface Ingredient {\n  name: string;\n  grams: number;\n}\n",
+        "src/screens/Edit.ts": 'import { Ingredient } from "../lib/types";\n\n'
+                               "export function save(i: Ingredient, g: number) {\n  i.grams = g;\n}\n",
+        "src/screens/Edit.test.ts": 'import { it } from "vitest";\nimport { save } from "./Edit";\n\n'
+                                    'it("saves", () => {\n  const i = { name: "a", grams: 0 };\n  save(i, 2);\n'
+                                    '  i.name = "b";\n});\n',
+    })
+    got = query.shared_state(con)
+    assert [f["name"] for f in got.get("fields", [])] == ["Ingredient.grams"], got

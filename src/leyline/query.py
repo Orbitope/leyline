@@ -468,9 +468,9 @@ def trace(con, from_id: str, to_id: str, max_depth: int = 12) -> dict:
     return {"from": from_id, "to": to_id, "found": True, "hops": len(path) - 1, "path": path[::-1]}
 
 
-def impact(con, node_id: str, max_depth: int = 6) -> dict:
+def impact(con, node_id: str, max_depth: int = 6, flows_limit: int = 40) -> dict:
     """Everything that can reach a node through calls and channels, grouped by module, plus the
-    flows that pass through it. Use it before changing the node."""
+    flows that pass through it (the first `flows_limit`, and their total). Use it before changing the node."""
     row = _node(con, node_id)
     if row is None:
         return {"error": f"No node with id {node_id!r}."}
@@ -480,6 +480,11 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
     adj = _adjacency(con, reverse=True)
     from .change import enclosing
     shape = {r[0]: {"kind": r[1], "parent_id": r[2]} for r in con.execute("SELECT id, kind, parent_id FROM nodes")}
+    # A field is reached by the code that reads or writes it, and through that code by its callers.
+    fields = [t for t in targets if shape.get(t, {}).get("kind") == "field"]
+    for f in fields:
+        for (src,) in con.execute("SELECT DISTINCT src_id FROM edges WHERE kind IN ('reads', 'writes') AND dst_id = ?", (f,)):
+            adj.setdefault(f, []).append((src, "uses"))
     dist: dict[str, int] = {t: 0 for t in targets}
 
     def lift(found, d):
@@ -508,10 +513,13 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
     for i in reached:
         m = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (i,)).fetchone()
         mod = (m[0] if m and m[0] else "?")
-        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "repo": mod.split(":", 1)[0], "count": 0, "direct": []})
+        g = by_module.setdefault(mod, {"module": mod.split(":module:")[-1], "repo": mod.split(":", 1)[0], "count": 0,
+                                       "direct": [], "direct_total": 0})
         g["count"] += 1
-        if dist[i] == 1 and len(g["direct"]) < 15:
-            g["direct"].append(i)
+        if dist[i] == 1:
+            g["direct_total"] += 1
+            if len(g["direct"]) < 15:
+                g["direct"].append(i)
     marks = ",".join("?" * len(targets))
     through = [{"id": r["id"], "name": r["name"]} for r in con.execute(
         f"SELECT DISTINCT f.id, f.name FROM flows f JOIN flow_steps s ON s.flow_id = f.id"
@@ -523,7 +531,7 @@ def impact(con, node_id: str, max_depth: int = 6) -> dict:
             "crosses_module_boundary": any(m != (home[0] if home else None) for m in by_module),
             "by_repo": dict(by_repo), "crosses_repo_boundary": any(r != row["repo_id"] for r in by_repo),
             "by_module": sorted(by_module.values(), key=lambda g: -g["count"]),
-            "flows_through": {"total": len(through), "items": through[:40]},
+            "flows_through": {"total": len(through), "items": through[:flows_limit]},
             "note": "Callers found from syntax. Code reached only through outside frameworks is not counted."}
 
 
@@ -536,7 +544,7 @@ def source(con, node_id: str, max_lines: int = 200) -> dict:
         return {"error": f"{row['kind']} nodes have no source span."}
     root = store.roots(con).get(row["repo_id"])
     path = root / row["path"] if root else None
-    if path is None or not path.is_file():
+    if path is None or not path.is_file() or not store.inside(path, root):   # a link out, checked out since the map
         return {"error": f"Source file not found for {row['path']}."}
     from .indexer import source_lines
     try:
@@ -600,6 +608,19 @@ def _data_access(con, row) -> dict:
     return {}
 
 
+def _told_apart(con, names: dict, ids: list[str]) -> list[str]:
+    """Names of nodes, with the file after each name that two of them share: `_Walker (src/adapters/python.py)`."""
+    seen = Counter(names.get(i, i) for i in ids)
+    out = []
+    for i in ids:
+        n = names.get(i, i)
+        if seen[n] > 1:
+            row = con.execute("SELECT path FROM nodes WHERE id = ?", (i,)).fetchone()
+            n += f" ({row[0]})" if row and row[0] else ""
+        out.append(n)
+    return out
+
+
 def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: bool = True) -> dict:
     """Fields assigned from outside the type that declares them, most widely written first.
     `scope` narrows to a module, type or path prefix of the field's id. `guesses=False` leaves out links found only
@@ -609,8 +630,10 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
     parent = {r[0]: (r[1], share(r[2], r[2])) for r in con.execute("SELECT id, parent_id, kind FROM nodes")}
     module = {r[0]: share(r[1], r[1]) for r in con.execute("SELECT node_id, module_id FROM ancestry")}
     names = {r["id"]: r["name"] for r in con.execute("SELECT id, name FROM nodes")}
-    tests = {r[0] for r in con.execute("SELECT entry_id FROM flows WHERE json_extract(attrs, '$.kind') = 'test'")}
-    test_mods = {module.get(t) for t in tests}
+    # Test code: a file that holds tests, or a test project. A test kept beside the code it tests (grocery.test.ts
+    # next to grocery.ts) does not make that code test code.
+    test_files, test_mods = store.test_places(con)
+    path = {r[0]: r[1] for r in con.execute("SELECT id, path FROM nodes WHERE kind IN ('callable', 'test')")}
 
     def owner(i):
         cur = parent.get(i, (None, None))[0]
@@ -637,12 +660,12 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
         if scope and not (f.startswith(scope) or module.get(f) == scope):
             continue
         own = owner(f)
-        product = {w for w in ws if module.get(w) not in test_mods}
+        product = {w for w in ws if module.get(w) not in test_mods and path.get(w) not in test_files}
         outside_types = sorted(t for t in {owner(w) or w for w in product} if not is_a(t, own))
         if not outside_types:
             continue
         rows.append({"id": f, "name": f"{names.get(own, '?')}.{names.get(f, f)}", "module": names.get(module.get(f), ""),
-                     "writers": len(product), "written_from": [names.get(t, t) for t in outside_types],
+                     "writers": len(product), "written_from": _told_apart(con, names, outside_types),
                      "writer_modules": sorted({names.get(module.get(w), "") for w in product}),
                      "readers": len(readers.get(f, ()))})
     # Two fields can read the same (a Builder class in each of four scripts): name the file of each such one.
@@ -656,4 +679,5 @@ def shared_state(con, scope: Optional[str] = None, limit: int = 40, guesses: boo
     return {"total": len(rows), "fields": rows[:limit],
             "note": "A field many types assign has no single place that keeps it valid. Test code, constructors and values set "
                     "while creating an object (new Foo { a = 1 }) are not counted. "
-                    "Changes made by calling a method on the field (list.Add) are not assignments and are not seen."}
+                    "A call that changes a collection in place (list.Add, items.append) counts as an assignment; any "
+                    "other method called on the field does not, since the map cannot tell what it does."}

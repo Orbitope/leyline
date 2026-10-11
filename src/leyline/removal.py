@@ -10,7 +10,7 @@ So these two tasks are judged by what is left:
 
 Callers are those the baseline (the code as it was planned) linked to `X`: calls, and for a type or a file its
 uses and imports. A caller still calls `X` when it is still on the map and its text still has `X`'s name outside a
-comment. Only tasks written that way are judged so: "Remove a parameter from `X`" removes no `X`.
+comment and outside a string that is only the name (a key such as `row["X"]`). Only tasks written that way are judged so: "Remove a parameter from `X`" removes no `X`.
 """
 
 from __future__ import annotations
@@ -36,9 +36,16 @@ def _is_path(written: str) -> bool:
     return "/" in written or bool(spec.FILE_NAME.fullmatch(written))
 
 
+def _in_file(written: str) -> Optional[str]:
+    """`path/to/file.py: name` (or `file.py::name`): the name, without the file it is in."""
+    from . import spec
+    m = re.fullmatch(r"(?:" + spec.FILE_NAME.pattern + r")\s*::?\s*([A-Za-z_$][\w$.]*)(?:\(.*\))?", written.strip())
+    return m.group(1) if m else None
+
+
 def _leaf(written: str) -> str:
     """The name a node of this written name has: `Engine.start` -> start; a file's path stays whole."""
-    w = re.sub(r"\(.*\)$", "", written.strip())
+    w = re.sub(r"\(.*\)$", "", _in_file(written) or written.strip())
     return w if _is_path(w) else w.split(".")[-1]
 
 
@@ -123,12 +130,14 @@ def _callers(con, names, base: _Baseline, i: str, leaf: str, removed: set, cache
     word = _word(name)
     # A caller of the same name (a pytest fixture `child` that calls `engine.child()`) declares it: not a use.
     own = re.compile(r"\b(?:def|function|fn|func|class|interface|struct|enum|sub)\s+" + re.escape(name) + r"(?![\w$])")
+    # A string that is just the name (a key: `{"about": ...}`, `row["about"]`) is not a use of it.
+    quoted = re.compile(r"([\"'`])" + re.escape(name) + r"\1")
     out = []
     for src, how in base.users(i):
         if src == i or src.startswith((i + ".", i + "/", i + "(")) or src in removed or src not in names.by_id:
             continue
         text = _text(con, src, cache)
-        if text and word.search(own.sub(" ", text)):
+        if text and word.search(quoted.sub(" ", own.sub(" ", text))):
             out.append((spec._label(names, src), how, names.in_tests(src)))
     return sorted(dict.fromkeys(out), key=lambda c: c[2])
 
@@ -136,7 +145,7 @@ def _callers(con, names, base: _Baseline, i: str, leaf: str, removed: set, cache
 def _present(con, names, x_row, y: str) -> list[str]:
     """The new name of a rename on the map, beside where the old one was: the node ids that answer to it."""
     from . import spec
-    w = re.sub(r"\(.*\)$", "", y.strip())
+    w = re.sub(r"\(.*\)$", "", _in_file(y) or y.strip())
     if "/" in w or spec.FILE_NAME.fullmatch(w) and x_row["kind"] == "file":
         return [f["id"] for f in names.file(w)]
     parts = w.split(".")

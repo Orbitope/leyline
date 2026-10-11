@@ -68,9 +68,9 @@ cp -r tests/fixture2 /tmp/engine-repo && cd /tmp/engine-repo
 leyline map .
 ```
 ```
-Mapped engine-repo in 1.2 s: 13 files, 323 lines, 4 modules.
-Found 31 types, 64 functions, 5 tests and 1 entry point (where a program starts).
-Modules: cs/Mod (7 files), py/src/pkg (2 files), py/tests (2 files), py/web (2 files)
+Mapped engine-repo in 0.8 s: 14 files, 354 lines, 4 modules.
+Found 34 types, 73 functions, 5 tests and 1 entry point (where a program starts).
+Modules: cs/Mod (8 files), py/src/pkg (2 files), py/tests (2 files), py/web (2 files)
 Design patterns found: builder, composite, decorator, factory 2, singleton, strategy, template method
 Store: .leyline/leyline.db
 Map page: .leyline/map.html (open it in a browser)
@@ -88,8 +88,9 @@ You tell your agent: "engine names should come back in upper case, and add a `sh
 
 and two scenarios, `Start` and `Shout`, in `specs/engine/spec.md`. Then you plan it, passing the tests'
 output from before any code changes so that `check` can tell a test the change breaks from one that
-already failed (TAP from vitest, node --test or tap, `pytest -rA`, or any runner that prints one PASS or FAIL
-line per test):
+already failed (TAP from vitest, node --test or tap, `pytest -rA`, `go test -v`, `jest --verbose`,
+`dotnet test --logger "console;verbosity=detailed"`, or any runner
+that prints one PASS or FAIL line per test):
 
 ```bash
 (cd py && PYTHONPATH=src pytest -rA tests) | leyline plan loud-engine --tests -
@@ -100,7 +101,7 @@ line per test):
 **State: ready to implement.** It has not been reviewed.
 
 Names are hard to read in logs. The plan has 3 tasks: it changes Engine.start and adds Engine.shout.
-Nothing else must be edited with it; 3 places in 2 modules run into the changed code and may behave
+Nothing else must be edited with it; 4 places in 1 module run into the changed code and may behave
 differently; 3 existing tests already run through it. It is done when 2 scenarios pass: 1 already has a
 test, 1 needs a test written.
 ...
@@ -108,7 +109,7 @@ test, 1 needs a test written.
 leave alone or a missing task:
 - Engine.name (used by Engine.start) is also used by Engine.child
 ...
-Next: have the plan reviewed before code is written (ask your agent to run the
+Next: have the plan reviewed (logic and performance) before code is written (ask your agent to run the
 leyline-adversarial-review skill), then run `leyline plan loud-engine` again. Or, if you accept the plan
 as it is, implement it.
 ```
@@ -165,7 +166,7 @@ claude mcp add -s user leyline -- leyline serve         # or: every project you 
 and `leyline skills install` to give Claude Code the skills (see [Working through an agent](#working-through-an-agent)).
 
 Claude Code starts the server in the directory it was opened in, and the server reads the store there,
-`.leyline/leyline.db`. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
+`.leyline/leyline.db`, or, from a folder inside the repository, the nearest such store above it. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
 installed in a virtual environment, give its full path (`-- /path/to/venv/bin/leyline serve`); for a
 store elsewhere, such as a workspace mapped from another directory, add `-e LEYLINE_DB=/full/path/leyline.db`
 before the `--`. `claude mcp list` should then show `leyline` as connected.
@@ -225,7 +226,13 @@ the other: `import werkzeug` in Flask reaches Werkzeug's source (a package under
 name), a Flask class extends Werkzeug's, and a Werkzeug method that calls `self.open()` dispatches
 into Flask's override. Ids keep their own repo's prefix, so a store indexed one repository at a time
 reads the same. The store remembers its members: indexing any one of them later indexes all of them
-again, which keeps the links between them. A member whose directory has gone is left as stored.
+again, which keeps the links between them. A member whose directory has gone is left as stored, and `map` says so.
+Name its new place and it is the same member, under its old id, not a second copy, when Leyline can tell it is the
+same repository: both are git repositories with the same first commit, and the same `origin` where both have one.
+Anything less sure (not under git, or a store mapped before Leyline recorded first commits) is mapped as a new
+member; drop the old one with `leyline map --forget <id>`. That drops a member's facts, where it was and its place
+in the workspace, then maps the others again in full so no link into it is left; notes and review decisions about
+its code are kept, as when code is deleted.
 
 `overview` lists the links between repositories; the `cross_repo` tool adds the functions most called
 across and the flows that cross and come back. An edge between repositories carries `to_repo`;
@@ -234,18 +241,52 @@ another one. Not yet: the C# compiler pass (SCIP indexes are matched to their re
 directory they were made in), and values handed across that the syntax pass cannot follow, such as
 the WSGI app a test client calls.
 
+### Someone else's repository
+
+Leyline is made to be run on code you did not write: a pull request under review, a project you just
+cloned. What such a repository holds is treated as its author's, not as Leyline's or yours:
+
+- **`.leyline/` is Leyline's own.** Its files are local and rebuilt by `leyline map`, so a repository
+  that tracks files there (a pull request can commit a store with annotations, resolved findings and
+  rules of its author's making, a snapshot or a review page, and checking it out writes over your
+  ignored copy) is refused, with the files named. Stop tracking them (`git rm -r --cached .leyline`)
+  or keep the store elsewhere (`--db /elsewhere/leyline.db`, or `LEYLINE_DB`). A `.leyline` that is
+  a link to a folder outside the repository is refused too, so nothing is written there.
+  `LEYLINE_TRUST_STORE=1` uses the folder anyway, for a store you committed on purpose.
+- **Nothing is written outside the repository through a link.** A file Leyline writes (the map page,
+  a change's `leyline.md`, the anchors and learnings files) replaces a link at its name rather than
+  writing through it; a change folder or `openspec/` that is a link to a folder outside the
+  repository is read but not written to, and the plan or check says so ("Not written: ...").
+- **A pull request does not vouch for itself.** A learnings file records what reviewers decided
+  before, so one a pull request commits ("f may return anything, do not flag it") would steer its own
+  review. Learnings the pull request's commits add or change (compared with its base) are not applied
+  to it: not in `learnings_that_apply`, not matched against its findings. Its page lists them under
+  "Learnings added by this pull request, not applied", for the person to judge.
+- **An agent's paths stay inside the map.** The MCP tools that take a path (`map`'s `paths`, the change
+  folder of `plan`, `check` and the `spec_*` tools, `affected_tests`, `drift`'s `path`, `review_pr`'s
+  `path`, a coverage file for `check`, `quick` or `coverage`) accept only paths inside the
+  repositories the store maps, or, before anything is mapped, the directory the server was started
+  in. An agent can be told which path to pass by text it read; the error says the person can run the
+  `leyline` command themselves, which takes any path.
+
 ## How the pieces fit
 
 Everything lives in one file: `.leyline/leyline.db` inside the repository you indexed. Three things
 read and write it, and none of them runs unless you start it. Beside it, `leyline.cache.db` holds what the
 next index needs to do again only what an edit changed: each file's parse output under its content hash,
-and fingerprints of the last run. Deleting it only makes the next index a full one.
+and fingerprints of the last run. Deleting it only makes the next index a full one, and so does damage to it: a
+cache that is not a database is started again.
 
 | Piece | Started by | Reads | Writes |
 | --- | --- | --- | --- |
 | `leyline map` or `index` | You, a git hook or CI; `plan` and `check` when the code changed | The working tree | Facts, flows and system proposals. Replaces the previous facts: after the first run only what changed is redone, and the store comes out as a full run would leave it (`--full` forces one). |
 | `leyline serve` (MCP) | Your coding agent, when it starts | The store | Annotations, change proposals and saved views |
 | `leyline view` or `export` | You | The store | Nothing |
+
+One index runs at a time per store. A second one that starts while another is running (a `map` while a `plan`
+re-maps) says so on stderr, naming the other process and how long it has been going, waits for it to finish,
+and then maps what changed since. It waits up to an hour (`LEYLINE_WAIT`, in seconds), and past that stops with
+the same message. A run that dies lets go of the store with its process.
 
 Annotations, proposals and views are not facts, so re-indexing keeps them. An annotation is flagged
 stale when the code behind its evidence changes.
@@ -270,13 +311,19 @@ leyline spec verify openspec/changes/<id> --before before --after after   # afte
 with both. Before re-indexing, both compare each source file's hash with the store, so an unchanged
 repository is not indexed again.
 
+node --test's TAP writes a tab in a test's name and a backslash followed by `t` the same way (`\\t`, and so
+for `\n`, `\r`, `\b`, `\f`, `\v`); Leyline reads it as the tab, so a name with a literal `\t` in it may not
+match its test.
+
 The brief ties each task to code and each scenario to a test, by three conventions and no markup:
 
 - Code named in backticks in `tasks.md` is looked up on the map (`` `Vehicle.Speed` ``). A name not on
   the map is new code: `` `Owner.NewName` `` says where a member goes, and `` `module.new_func` ``,
   `` `path/to/file.py: new_func` `` or `` `new_func` in `file.py` `` where a top-level function goes. A
   path that is on the map counts with or without backticks. Other words in backticks (an issue code, a
-  value, a doc file) are noted, not checked. A task that names no code is left for the person to check.
+  value, a doc file) are noted, not checked. A task that names no code is left for the person to check;
+  a change whose tasks all name no code (docs only) is planned and checked all the same, and `check` says
+  whether any code changed with it.
 - A task that starts with add, remove, rename or "change the signature" is read that way. Anything
   else is a change in behavior.
 - A scenario is proven by a test with the same name: one on the map, or one made at run time (a name built
@@ -329,13 +376,18 @@ blocking = ["contradicted", "inconclusive", "partial", "needs a person"]   # eve
 A tick in `tasks.md` never clears an item: the agent ticks tasks as it goes.
 
 A spec can change part-way. Once the code has moved on, `brief` keeps the picture of the code from
-the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over.
+the first brief, so `verify` still compares with the code as it was; `--new-baseline` starts over. The code has moved
+on when any source file on the map has changed: a constant at the top of a module counts, and so, to be safe, does a
+comment.
 That picture is `.leyline/snapshots/<change id>.db`: one per change, taken once, holding only what the
 comparison reads (nodes and their hashes, links, flows, a hash per source line) and what a diagram of the code
 as it was needs (the line of each call, the order of each flow, each channel link's channel). It stays after the
 change is checked done as agreed, so `check` can run again after a later edit, and is deleted with
-`leyline spec forget <id>` or once the change folder is archived or removed. `leyline map` writes
-`.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
+`leyline spec forget <id>` or once the change folder is archived or removed (a folder that a local branch not checked
+out still holds is not removed: it is back when that branch is). A baseline deleted any other way (by hand, or with
+the snapshots folder) is lost, not forgotten: `plan` will not quietly take the code as it is now as the start, which
+after the change is implemented would leave `check` nothing to find, and asks for `--new-baseline` to take a new one.
+`leyline map` writes `.leyline/.gitignore`, so the store stays out of git without touching your own `.gitignore`.
 
 `skills/leyline-spec/SKILL.md` tells an agent how to write the folder and run the loop.
 
@@ -500,6 +552,8 @@ Both `leyline pr` and `leyline plan` list **Earlier changes to this code**: up t
 (archived, or checked) and earlier pull request reviews that touched the same functions or types, newest first, with
 the names they share; the facts carry them as `related_changes`. A repository with no such history gets the commits
 before the change that changed the same files instead (of the last 500 that touched them), most overlap first.
+"Checked" means its latest check found it done as agreed: a check that fails after one that passed makes it unfinished
+again, and so does planning it again (it is then reopened; the store keeps each check's time and verdict).
 
 ### Learning from rejected findings
 
@@ -515,7 +569,8 @@ and a two-space indent, one entry per learning: `id`, `status` (active or retire
 `reason`, `scope`, `fingerprint` (the code it is about, see below), `source` (the change and finding it
 came from), `created`, `confirmed` (when a person last said it holds for the code as it is), `hits`,
 `dismissals`, `accepted`, and `findings` (the later findings it matched, with what people decided). Node
-ids in it leave out the repository's id, so a clone in a folder of another name reads them.
+ids in it leave out the repository's id, so a clone in a folder of another name reads them. In a workspace of
+several repositories each keeps its own file, and a learning applies only to code in its own repository.
 
 - **Reviewers read them first.** The facts for a spec or a pull request (`leyline spec facts`, or
   `spec_review_facts`) start with `learnings_that_apply`: active learnings about code the change touches or
@@ -543,8 +598,9 @@ ids in it leave out the repository's id, so a clone in a folder of another name 
   `leyline learnings retire <id>` ends it. A learning kept before Leyline recorded fingerprints has none.
   Whether its code changed is unknown, not stale, and it says so; confirming it gives it one.
 
-`leyline learnings` lists them; `leyline learnings retire <id> "why"` retires one by hand;
-`leyline learnings confirm <id>` says one still holds for the code as it is now.
+`leyline learnings` lists them, and exits 1, naming the file, when a learnings file cannot be read;
+`leyline learnings retire <id> "why"` retires one by hand; `leyline learnings confirm <id>` says one still holds for
+the code as it is now.
 
 ### How it runs: sequence diagrams
 
@@ -630,8 +686,11 @@ Flows are static: what a test can reach. `leyline coverage FILE` imports what di
   to the tests that ran it.
 - Cobertura XML (coverlet, `coverage xml`). A function ran or did not; no per-test detail.
 - Istanbul's `coverage-final.json` (vitest `--coverage.reporter=json`, jest `--coverageReporters=json`). It covers a
-  whole run, so run one test file at a time and import each with `--test <that file>`: each function is then tied
-  to the test file that ran it, not to the one test inside it.
+  whole run, so run one test file at a time and import each with `--test <that file>` (`test` on the `coverage`
+  tool): each function is then tied to the test file that ran it, not to the one test inside it.
+- lcov (`lcov.info`, from c8, vitest or jest with the `lcov` reporter, and most other tools). Lines (`DA:`) and
+  functions (`FN:`, `FNDA:`) that ran; records under a `TN:` test name are tied to that test, and a file with no test
+  names is a whole run, imported with `--test` as Istanbul's is. Paths may be absolute, relative or Windows-style.
 
 #### Scenarios proven by what ran
 
@@ -651,7 +710,7 @@ would pass whatever the change did. With no per-test coverage, `check` reads as 
 
 `leyline affected-tests <change>` (the `affected_tests` tool) lists the tests to run for a planned change or a
 `pr-<id>` review, each with why, and prints a command that runs them (`pytest path::test ...`, `npx vitest run
-<files>`, `npx jest <files>`, `go test -run`). With per-test coverage it takes the tests measured running the changed
+<files>`, `npx jest --runTestsByPath <files>`, `go test -run`). With per-test coverage it takes the tests measured running the changed
 or must-edit code, the change's own new tests, and, from the map, tests that reach changed code no measured test ran
 or that the measured run left out; without it, the tests whose path on the map passes through the change. Feed that
 smaller run to `check`. `leyline pr` lists the tests measured running the changed code the same way.
@@ -674,8 +733,9 @@ the type that declares them: the mutable state with no single owner.
 - An assignment is `x.f = v`, `x.f += v`, `x.f++`, `out`/`ref x.f` and `x.f[i] = v`. A value set
   while creating an object (`new Foo { f = 1 }`) is recorded as construction and left out of the
   shared-state ranking, as are constructors, subclasses and test code.
-- A change made by calling a method on the field (`list.Add(x)`) is a read of the field, not an
-  assignment: the map cannot tell a mutating method from a query.
+- A call on the field to a method that changes a collection in place (`list.Add(x)`, `items.append(x)`,
+  `queue.push(x)`) is a read and a write. The methods are named in a short list per language (`MUTATORS` in
+  each adapter); any other method call on a field is a read, since the map cannot tell what it does.
 - Properties count as fields. Enum members and events do not. In Python, reading an attribute that a
   getter computes (`@property`, or a decorator that is a descriptor class, such as Werkzeug's
   `cached_property`) is also a call to the getter; on `self`, so is a subclass's getter of that name.
@@ -819,7 +879,8 @@ just above it (or a Python docstring). Code names are split (`saveDialogue` is s
 create, add, spawn; run, execute, play, start; about twenty groups, `SYNONYMS` in `explain.py`), a word rare on the
 map counts for more, and a word for who does it (a user, a writer) counts little. Route handlers, UI event handlers,
 program entries, message handlers and commands are ranked up, then tests. Each candidate says why it matched and which
-flows start there or reach it; `ambiguous` is set when the first ones score close in different files, so the agent
+flows start there; one where none starts names the entry points' flows that reach it (`reached_from`) and the tests'
+(`tests_reaching`). `ambiguous` is set when the first ones score close in different files, so the agent
 asks the person which they mean. The words index is built once per map run (about a second on Parlance) and kept: a
 later question takes a few milliseconds.
 
@@ -922,42 +983,42 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 | Tool | Returns |
 | --- | --- |
 | `map(paths?)` | Step 1: index the code (or map again what the store holds); counts, the map page, `next` |
-| `plan(change, test_output?, test_results?)` | Step 2: the one page for a change, `status.blocking`, `next`; records the tests from before |
+| `plan(change, test_output?, test_results?, new_baseline?)` | Step 2: the one page for a change, `status.blocking`, `next`; records the tests from before; `new_baseline` compares from the code as it is now |
 | `check(change, test_output?, test_results?, coverage_path?)` | Step 3: re-index, record the tests from after, the verdict and `next`; with the run's coverage, whether each scenario's test ran the changed code |
 | `affected_tests(change)` | The tests to run for a change or a `pr-<id>` review, and the command that runs them |
 | `overview(scope?, limit?)` | Repos, modules with sizes, module-to-module dependencies by edge kind, systems, external packages, extractors that ran |
-| `cross_repo` | In a workspace of several repositories: links between them, functions most called across, flows that cross and come back |
+| `cross_repo(limit?)` | In a workspace of several repositories: links between them, functions most called across, flows that cross and come back |
 | `search(text, kind?, limit?)` | Node ids matching a name, qualified name or path |
 | `expand(node_id, limit?)` | One node in detail: contents, dependencies, dependents, callers and callees |
 | `neighbors(node_id, direction?, kinds?, limit?)` | Raw edges around a node, by kind |
 | `source(node_id, max_lines?)` | The node's source text |
 | `context(focus, budget_tokens?)` | A short outline of the code around a focus (ids, names, paths, a change, or words), most related first, cut to a token budget |
 | `module_outline(module?, depth?)` | A large module split into at most 12 parts (folders, or groups of files where a folder is flat): each part's size, entry points, links in and out, channels, busiest functions, risks and name; drill in with a part's id |
-| `name_part(part_id, name, summary?, evidence, layer?)` | Name a part from the outline with a one-line summary; kept across maps, shown as "may be stale" when the part changes a lot |
+| `name_part(part_id, name, summary?, evidence?, layer?)` | Name a part from the outline with a one-line summary; kept across maps, shown as "may be stale" when the part changes a lot |
 | `flows(kind?, through?, limit?, offset?)` | Flows walked from each entry point and test; `through` keeps flows that pass a node |
 | `flow(flow_id, max_steps?, offset?)` | One flow step by step, in source order, with call depth |
 | `trace(from_id, to_id)` | The shortest chain of calls and channels between two functions |
-| `find_flows(description, limit?)` | Where a behavior described in words could start: entry points, route, UI and message handlers, tests named for it, functions; each with why it matched, its kind, file:line and the flows that start there |
+| `find_flows(description, limit?)` | Where a behavior described in words could start: entry points, route, UI and message handlers, tests named for it, functions; each with why it matched, its kind, file:line and the flows that start there, or else the entry points' flows (`reached_from`) and the tests' (`tests_reaching`) that reach it |
 | `explain_path(start, to?, through?, max_steps?)` | An ordered walk across calls and channels from `start` (its main flow, the shortest path `to` a node, or the path `through` one), each step with how it was reached, the calling line and the declaration; data written for later marked; a Mermaid diagram of the walk |
 | `diagram(ids)` | A Mermaid sequence diagram of how execution reaches some functions or types and what they call |
 | `impact(node_id, max_depth?, limit?)` | What can reach a node: callers by module and the flows through it |
-| `annotate(node_id, key, value, evidence, confidence, layer)` | Write an inferred or intent statement about a node |
-| `propose_change(intent, targets, title?)` | Assess a change without an OpenSpec folder and save its blast-radius view |
+| `annotate(node_id, key, value, evidence?, confidence?, layer?)` | Write an inferred or intent statement about a node |
+| `propose_change(intent, targets, title?, depth?)` | Assess a change without an OpenSpec folder and save its blast-radius view |
 | `save_view(title, narrative, marks, legend?)` | Save any set of marked nodes as a view |
 | `review_change(change_id, before_run?, after_run?)` | Compare a change assessed with `propose_change` with what was done, and save a review view |
 | `record_test_run(run, results)` | Store one test run under a label, for `review_change` |
-| `add_rule(kind, selector_from, selector_to?, ...)` | Add an architecture rule, suggested unless the user stated it |
+| `add_rule(kind, selector_from, selector_to?, edge_kinds?, severity?, reason?, confirmed?)` | Add an architecture rule, suggested unless the user stated it |
 | `check_rules()` | Evaluate every rule against the graph |
 | `review_pr(base?, about?, github?, review_id?, path?)` | Review a checked-out branch or pull request with no spec: what changed, what it reaches and did not change, tests; returns `change_id` (`pr-<id>`), `blocking` (one line for each thing that holds up the merge) and `gate_passed` |
 | `quick(what?, names?, done?, test_output?, test_results?, coverage_path?, change_id?)` | A small change with no spec folder: before (`what`, `names`), what it touches and the tests that run it; after (`done`), one verdict, and `grown` when it needs a spec |
-| `spec_review_facts(change, reviewer?)`, `spec_finding(change, ...)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
+| `spec_review_facts(change, reviewer?)`, `spec_finding(change, reviewer, severity, claim, evidence, proposal?)`, `spec_findings(change)`, `spec_resolve(finding_id, status, resolution?)` | Adversarial review of a planned change, or of a pull request by its `pr-<id>` |
 | `learnings(retire?, why?, confirm?)` | Past decisions on review findings, kept from rejections with a reason, each marked `stale` when its code changed since; `retire` one the person says no longer holds, `confirm` one they say still holds for the code as it is now |
-| `spec_brief(change)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
+| `spec_brief(change, new_baseline?)`, `spec_verify(change, before_run?, after_run?)` | The steps inside `plan` and `check`, one at a time; rarely needed |
 | `drift(path?, accept?)` | Code the living specs and finished changes name that is gone, moved, changed signature or ambiguous; `fails`, the page, `next` |
-| `shared_state(scope?)` | Fields assigned from outside the type that declares them |
+| `shared_state(scope?, limit?)` | Fields assigned from outside the type that declares them |
 | `coupling(path?, min_together?, min_confidence?, limit?)` | Files (and folders) that usually change in the same commits as a file, from git history; with no path, the most coupled pairs |
-| `coverage(node_id?, flow_id?, import_path?)` | Measured coverage: what ran, set against the static paths |
-| `patterns(pattern?, node_id?, limit?)` | Design patterns found by shape, with roles, rationale and confidence |
+| `coverage(node_id?, flow_id?, import_path?, test?)` | Measured coverage: what ran, set against the static paths; `import_path` reads a report in first, and `test` names the one test file that ran for a report with no per-test detail |
+| `patterns(pattern?, node_id?, include_tests?, limit?)` | Design patterns found by shape, with roles, rationale and confidence; `include_tests` adds those inside test code |
 | `label_pattern(pattern, roles, rationale, confidence?)` | Record a pattern the matchers missed |
 | `tours()`, `tour(tour_id)` | List tours, or read one stop by stop |
 | `save_tour(title, stops, audience?)` | Save a tour written for the user |
@@ -966,8 +1027,9 @@ same care as the repository. Pass `--no-sources` to leave source text out.
 
 `change` is a change folder or its id. A tool that cannot answer returns an error saying what to do
 instead (no store yet: call `map`; an unknown id: find it with `search`). Each answer is at most about
-24,000 characters: lists show their first items and their total, `cut` names any list that was
-shortened, and `more` says how to see the rest (`limit`, `offset`, `scope`, or a narrower id).
+24,000 characters (30,000 for `module_outline` and `explain_path`, 36,000 for `context`): lists show their
+first items and their total, `cut` names any list that was shortened, and `more` says how to see the rest
+(`limit`, `offset`, `scope`, or a narrower id).
 
 ## What is indexed
 
@@ -975,7 +1037,9 @@ shortened, and `more` says how to see the rest (`limit`, `offset`, `scope`, or a
 
 The files git lists: tracked ones, and untracked ones `.gitignore` does not exclude. A directory that is
 not a git repository (or one git refuses to read, such as a checkout owned by another user) is walked
-instead, with the common `.gitignore` patterns applied. Some files are left out, and `map` names them with
+instead, leaving out what git would: the patterns of your global excludes file (`core.excludesFile`, else
+`~/.config/git/ignore`), of `.git/info/exclude` and of each `.gitignore`, escapes and trailing spaces read as
+git reads them, so a file kept out of git such as `.env` stays off the map and its page. Some files are left out, and `map` names them with
 the reason: other people's code (`node_modules`, a Go or Composer `vendor`), submodules and nested
 repositories, symlinks to directories or out of the repository, files git lists that are gone, and source
 files that are binary, minified, unreadable or larger than 5 MB (`LEYLINE_MAX_FILE_MB` changes that). A
@@ -1037,16 +1101,19 @@ names, and the declared return type of the call a value came from (`a.Make().Run
 a.Make(); x.Run()`). In C#, extension methods are matched on the type of their `this` parameter,
 and overloads of equal length are narrowed by the arguments: a lambda's parameter count, the type
 of a literal, a `new` expression or a typed local, and explicit type arguments. In Python, packages
-under a source root are imported by their own name, names re-exported through `__init__.py` are
-followed, and a test parameter filled by a pytest fixture takes the fixture's return type. Three
-outcomes are counted per run:
+under a source root are imported by their own name, with or without an `__init__.py` (a namespace
+package), names re-exported through `__init__.py` are followed, and a test parameter filled by a pytest
+fixture takes the fixture's return type. In TypeScript and JavaScript, an import through the `paths` of
+the nearest `tsconfig.json` or `jsconfig.json` (`@ui/*`) is the local file, not a package; `extends` is
+not followed. Three outcomes are counted per run:
 
 - **resolved**: linked to a callable in the workspace
 - **external**: the receiver's type is outside the workspace, or nothing in the workspace has that name
 - **unresolved**: the name exists in the workspace but the receiver's type is unknown
 
 A call on a receiver of unknown type is linked by name only when exactly one declaration of that
-name is visible and the name was never seen on an outside type. Those links are stored with
+name is visible and the name was never seen on an outside type. In Python it is linked only to a method, and
+never by a name the built-in types have (`add`, `get`, `close`, `split`). Those links are stored with
 precision `guess`, not `heuristic`, and the map draws them differently.
 
 ### Channels
@@ -1064,15 +1131,16 @@ moves, and carries a `channel` and an `address`.
   (`@app.route("/x")`, `@app.get`), ASP.NET attributes (`[HttpGet("x")]`) and `MapGet`-style calls;
   requests from `.get("/x")`-style calls and `HttpClient` methods with a literal path. A request is
   linked to a route declared inside the same test first, then to the only route in the repository
-  that matches; if several match, it is counted as ambiguous and left unlinked.
+  that matches. When several match, in every language, the route that names more of the path outright
+  wins (`/items/special` over `/items/{id}`, `/api/review/health` over `/api/review/:id`); if that leaves
+  more than one, it is counted as ambiguous and left unlinked.
   In TypeScript (Fastify, Express, Hono, Koa routers), a route's inline handler
   (`server.get("/api/x", async (req) => ...)`, `server.route({ method, url, handler })`, or
   `server.get(path, { schema }, handler)`) is a function of its own, named for its route (`GET /api/x`)
   and nested in the function that registers it: the request lands on it, what it calls is its own, and
   the registrar registers it (kept as a call, so startup still reaches it). A handler given by name
-  (`server.get("/x", listThings)`) is that function. When several handlers' routes fit a request, the
-  route that names more of the path outright wins (`/api/review/health` over `/api/review/:id`), and a
-  request with no method written is taken as a GET. In a pull request, an edit inside a handler touches
+  (`server.get("/x", listThings)`) is that function. When several handlers' routes still fit a request
+  after that, a request with no method written is taken as a GET. In a pull request, an edit inside a handler touches
   its route and no other. An ASP.NET
   controller's `[Route("api/[controller]")]`, and a minimal API's `MapGroup("api/x")`, start the
   routes declared under them. A path handed to
@@ -1132,10 +1200,11 @@ lists the channels a change crosses, with their address.
 
 ### Systems
 
-A module with at least 12 types is split into systems by Louvain community detection over calls,
-type use and inheritance between its types. A module that does not split cleanly (modularity under
-0.3) is left whole. Each proposed system is named after its most connected type until something
-better is written with `annotate`, using the keys `name` and `responsibility`.
+A module is split into systems by Louvain community detection over calls, type use and inheritance
+between its units: each top-level type, and each file for the functions that sit outside any type. A
+module with fewer than 12 units holding code, or one that does not split cleanly (modularity under
+0.3), is left whole. Each proposed system is named after its most connected unit (a type, or a file)
+until something better is written with `annotate`, using the keys `name` and `responsibility`.
 
 The grouping is deterministic. The names are not: they belong to the inferred layer.
 
@@ -1153,6 +1222,9 @@ listing each function once. Flows follow calls, calls through an interface into 
 and events whose handler was subscribed earlier in the same flow. They do not follow files or tables:
 writing one does not run its reader. They stop at
 8 calls deep or 300 steps.
+
+A flow's id is `flow:<start>`. A start that is two kinds of start at once (an entry point that is also a test)
+has a flow for each: the entry point's keeps that id, and the other's is `flow:<start>#test`.
 
 Flows are static: they show what can run, not what did run. Per-test coverage will replace them with
 observed paths where it is available.
@@ -1190,7 +1262,17 @@ Node ids are stable across file moves within a project:
 - C#: `repo:csharp:Project::Namespace.Type.Member(ParamTypes)`. The project is part of the id
   because two projects may declare the same type name.
 - Python: `repo:python:package.module.Class.method`
+- TypeScript, JavaScript and the generic languages: `repo:language:dir.file.Name`, the file named without its
+  extension. Two files of one language in one directory that differ only in their extension (`a.js` beside
+  `a.ts`, `m.c` beside `m.h`) would name their contents alike: the first by path keeps that id, and the others
+  keep their extension in it (`repo:typescript:dir.a.ts.Name`). Adding or removing such a neighbour can change
+  the ids of the files after it.
 - Files and modules: `repo:file:path` and `repo:module:path`
+
+A name defined twice in one file (`def load()` in both branches of an `if` or a `try`, a property's getter and
+setter) is one node: which definition runs is not known from the text. Its span runs from the first definition
+to the last, its `definitions` attribute lists each one's lines, its text hash reads every body, and its calls
+come from all of them.
 
 ## Tests
 

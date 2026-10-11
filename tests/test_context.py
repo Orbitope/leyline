@@ -99,6 +99,29 @@ def test_a_change_focuses_on_the_code_it_marked(branch, monkeypatch):
     c.close()
 
 
+def test_a_change_whose_marked_method_changed_signature_still_focuses_on_it(tmp_path):
+    root = tmp_path / "game"
+    (root / "Core").mkdir(parents=True)
+    (root / "Core/Core.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    (root / "Core/World.cs").write_text(
+        "namespace Core;\npublic class Assignment { }\npublic class World\n{\n"
+        "    public void Cancel(Assignment a, string reason) { }\n"
+        "    public void Run() { Cancel(new Assignment(), \"x\"); }\n}\n")
+    db = tmp_path / "s.db"
+    index(root, db, "g")
+    c = store.connect(db)
+    old = "g:csharp:Core::Core.World.Cancel(Assignment)"     # as planned, before a reason was added
+    with c:
+        c.execute("INSERT INTO views (id, title, kind, layer, source, created, change_id, spec) VALUES (?,?,?,?,?,?,?,?)",
+                  ("view-spec-log-cancel", "Log a cancel", "change", "intent", "test", "2026-01-01", "spec-log-cancel",
+                   json.dumps({"marks": [{"id": old, "role": "changed"}]})))
+    r = context.build(c, ["spec-log-cancel"], 600)
+    assert "error" not in r, r
+    marked = [ln for ln in lines(r["text"]) if ln.startswith(">") or ln.lstrip().startswith(">")]
+    assert any("Cancel(Assignment a, string reason)" in ln for ln in marked), r["text"]
+    c.close()
+
+
 def test_the_command_line(con, tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path / "repo")
     assert main(["context", "Engine.start", "--tokens", "300"]) == 0
@@ -108,3 +131,42 @@ def test_the_command_line(con, tmp_path, capsys, monkeypatch):
     r = json.loads(capsys.readouterr().out)
     assert r["shown"]["symbols"] >= 2 and r["text"]
     assert main(["context", "no_such_thing_anywhere"]) == 1
+
+
+def test_what_was_not_found_and_left_out_stays_inside_the_budget(con, tmp_path):
+    # A focus item not on the map is named at the end, and so are the nearest symbols left out: both count against
+    # the budget, however long the item or the paths.
+    r = context.build(con, ["Engine.start", "qqqzzz" * 150], 200)
+    assert "Not found: 'qqqzzz" in r["text"] and r["tokens"] <= 200, r["tokens"]
+    deep = tmp_path / "deep"
+    folder = deep / "/".join(["a_rather_long_folder_name_for_this_test"] * 4)
+    folder.mkdir(parents=True)
+    (folder / "core.py").write_text("def target():\n    return 1\n")
+    for k in range(12):
+        (folder / f"caller_with_a_long_file_name_number_{k}.py").write_text(
+            f"from .core import target\n\n\ndef caller_with_a_long_function_name_{k}():\n    return target()\n")
+    db = deep / ".leyline/leyline.db"
+    index(str(deep), str(db))
+    c = store.connect(db)
+    r = context.build(c, ["target"], 200)
+    c.close()
+    assert "Left out:" in r["text"] and r["tokens"] <= 200, r["tokens"]
+
+
+def test_the_focus_is_always_shown_and_shortened_to_fit_a_small_budget(tmp_path):
+    # The focus is shown however small the budget; a very long path and declaration are shortened to fit it.
+    root = tmp_path / "long"
+    folder = root / "/".join([f"a_very_long_folder_name_that_goes_on_and_on_number_{k}" for k in range(8)])
+    folder.mkdir(parents=True)
+    params = ", ".join(f"parameter_with_a_long_name_{k}" for k in range(12))
+    (folder / "the_module_with_the_focus_in_it.py").write_text(
+        f"def target({params}):\n    return 1\n\n\ndef caller():\n    return target({', '.join(['1'] * 12)})\n")
+    db = root / ".leyline/leyline.db"
+    index(str(root), str(db))
+    c = store.connect(db)
+    r = context.build(c, ["target"], 200)
+    c.close()
+    marked = [ln for ln in lines(r["text"]) if ln.startswith("> ")]
+    assert marked and "def target(" in marked[0], r["text"]
+    assert "the_module_with_the_focus_in_it.py" in r["text"]          # the end of the path, which names the file
+    assert r["tokens"] <= 200, (r["tokens"], r["text"])

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from typing import Optional
 
@@ -185,6 +186,41 @@ def _collections(g: _Graph, abstraction: str):
     return out
 
 
+# What makes a function choose between the types it creates: a branch, a ternary, or a lookup by key.
+_BRANCH = re.compile(r"\b(?:if|elif|else|switch|case|match|when|default)\b|\?(?![?.\[])|=>\s*$")
+_LOOKUP = re.compile(r"[\]})]\s*\[\s*[A-Za-z_][\w.]*\s*\]|\bTryGetValue\b|\.get\(|\[\s*[A-Za-z_][\w.]*\s*\]\s*\(")
+
+
+def _builds_all(con, f: str, names: list[str], sources: dict) -> bool:
+    """Whether a function creates all of these types together (`new IRule[] { new A(), new B() }`, `[Box(), Disc()]`)
+    rather than one of them by a branch, a ternary or a lookup by key. False when its source cannot be read."""
+    r = con.execute("SELECT repo_id, path, span_start, span_end FROM nodes WHERE id = ?", (f,)).fetchone()
+    if r is None or not r[1] or not r[2]:
+        return False
+    key = (r[0], r[1])
+    if key not in sources:
+        from . import diff
+        try:
+            data = diff.source(con, *key)
+        except Exception:
+            data = None
+        sources[key] = data.decode("utf-8", errors="replace").split("\n") if data else None
+    lines = sources[key]
+    if lines is None:
+        return False
+    body = lines[r[2] - 1:(r[3] or r[2])]
+    made = re.compile(r"(?<![\w.])(?:new\s+)?(?:" + "|".join(re.escape(n) for n in names) + r")\s*[({]")
+    at = [k for k, ln in enumerate(body) if made.search(ln)]
+    if len(at) < 2 and not (at and len(made.findall(body[at[0]])) >= 2):
+        return False
+    span = body[max(at[0] - 1, 0):at[-1] + 1]   # the line before the first: `if kind == "box":` above `return Box()`
+    code = [re.sub(r"(\"[^\"]*\"|'[^']*')", '""', ln.split("//")[0].split(" #")[0]) for ln in span]
+    if any(_BRANCH.search(ln) or re.match(r'\s*(?:""|[\w.]+)\s*=>', ln) for ln in code) or sum(bool(re.search(r"\breturn\b", ln)) for ln in code) >= 2:
+        return False
+    after = " ".join(body[at[-1]:at[-1] + 4])
+    return not _LOOKUP.search(after) and not any(_LOOKUP.search(ln) for ln in body[at[-1] + 1:])
+
+
 def detect(con) -> list[dict]:
     g = _Graph(con)
     found: list[dict] = []
@@ -293,6 +329,7 @@ def detect(con) -> list[dict]:
                     f"Nothing in the type system ties the two sides together.")
 
     # Factory: one function creates two or more types that share a supertype.
+    sources: dict = {}
     for f, made in g.out["instantiates"].items():
         if g.kind(f) != "callable" or g.name(f) in (".ctor", "__init__") or g.in_tests(f):
             continue
@@ -312,7 +349,11 @@ def detect(con) -> list[dict]:
             rets = [n.split("`")[0] for n in (a.get("returns_names") or ([a["returns"]] if a.get("returns") else []))]
             returns_base = bool(rets) and rets[0] == g.nodes[base][_NAME]
             kinds = f"{len(products)} kinds of {g.name(base)} ({', '.join(g.name(p) for p in sorted(products)[:4])})"
-            if returns_base:
+            if _builds_all(con, f, [g.name(p).split("<")[0] for p in products], sources):
+                add("factory", f, {"factory": [f], "product": list(products), "product type": [base]},
+                    f"{g.qual(f)} creates every one of {kinds} together, as a list or a registry: it does not choose "
+                    f"between them.", 0.4)
+            elif returns_base:
                 add("factory", f, {"factory": [f], "product": list(products), "product type": [base]},
                     f"{g.qual(f)} creates {kinds} and returns it as {g.name(base)}, so callers do not name the concrete type.", 0.8)
             else:

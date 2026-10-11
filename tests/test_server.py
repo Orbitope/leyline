@@ -324,6 +324,63 @@ def test_bad_arguments_give_errors_an_agent_can_act_on(repo):
     serve(repo, script)
 
 
+def test_paths_an_agent_passes_stay_inside_the_mapped_repositories(repo, tmp_path):
+    """An agent may have read untrusted text that tells it which path to pass: a tool that takes a path reads or
+    writes only inside the repositories the store maps (or the directory the server started in, before the first
+    map). The person, at the command line, is not limited."""
+    outside = tmp_path / "outside"
+    other = outside / "openspec" / "changes" / "x"
+    other.mkdir(parents=True)
+    (other / "proposal.md").write_text("# Change x\n")
+    (other / "tasks.md").write_text("- [ ] 1.1 Change `start`\n")
+    (outside / ".coverage").write_bytes(b"SQLite format 3\0")
+    subprocess.run(["git", "init", "-q", str(outside)], check=True)
+    ch = change_folder(repo)
+
+    async def script(a: Agent, tools, init):
+        assert "outside" in await a.fail("map", paths=[str(outside)])
+        await a.call("map", paths=["."])
+        assert "outside" in await a.fail("map", paths=[str(outside)])
+        for name in ("plan", "check", "spec_brief", "spec_review_facts", "spec_verify", "affected_tests"):
+            assert "outside" in await a.fail(name, change=str(other)), name
+        assert "outside" in await a.fail("check", change=str(ch), coverage_path=str(outside / ".coverage"))
+        assert "outside" in await a.fail("coverage", import_path=str(outside / ".coverage"))
+        assert "outside" in await a.fail("quick", done="quick-x", coverage_path=str(outside / ".coverage"))
+        assert "outside" in await a.fail("drift", path=str(outside))
+        assert "outside" in await a.fail("review_pr", path=str(outside))
+        assert "outside" in await a.fail("map", paths=[".."])
+        assert not (other / "leyline.md").exists() and not (outside / ".leyline").exists()
+        assert (await a.call("plan", change=str(ch)))["written"]   # inside: as before
+
+    serve(repo, script)
+
+
+def test_a_server_started_in_a_folder_inside_the_repository_maps_the_repository(repo):
+    """Claude Code starts the server where it was opened, which may be a folder inside the repository. Before the
+    first map, `..` was "outside" and `.` mapped the folder as a repository with a store of its own; after it, `.`
+    added the folder as a second member. The repository is the unit: its top is allowed, a folder inside it means it,
+    and the store goes at its top."""
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    async def script(a: Agent, tools, init):
+        m = await a.call("map", paths=[".."])
+        assert m["repos"] == ["repo"] and m["db"] == str(repo / ".leyline" / "leyline.db")
+        m = await a.call("map", paths=["."])
+        assert m["repos"] == ["repo"], m
+        o = await a.call("overview")
+        assert [r["id"] for r in o["repos"]] == ["repo"]
+        assert "outside" in await a.fail("map", paths=["../.."])
+    serve(repo / "py", script)
+    assert not (repo / "py" / ".leyline").exists()
+
+    async def fresh(a: Agent, tools, init):   # with no map yet, the folder itself means the repository too
+        m = await a.call("map", paths=["."])
+        assert m["repos"] == ["repo"] and m["db"] == str(repo / ".leyline" / "leyline.db")
+    shutil.rmtree(repo / ".leyline")
+    serve(repo / "py" / "tests", fresh)
+    assert not (repo / "py" / "tests" / ".leyline").exists()
+
+
 def test_no_store_says_to_map(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -355,6 +412,21 @@ def test_tool_descriptions_name_every_argument(repo):
         assert "Loop step 1" in tools["map"].description and "Loop step 3" in tools["check"].description
         LISTED.update(tools)
     serve(repo, script)
+
+
+def test_the_readme_lists_every_tool_with_every_argument():
+    """The README's MCP table names each tool as `name(arg, optional?, ...)`, every argument the server takes."""
+    import re
+    from leyline import server
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    table = readme.split("## MCP tools", 1)[1].split("\n\n", 2)[1]
+    listed = {m[1]: [a.strip() for a in m[2].split(",") if a.strip()]
+              for m in re.finditer(r"`(\w+)\(([^)]*)\)`", table)}
+    for t in asyncio.run(server.mcp.list_tools()):
+        schema, = [t.input_schema]
+        required = set(schema.get("required") or [])
+        args = [a + ("" if a in required else "?") for a in schema.get("properties") or {}]
+        assert listed.get(t.name) == args, (t.name, listed.get(t.name), args)
 
 
 def test_a_map_from_the_command_line_is_seen_by_a_running_server(repo):

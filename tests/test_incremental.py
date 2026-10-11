@@ -177,3 +177,212 @@ def test_values_passed_in(tmp_path):
     con = sqlite3.connect(tmp_path / "inc.db")
     got = {r[0].split(":", 2)[2] for r in con.execute("SELECT dst_id FROM calls WHERE src_id = 'f6:python:web.app.run_app'")}
     assert "web.app.Middleware.__call__" in got
+
+
+def test_constructor_added_or_removed(tmp_path):
+    """A call that makes an object (`pkg.Engine(...)`, `new Shape()`) is written with the class's name and links to
+    its constructor, inherited or not. Adding or removing a constructor must resolve again the files that make one,
+    though they never mention `__init__` or `constructor`."""
+    root = tmp_path / "ctor"
+    (root / "pkg").mkdir(parents=True)
+    (root / "ts").mkdir()
+    core = root / "pkg/core.py"
+    (root / "pkg/__init__.py").write_text("from .core import Engine, Sub\n")
+    core.write_text("class Engine:\n    def __init__(self, name):\n        self.name = name\n\n\nclass Sub(Engine):\n    pass\n")
+    (root / "use.py").write_text("import pkg\n\n\ndef make():\n    return pkg.Engine('x')\n\n\ndef sub():\n    return pkg.Sub('y')\n")
+    shape = root / "ts/shape.ts"
+    shape.write_text("export class Shape {\n  constructor(public n: number) {}\n}\n")
+    (root / "ts/main.ts").write_text('import { Shape } from "./shape";\n\nexport function make(): Shape {\n  return new Shape(1);\n}\n')
+    check(tmp_path, root, "c", [
+        ("python constructor removed", lambda: edit(core, "    def __init__(self, name):\n", "    def setup(self, name):\n")),
+        ("python constructor added", lambda: edit(core, "    def setup(self, name):\n", "    def __init__(self, name):\n")),
+        ("typescript constructor removed", lambda: edit(shape, "  constructor(public n: number) {}\n", "  n = 1;\n")),
+        ("typescript constructor added", lambda: edit(shape, "  n = 1;\n", "  constructor(public n: number) {}\n")),
+    ])
+
+
+def test_tour_with_tied_modules(tmp_path):
+    """The tour's library stop picks the module most used by others; between modules used as much, the choice must
+    not depend on the order their rows were written in (a module added by an incremental run is written last)."""
+    root = tmp_path / "tie"
+    (root / "b").mkdir(parents=True)
+    (root / "b/one.py").write_text("def one():\n    return 1\n")
+    check(tmp_path, root, "t", [
+        ("module added", lambda: ((root / "a").mkdir(), (root / "a/two.py").write_text("def two():\n    return 2\n"))),
+    ])
+
+
+def test_counts_written_in_one_order(tmp_path):
+    """An incremental run adds up the counts of the files it did not resolve again in another order than a full run;
+    the coverage rows must still read the same."""
+    root = copy(tmp_path, "fixture")
+    check(tmp_path, root, "fx", [("remove file", lambda: (root / "scripts/run.py").unlink())])
+
+
+def test_module_variable_type_changed(tmp_path):
+    """A call on a module-level variable (`current.render()`, with `current: App = App()` in another file) takes the
+    variable's declared type. Removing the variable, or changing its type, must resolve its users again."""
+    root = copy(tmp_path, "fixture6")
+    glob = root / "web/globals.py"
+    check(tmp_path, root, "f6", [
+        ("variable removed", lambda: edit(glob, 'current: App = App("current")\n', "")),
+        ("variable added", lambda: glob.write_text(glob.read_text() + 'current: App = App("current")\n')),
+    ])
+
+
+def test_waits_for_another_run_writing_the_cache(tmp_path):
+    """A second run that starts while another is writing the cache (a map while a plan starts) waits for it, as it
+    waits for the store, rather than failing at once with "database is locked"."""
+    import threading
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.py").write_text("def a():\n    return 1\n")
+    db = tmp_path / "w.db"
+    index(root, db, "w")
+    (root / "a.py").write_text("def a():\n    return 2\n")
+    other = sqlite3.connect(str(cache_path(db)), check_same_thread=False)
+    other.execute("BEGIN IMMEDIATE")   # as a run holds it from its first parse until it finishes
+    done = threading.Timer(1.5, other.rollback)
+    done.start()
+    try:
+        assert index(root, db, "w")["incremental"]["mode"] in ("full", "incremental")
+    finally:
+        done.join()
+        other.close()
+
+
+def test_tour_goes_when_a_repository_has_no_modules_left(tmp_path):
+    """A repository whose last source file goes has no modules and no tour: the tour of the earlier map, which names
+    a module that is gone, must not be left behind."""
+    root = tmp_path / "e"
+    root.mkdir()
+    (root / "a.py").write_text("def a():\n    return 1\n")
+    db = tmp_path / "e.db"
+    index(root, db, "e")
+    (root / "a.py").unlink()
+    index(root, db, "e")
+    full = tmp_path / "full.db"
+    index(root, full, "e", full=True)
+    assert differences(db, full) == {}
+
+
+def test_file_differing_only_in_extension_added_and_removed(tmp_path):
+    """Whether a file's ids keep its extension depends on the files beside it (a.js beside a.ts): adding or removing
+    one changes the other's ids though its content is the same, so its kept parse output must not be used."""
+    root = tmp_path / "x"
+    (root / "src").mkdir(parents=True)
+    ts, js = root / "src/a.ts", root / "src/a.js"
+    ts.write_text("export function one(): number {\n  return 1;\n}\n")
+    (root / "src/main.ts").write_text('import { one } from "./a";\n\nexport function main(): number {\n  return one();\n}\n')
+    check(tmp_path, root, "x", [
+        ("js added beside", lambda: js.write_text("export function two() {\n  return 2;\n}\n")),
+        ("js removed", lambda: js.unlink()),
+    ])
+
+
+def test_start_that_is_both_an_entry_and_a_test(tmp_path):
+    """Both flows of a start that is an entry and a test are walked again, kept and dropped as a full run would."""
+    root = tmp_path / "b"
+    root.mkdir()
+    p = root / "P.cs"
+    p.write_text("public static class P\n{\n    [Fact]\n    public static void Main() { Run(); }\n"
+                 "    static void Run() { }\n    static void Step() { }\n}\n")
+    check(tmp_path, root, "b", [
+        ("callee body", lambda: edit(p, "static void Run() { }", "static void Run() { Step(); }")),
+        ("no longer a test", lambda: edit(p, "    [Fact]\n", "")),
+        ("a test again", lambda: edit(p, "    public static void Main()", "    [Fact]\n    public static void Main()")),
+    ])
+
+
+def _holding_run(tmp_path):
+    """A repository mapped once, and a second run of it that has started and holds the map (as one does from its
+    first parse until it finishes)."""
+    from leyline import incremental, store
+    from leyline.indexer import Indexer
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.py").write_text("def a():\n    return 1\n")
+    db = tmp_path / "w.db"
+    index(root, db, "w")
+    (root / "a.py").write_text("def a():\n    return 2\n")
+    con = store.connect(db)
+    holder = incremental.Run(con, db, Indexer(root, "w"))
+    return root, db, con, holder
+
+
+def test_a_run_waits_for_a_long_run_to_finish(tmp_path, monkeypatch):
+    """A run that finds another one in progress waits for it to finish, however long it takes (here longer than
+    the time SQLite is told to wait for a lock), then maps as usual."""
+    import threading
+    from leyline import store
+    monkeypatch.setattr(store, "BUSY_SECONDS", 0.5)
+    root, db, con, holder = _holding_run(tmp_path)
+
+    got = {}
+
+    def second():
+        try:
+            got["mode"] = index(root, db, "w")["incremental"]["mode"]
+        except Exception as exc:
+            got["error"] = exc
+    t = threading.Thread(target=second)
+    t.start()
+    t.join(2.0)   # still waiting, past the lock's own time limit
+    assert t.is_alive() and not got
+    holder.abandon()
+    con.close()
+    t.join(60)
+    assert got.get("mode") in ("full", "incremental"), got
+
+
+def test_a_run_that_waits_too_long_says_who_holds_the_map(tmp_path, monkeypatch):
+    """LEYLINE_WAIT limits the wait; past it the run stops with a message naming the other run and how long it has
+    been going, not with "database is locked"."""
+    import os
+    root, db, con, holder = _holding_run(tmp_path)
+    monkeypatch.setenv("LEYLINE_WAIT", "1")
+    try:
+        with pytest.raises(RuntimeError) as err:
+            index(root, db, "w")
+        assert "another leyline index" in str(err.value) and f"pid {os.getpid()}" in str(err.value)
+    finally:
+        holder.abandon()
+        con.close()
+    assert index(root, db, "w")["incremental"]["mode"] in ("full", "incremental")
+
+
+def test_a_map_that_dies_after_writing_facts_is_mapped_again(tmp_path, monkeypatch):
+    """A run killed after its facts are written but before the tour, patterns and stale marks are: the next `plan` or
+    `check` must not take the store as up to date because no file changed since."""
+    from leyline import loop, tours
+    root = copy(tmp_path, "fixture2")
+    db = tmp_path / "s.db"
+    index(root, db, "f2")
+    edit(root / "py/src/pkg/core.py", "    def start(self):\n", "    def start(self):\n        make_engine()\n")
+
+    def dies(*a, **k):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(tours, "generate", dies)
+        with pytest.raises(KeyboardInterrupt):
+            index(root, db, "f2")
+    assert loop.refresh(db) is not None   # mapped again
+    full = tmp_path / "full.db"
+    index(root, full, "f2", "auto", full=True)   # as refresh maps a store `map` did not note the mode of
+    assert differences(db, full) == {}
+
+
+def test_a_damaged_cache_makes_a_full_run_not_a_failed_one(tmp_path):
+    """The cache only saves work: deleting it makes the next run a full one. A damaged one (a disk error, a copy cut
+    off) stopped every index with "the store is damaged ... delete it", which would lose the annotations, findings
+    and test runs kept in a store that was fine."""
+    root = copy(tmp_path, "fixture2")
+    db = tmp_path / "s.db"
+    index(root, db, "f2")
+    cache = cache_path(db)
+    for p in (Path(str(cache) + "-wal"), Path(str(cache) + "-shm")):
+        p.unlink(missing_ok=True)
+    cache.write_bytes(b"this is not a database, it was cut off" * 10)
+    stats = index(root, db, "f2")
+    assert stats["incremental"]["mode"] == "full"
+    assert index(root, db, "f2")["incremental"]["mode"] == "incremental"   # and the cache is good again
