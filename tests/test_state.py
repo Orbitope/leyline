@@ -210,7 +210,7 @@ def test_the_map_server_closes_the_store_after_each_page(repo, monkeypatch):
             for _ in range(3):
                 h.do_GET()
             raise KeyboardInterrupt
-    monkeypatch.setattr(http.server, "HTTPServer", Server)
+    monkeypatch.setattr(http.server, "ThreadingHTTPServer", Server)
     gc.collect()
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter("always", ResourceWarning)

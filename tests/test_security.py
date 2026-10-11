@@ -175,16 +175,24 @@ def test_view_serves_the_map_to_this_machine_by_name_only(repo):
         port = s.getsockname()[1]
     threading.Thread(target=cli.main, args=(["--db", str(db), "view", "--port", str(port)],), daemon=True).start()
 
-    def get(host):
-        for _ in range(50):
-            try:
-                c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-                c.request("GET", "/", headers={"Host": host})
-                r = c.getresponse()
-                return r.status, r.read()
-            except ConnectionRefusedError:
-                time.sleep(0.1)
+    for _ in range(300):   # the server starts on its thread; a CI runner can take a while over the imports
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    else:
         raise AssertionError("the viewer did not start")
+
+    def get(host):
+        # 60 s: the first page runs git (the store-folder check), which a macOS runner starts slowly
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+        try:
+            c.request("GET", "/", headers={"Host": host})
+            r = c.getresponse()
+            return r.status, r.read()
+        finally:
+            c.close()
     status, body = get(f"evil.example:{port}")
     assert status == 403 and b"def f" not in body
     assert get(f"127.0.0.1:{port}")[0] == 200

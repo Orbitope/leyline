@@ -371,18 +371,22 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
 
 
 def _tests_arg(value: Optional[str]) -> Optional[list[dict]]:
-    """Test runner output, from a file or - for stdin, read into results."""
     if value is None:
         return None
     from . import diff
-    data = sys.stdin.buffer.read() if value == "-" else Path(value).read_bytes()
+    if value == "-":
+        buffer = getattr(sys.stdin, "buffer", None)   # a text-only stdin (a test's StringIO) has no bytes under it
+        data = buffer.read() if buffer is not None else sys.stdin.read()
+    else:
+        data = Path(value).read_bytes()
     # A byte-order mark is not part of the first result's name: PowerShell's `>` writes UTF-16 with one, and some
     # editors UTF-8 with one.
-    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        text = data.decode("utf-16", errors="replace")
-    else:
-        text = data.decode("utf-8-sig", errors="replace")
-    return diff.parse_test_output(text.lstrip("﻿"))
+    if isinstance(data, bytes):
+        if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+            data = data.decode("utf-16", errors="replace")
+        else:
+            data = data.decode("utf-8-sig", errors="replace")
+    return diff.parse_test_output(data.lstrip("\ufeff"))
 
 
 def _not_dirs(paths: list[str]) -> bool:
@@ -841,7 +845,7 @@ def _with_store(args, con) -> int:
         print(f"wrote {args.out} ({len(text) // 1024} KB)")
         return 0
     if args.cmd == "view":
-        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from . import export
 
         class Handler(BaseHTTPRequestHandler):
@@ -868,7 +872,10 @@ def _with_store(args, con) -> int:
 
         print(f"Leyline map at http://127.0.0.1:{args.port}  (Ctrl+C to stop)")
         try:
-            HTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+            # A thread per request: a browser that keeps a connection open, or a slow page, must not hold up the next load.
+            server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+            server.daemon_threads = True
+            server.serve_forever()
         except KeyboardInterrupt:
             pass
         return 0
