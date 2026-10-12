@@ -223,7 +223,9 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
                 con.execute("INSERT OR REPLACE INTO meta VALUES ('exact', ?)", (exact,))
         out = {"db": str(db), "seconds": round(time.perf_counter() - began, 1), **counts(con),
                "timing": stats.get("timing", {}), "exact": {k: v for k, v in stats.items() if k.startswith("exact:")},
-               "left_out": _left_out(stats.get("left_out") or {})}
+               "left_out": _left_out(stats.get("left_out") or {}),
+               "changes": sum(1 for root in _roots(con).values() for c in (root / "openspec" / "changes").glob("*")
+                              if c.is_dir() and c.name != "archive")}
         if page:
             out["page"] = str(write_page(con, db, always=True))
     finally:
@@ -245,9 +247,11 @@ def write_page(con, db: str | Path, open_change: Optional[str] = None, always: b
 
 def counts(con) -> dict:
     one = lambda sql: con.execute(sql).fetchone()[0]
-    modules = [{"name": r["path"] or r["name"], "repo": r["repo_id"], "files": r["n"]} for r in con.execute(
-        "SELECT m.path, m.name, m.repo_id, COUNT(f.id) AS n FROM nodes m LEFT JOIN nodes f ON f.parent_id = m.id AND f.kind = 'file'"
-        " WHERE m.kind = 'module' GROUP BY m.id ORDER BY n DESC, m.path")]
+    aside = store.aside_modules(con)
+    modules = [{"name": r["path"] or r["name"], "repo": r["repo_id"], "files": r["n"],
+                **({"aside": aside[r["id"]]} if r["id"] in aside else {})} for r in con.execute(
+        "SELECT m.id, m.path, m.name, m.repo_id, COUNT(f.id) AS n FROM nodes m LEFT JOIN nodes f ON f.parent_id = m.id"
+        " AND f.kind = 'file' WHERE m.kind = 'module' GROUP BY m.id ORDER BY n DESC, m.path")]
     from . import patterns as found
     patterns = dict(sorted(found.listing(con, limit=1)["by_pattern"].items()))
     return {
@@ -283,11 +287,14 @@ def map_text(m: dict) -> str:
     who = repos[0] if len(repos) == 1 else f"{len(repos)} repositories ({', '.join(repos)})"
     mods = m["modules"]
     n = lambda k, word: f"{k:,} {word}{'' if k == 1 else 's'}"
+    product = [x for x in mods if not x.get("aside")] or mods   # tests, samples and fixtures come after the product
+    rest = len(mods) - len(product)
     L = [f"Mapped {who} in {m['seconds']} s: {n(m['files'], 'file')}, {n(m['lines'], 'line')}, {n(len(mods), 'module')}.",
          f"Found {spec._n(m['types'], 'type')}, {spec._n(m['functions'], 'function')}, {spec._n(m['tests'], 'test')} and "
          f"{spec._n(m['entry_points'], 'entry point')} (where a program starts).",
-         ("Largest modules: " if len(mods) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({n(x['files'], 'file')})" for x in mods[:5])
-         + (f" and {len(mods) - 5} more" if len(mods) > 5 else "")]
+         ("Largest modules: " if len(product) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({n(x['files'], 'file')})" for x in product[:5])
+         + (f" and {len(product) - 5} more" if len(product) > 5 else "")
+         + (f"; {n(rest, 'module')} of tests, samples or fixtures" if rest else "")]
     if not mods:
         L.pop()
     if not m["files"]:
@@ -308,8 +315,14 @@ def map_text(m: dict) -> str:
     L.append(f"Store: {Path(m['db']).as_posix()}")
     if m.get("page"):
         L.append(f"Map page: {Path(m['page']).as_posix()} (open it in a browser)")
-    L.append("Next: write the change you want as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the "
-             "leyline-spec skill says how), then run `leyline plan <id>`.")
+    if m.get("changes"):
+        L.append("Next: `leyline plan <id>` on a change under openspec/changes/, or write a new one there (ask your agent;"
+                 " the leyline-spec skill says how). To look around first: `leyline tour`, or `leyline show <name>`.")
+    else:
+        L.append("Next: to look around, `leyline tour` says what this is and where to start reading, and `leyline show"
+                 " <name>` explains one thing; or ask your agent how something works. To change the code, write the"
+                 " change as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the leyline-spec skill says"
+                 " how), then run `leyline plan <id>`.")
     return "\n".join(L)
 
 

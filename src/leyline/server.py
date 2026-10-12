@@ -33,8 +33,15 @@ from . import agent_skills
 mcp = FastMCP(
     "leyline",
     instructions=(
-        "Leyline is a map of a codebase (a graph in SQLite) for a loop in which a person decides the design of a change"
-        " and agents write the code. The loop, in order:\n"
+        "Leyline is a map of a codebase (a graph in SQLite): what is where, who calls what, what runs from each entry"
+        " point and test, and the channels (http, events, files, queues) between parts. Most questions are about"
+        " understanding the code, and need no loop: `search` a word of a name, then `expand` it (a name such as"
+        " Owner.method works wherever an id does, when it is one thing); `find_flows` with the question in words, then"
+        " `explain_path` from the candidate that fits; `module_outline` for what a module holds; `context` for the code"
+        " around something; `impact` for what can reach it. Read the code with `source` before saying what it does."
+        " The leyline-ask skill routes a question; leyline-explain-flow and leyline-explore-module answer the two most"
+        " common ones.\n"
+        "To change the code, a loop in which a person decides the design and agents write it, in order:\n"
         "1. `map` with the repository directory, once, if a tool says nothing is mapped.\n"
         "2. Write the change as an OpenSpec folder, openspec/changes/<id>/ (proposal.md, specs/<area>/spec.md with"
         " scenarios, tasks.md naming code in backticks). Before writing, look around with `overview`, `search`,"
@@ -49,9 +56,7 @@ mcp = FastMCP(
         " not your own account.\n"
         "Every answer from `map`, `plan` and `check` ends with `next`: do that. `plan` and `check` re-map changed code"
         " themselves. Node ids come from `search`, `overview` and `expand`; never guess one. Edges marked heuristic come"
-        " from syntax and can be wrong. Long lists are cut: `cut` says what was cut and `more` how to see the rest.\n"
-        "To answer how something works, outside the loop: `find_flows` with the question in words, then `explain_path`"
-        " from the candidate that fits, reading the code (`source`) at the steps that matter."
+        " from syntax and can be wrong. Long lists are cut: `cut` says what was cut and `more` how to see the rest."
     ) + agent_skills.start_here(),
 )
 
@@ -245,7 +250,9 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
 
 
 # -- argument types ---------------------------------------------------------------------------------
-NodeId = Annotated[str, Field(description="A node id exactly as `search`, `overview` or `expand` returned it.")]
+NodeId = Annotated[str, Field(description="A node id as `search`, `overview` or `expand` returned it, or a name that is"
+                                          " one thing on the map: `Owner.method`, `method`, a file path. A name that"
+                                          " could be several things is an error that lists them.")]
 ChangeArg = Annotated[str, Field(description="The change: its folder (openspec/changes/<id>, absolute or relative to the"
                                              " server's directory) or just its id.")]
 TestOutput = Annotated[Optional[str], Field(description="The test runner's output as text: " + diff.READS + "."
@@ -336,13 +343,13 @@ def _for_agent(text: str) -> str:
     return text
 
 
-def _known(node_id: str) -> Optional[dict]:
-    """An error for a node id that is not in the store, with near matches; None when it is there."""
-    if query._node(_db(), node_id) is not None:
-        return None
-    hits = query.search(_db(), node_id.split(":")[-1].split(".")[-1], limit=5)["results"] if node_id.strip() else []
-    return {"error": f"No node with id {node_id!r}. Find ids with `search`.",
-            "did_you_mean": [{"id": h["id"], "kind": h["kind"]} for h in hits]}
+def _found(text: str) -> tuple[str, Optional[dict]]:
+    """(the node id `text` names, None), for an id or a name that is one thing on the map (`Owner.method`, a file
+    path); else (text, an error with near matches)."""
+    r = query.find(_db(), text)
+    if "id" in r:
+        return r["id"], None
+    return text, {"error": r["error"], "did_you_mean": [{"id": h["id"], "kind": h["kind"]} for h in r["did_you_mean"]]}
 
 
 # -- the loop ---------------------------------------------------------------------------------------
@@ -535,9 +542,9 @@ def expand(node_id: NodeId, limit: Limit = 20) -> dict:
     """One node in detail. A module: its files, public types, entry points and module dependencies. A type: its
     members, bases and the modules that use it. A function: its signature, callers and callees, and the fields
     it reads and writes (`data`). Each list shows `limit` items and its total."""
-    if (err := _known(node_id)):
-        return err
     out = query.expand(_db(), node_id, limit)
+    if "error" in out:
+        return out
     for k in ("depends_on", "depended_on_by", "externals"):
         if isinstance(out.get(k), list) and len(out[k]) > limit:
             out[k] = {"total": len(out[k]), "items": out[k][:limit]}
@@ -553,8 +560,6 @@ def neighbors(node_id: NodeId,
               limit: Limit = 25) -> dict:
     """The raw edges around a node, grouped by edge kind, each group with its total. Use `expand` for a summary
     of a node; use this to list one kind of edge, such as everything that calls it (direction=in, kinds=[calls])."""
-    if (err := _known(node_id)):
-        return err
     return query.neighbors(_db(), node_id, direction, kinds, limit)
 
 
@@ -562,20 +567,20 @@ def neighbors(node_id: NodeId,
 def source(node_id: NodeId,
            max_lines: Annotated[int, Field(ge=1, le=2000, description="Most lines to return from the start.")] = 200) -> dict:
     """The source text of a type, function or field, read from the working tree that was mapped."""
-    if (err := _known(node_id)):
-        return err
     return query.source(_db(), node_id, max_lines)
 
 
 @_tool
 def flows(kind: Annotated[Optional[Literal["entry", "test"]], Field(description="entry: walked from a program's entry"
                                                                               " point; test: walked from a test.")] = None,
-          through: Annotated[Optional[str], Field(description="Only flows that pass this node id.")] = None,
+          through: Annotated[Optional[str], Field(description="Only flows that pass this node (an id or a name).")] = None,
           limit: Limit = 25, offset: Offset = 0) -> dict:
     """List flows: the call paths walked from each entry point and each test. Entry points come first. Pass
     `through` to find the flows that reach one function; read one with `flow`."""
-    if through and (err := _known(through)):
-        return err
+    if through:
+        through, err = _found(through)
+        if err:
+            return err
     r = query.flows(_db(), kind, through)
     rows = sorted(r["flows"], key=lambda f: f["kind"] != "entry")
     page = rows[offset:offset + limit]
@@ -605,12 +610,14 @@ def flow(flow_id: Annotated[str, Field(description="A flow id from `flows`.")],
 
 
 @_tool
-def trace(from_id: Annotated[str, Field(description="Node id of the function to start from.")],
-          to_id: Annotated[str, Field(description="Node id of the function to reach.")]) -> dict:
+def trace(from_id: Annotated[str, Field(description="The function to start from: a node id or a name.")],
+          to_id: Annotated[str, Field(description="The function to reach: a node id or a name.")]) -> dict:
     """The shortest chain of calls and channels from one function to another."""
-    for i in (from_id, to_id):
-        if (err := _known(i)):
-            return err
+    from_id, err = _found(from_id)
+    if not err:
+        to_id, err = _found(to_id)
+    if err:
+        return err
     return query.trace(_db(), from_id, to_id)
 
 
@@ -621,7 +628,8 @@ def impact(node_id: NodeId,
     """What can reach a node: its callers, near and far, grouped by module (largest first), and the flows that
     pass through it. Call it on what a change will touch before writing the spec. Read-only; `propose_change`
     gives a fuller assessment and saves it as a view."""
-    if (err := _known(node_id)):
+    node_id, err = _found(node_id)
+    if err:
         return err
     r = query.impact(_db(), node_id, max_depth, limit)
     mods = r["by_module"]
@@ -745,7 +753,8 @@ def annotate(node_id: NodeId, key: Annotated[str, Field(description="What is sta
                                                                                " intent: a statement the person made.")] = "inferred") -> dict:
     """Record a statement about a node. An inferred statement goes stale when the files behind its evidence
     change. Facts from the code cannot be written."""
-    if (err := _known(node_id)):
+    node_id, err = _found(node_id)
+    if err:
         return err
     return query.annotate(_db(), node_id, key, value, evidence, confidence, layer, "mcp")
 
@@ -770,8 +779,10 @@ def propose_change(intent: Annotated[str, Field(description="The change in the p
             return {"error": "a target with action add needs a name (and a parent: the type, file or module it goes in)"}
         if t["action"] != "add" and not t.get("id"):
             return {"error": f"a target with action {t['action']} needs the id of the node that changes"}
-        if t.get("id") and (err := _known(t["id"])):
-            return err
+        if t.get("id"):
+            t["id"], err = _found(t["id"])
+            if err:
+                return err
     r = change_mod.propose(_db(), intent, targets, title, depth, "mcp")
     if isinstance(r.get("marks"), list):   # the marks are the saved view; `view` shows them
         r["marks"] = len(r["marks"])
@@ -857,8 +868,10 @@ def patterns(pattern: Annotated[Optional[str], Field(description="Only this patt
     """Design patterns found by their shape: strategy, decorator, composite, template method, observer, factory,
     builder, singleton, process boundary. Each has the nodes playing each role, a rationale and a confidence. A
     label says the code has the shape, not that the author intended the pattern."""
-    if node_id and (err := _known(node_id)):
-        return err
+    if node_id:
+        node_id, err = _found(node_id)
+        if err:
+            return err
     r = pattern_labels.listing(_db(), pattern.strip().lower() if pattern else None, node_id, include_tests, limit)
     if pattern and not r["patterns"]:
         found = pattern_labels.listing(_db(), None, None, include_tests, 1)["by_pattern"]
@@ -927,7 +940,8 @@ def coverage(node_id: Annotated[Optional[str], Field(description="A function: th
     if flow_id:
         return {**out, **measured.compare_flow(_db(), flow_id)}
     if node_id:
-        if (err := _known(node_id)):
+        node_id, err = _found(node_id)
+        if err:
             return err
         return {**out, "node": node_id, "tests": measured.tests_for(_db(), node_id)}
     return {**measured.summary(_db()), **out}

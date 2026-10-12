@@ -15,8 +15,8 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | --- | --- |
 | `module_outline` | `leyline outline [module or part id] --depth 2` (`--json` for the ids) |
 | `name_part` | `leyline name-part <part id> "<name>" --summary "<one line>" --evidence <node ids>` |
-| `source`, `context` | `leyline source <id>`, `leyline context <name or path> --tokens 2000` |
-| `search`, `expand` | `leyline search <text>`, `leyline expand <id>` |
+| `source`, `context` | `leyline source <name or id>`, `leyline context <name or path> --tokens 2000` |
+| `search`, `expand` | `leyline search <text>`, `leyline expand <name or id>` |
 | `save_tour` | none; use the server |
 
 If neither is there, say so and stop. If a tool says nothing is mapped, call `map` first.

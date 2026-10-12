@@ -46,6 +46,7 @@ button { cursor: pointer; }
 .tabs button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
 .tabs .count { font: 11px var(--mono); color: var(--muted); margin-left: 4px; }
 .morewrap { position: relative; display: flex; }
+.docs { font-size: 12px; color: var(--muted); border-bottom: 1px dotted var(--muted); cursor: help; }
 .menu { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; min-width: 210px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgb(0 0 0 / 0.18); padding: 4px 0; }
 .menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 7px 12px; }
@@ -87,6 +88,8 @@ button { cursor: pointer; }
 .node text { fill: var(--ink); font: 500 12.5px var(--mono); pointer-events: none; }
 .node text.meta { fill: var(--muted); font: 11px var(--sans); }
 .node { cursor: pointer; }
+.node.aside rect:first-child { stroke: var(--line); fill: var(--bg); }
+.node.aside text { fill: var(--muted); }
 .node.stub rect { fill: var(--bg); stroke-dasharray: 2 3; }
 .node.stub text { fill: var(--muted); }
 .node.iso rect { stroke: var(--line); }
@@ -292,13 +295,13 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
     <div class="tabs" role="group" aria-label="View">
       <button id="tab-map" aria-pressed="true">Map</button>
       <button id="tab-change" aria-pressed="false">Changes<span class="count" id="change-count"></span></button>
+      <button id="tab-tour" aria-pressed="false" title="A guided walk through the code: what it is and where to start reading">Tour</button>
       <div class="morewrap">
         <button id="tab-more" aria-pressed="false" aria-haspopup="true" aria-expanded="false">More</button>
         <div class="menu" id="menu" hidden>
           <button id="tab-flows" aria-pressed="false">Flows<small>what a test or an entry point runs through</small></button>
           <button id="tab-matrix" aria-pressed="false">Matrix<small>dependencies as a grid, cycles tinted</small></button>
           <button id="tab-views" aria-pressed="false">Saved views<small>marked sets of code, design patterns</small></button>
-          <button id="tab-tour" aria-pressed="false">Tour<small>a guided walk through the code</small></button>
         </div>
       </div>
     </div>
@@ -306,6 +309,7 @@ pre.code .ln { display: inline-block; width: 3.6em; padding-right: 0.9em; text-a
       <input id="q" type="search" placeholder="Find a type, function or file" autocomplete="off" aria-label="Search">
       <div class="results" id="results" hidden></div>
     </div>
+    <span class="docs" title="One page of what to ask Leyline, and the command or tool behind it: docs/quick-reference.md in Leyline's repository, or `leyline --help`">Help: docs/quick-reference.md</span>
   </header>
   <div class="main">
     <section class="stage" aria-label="Map">
@@ -502,6 +506,8 @@ const ROLE_LABEL = { changed: "will change", new: "new code goes in here", contr
   done: "changed, as planned", done_new: "new, as planned", helper: "helper added, only planned code calls it", test_changed: "test added or changed",
   drift: "changed, but not in the spec", missed: "expected to change, and did not" };
 const FLOWS = D.flows || [];
+// A flow that starts in a test project, a sample or a fixture comes after the product's own flows.
+const flowAside = (i) => { const m = moduleOf[FLOWS[i].entry]; return m != null && N[m].x && N[m].x.aside ? 1 : 0; };
 const flowsOf = new Map();
 FLOWS.forEach((f, fi) => { for (const st of f.steps) { if (!flowsOf.has(st[0])) flowsOf.set(st[0], []); flowsOf.get(st[0]).push(fi); } });
 const entryTargets = new Set(D.edges.filter((e) => e[0] === "exposes").map((e) => e[2]));
@@ -763,7 +769,7 @@ function metaLine(i) {
   if (n.k === "part") { const x = n.x || {}; return `${x.files || 0} file${x.files === 1 ? "" : "s"} · ${(x.functions || 0).toLocaleString()} functions · ${big(x.lines || 0)} lines${x.stale ? " · name may be stale" : ""}`; }
   if (n.k !== "module") return kindName(i);
   const f = kids[i].filter((c) => N[c].k === "file").length;
-  return `${f} file${f === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines`;
+  return `${f} file${f === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines${n.x && n.x.aside ? " · " + n.x.aside : ""}`;
 }
 
 /* ---------- draw ---------- */
@@ -802,7 +808,7 @@ function draw() {
     if (b.dummy) continue;
     const n = N[b.i];
     const role = S.level === "view" ? VW.boxes.get(b.i) : OVER ? OVER.get(b.i) : null;
-    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (b.away ? " other" : "") + (role ? " role-" + (S.level === "view" ? VW.cls(role) : role) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
+    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (b.away ? " other" : "") + (n.k === "module" && n.x && n.x.aside ? " aside" : "") + (role ? " role-" + (S.level === "view" ? VW.cls(role) : role) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
     el("rect", { width: b.w, height: b.h, rx: 5 }, g);
     el("rect", { class: "lang-" + langOf(b.i), x: 0, y: 0, width: 4, height: b.h, rx: 2, style: "stroke:none" }, g);
     const t = el("text", { x: 14, y: b.meta ? 19 : 19.5 }, g); t.textContent = b.label;
@@ -1053,7 +1059,7 @@ function side() {
     if ($("tour-prev")) $("tour-prev").onclick = () => move(-1);
     if ($("tour-next")) $("tour-next").onclick = () => move(1);
     if ($("tour-back")) $("tour-back").onclick = () => tourShow();
-    $("tour-end").onclick = () => { S.tour = null; $("tab-tour").setAttribute("aria-pressed", "false"); side(); };
+    $("tour-end").onclick = () => { S.tour = null; remember(TOUR_SEEN); $("tab-tour").setAttribute("aria-pressed", "false"); side(); };
     if ($("tour-pick")) $("tour-pick").onchange = (e) => { S.tour = { idx: +e.target.value, stop: 0 }; tourShow(); };
   }
   for (const b of s.querySelectorAll("[data-go]")) b.onclick = () => goTo(+b.dataset.go);
@@ -1258,7 +1264,7 @@ function drawFlow() {
   const hay = (x) => (flowName(x) + " " + N[moduleOf[x.entry]].n + " " + (N[x.entry].f || "")).toLowerCase();
   const CAP = 400; let shown = 0, matched = 0;
   const optsFor = () => ["Program starts", "Tests", "Framework callbacks"].filter((g) => groups[g]).map((g) => {
-    const hit = groups[g].filter((i) => i === S.flow || !words.length || words.every((w) => hay(FLOWS[i]).includes(w)));
+    const hit = groups[g].filter((i) => i === S.flow || !words.length || words.every((w) => hay(FLOWS[i]).includes(w))).sort((a, b) => flowAside(a) - flowAside(b) || a - b);
     matched += hit.length;
     const list = hit.slice(0, Math.max(0, CAP - shown)); if (hit.includes(S.flow) && !list.includes(S.flow)) list.push(S.flow); shown += list.length;
     return list.length ? `<optgroup label="${g} (${hit.length})">${list.map((i) => `<option value="${i}"${i === S.flow ? " selected" : ""}>${esc(flowName(FLOWS[i]))} (${FLOWS[i].steps.length})</option>`).join("")}</optgroup>` : "";
@@ -1429,8 +1435,13 @@ $("tab-more").onclick = (e) => { e.stopPropagation(); menu($("menu").hidden); };
 $("tab-matrix").onclick = () => setMode("matrix");
 $("tab-flows").onclick = () => { if (S.sel && S.sel.edge) S.sel = null; setMode("flows"); };
 $("tab-views").onclick = () => setMode("views");
-$("tab-tour").onclick = () => { menu(false); if (!TOURS.length) return; if (!S.tour) S.tour = { idx: 0, stop: 0 }; tourShow(); };
+$("tab-tour").onclick = () => { if (!TOURS.length) return; if (!S.tour) S.tour = { idx: 0, stop: 0 }; tourShow(); };
 if (!TOURS.length) $("tab-tour").hidden = true;
+// The first screen is the orientation tour's first stop, until the person ends the tour once on this map.
+const TOUR_SEEN = "leyline-tour-ended:" + D.repos.map((r) => r.id).join(",");
+const seen = (k) => { try { return !!localStorage.getItem(k); } catch (e) { return false; } };
+const remember = (k) => { try { localStorage.setItem(k, "1"); } catch (e) { /* a private window, or storage off: the tour opens again next time */ } };
+if (TOURS.length && !seen(TOUR_SEEN)) { S.tour = { idx: 0, stop: 0 }; $("tab-tour").setAttribute("aria-pressed", "true"); }
 document.addEventListener("click", (e) => { if (!e.target.closest(".morewrap")) menu(false); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") menu(false); });
 
@@ -1611,6 +1622,7 @@ $("q").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("results
 document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });
 
 /* ---------- start ---------- */
+S.flow = Math.max(0, FLOWS.findIndex((f, i) => !flowAside(i)));   // the Flows tab opens on a product flow
 $("hint-cross").hidden = !WS;
 $("change-count").textContent = CHANGES.length ? " " + CHANGES.length : "";
 const asked = decodeURIComponent((location.hash.match(/change=([^&]+)/) || [])[1] || "") || (D.start && D.start.change);

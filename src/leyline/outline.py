@@ -251,6 +251,18 @@ class Part:
     node: str = ""        # a type: its node id
 
 
+def _group_label(m, fs: list, own: set, anchor: str) -> str:
+    """A group's name: its three busiest files (the anchor's first), so "spec.py + pr.py + server.py group" rather than
+    one file or type standing for twenty-five."""
+    def weight(f):
+        return sum(w for u in m.units_of_file.get(f, ()) for v, w in m.uadj.get(u, {}).items() if v in own)
+    first = m.file_of.get(anchor) or (anchor if anchor in m.files else None)
+    ranked = sorted(fs, key=lambda f: (f != first, -weight(f), f))
+    base = lambda f: m.files.get(f, {}).get("path", f).rsplit("/", 1)[-1]
+    names = list(dict.fromkeys(base(f) for f in ranked))
+    return " + ".join(names[:3]) + " group"
+
+
 def _dir_id(repo: str, path: str) -> str:
     return f"{repo}:dir:{path}"
 
@@ -459,7 +471,7 @@ def _groups(m: Model, part: Part, base: str, loose: list) -> list:
         own = {u for f in fs for u in m.units_of_file.get(f, ())} & units
         anchor = sorted(own or units, key=lambda u: (-sum(w for v, w in m.uadj.get(u, {}).items() if v in own), u))[0]
         nm = m.name.get(anchor) or m.files.get(anchor, {}).get("path", anchor).rsplit("/", 1)[-1]
-        label = f"{nm} group"
+        label = _group_label(m, fs, own, anchor)
         if sid is None:
             used[nm] += 1
             sid = f"{folder}#system:{nm}" + (f"~{used[nm]}" if used[nm] > 1 else "")
@@ -973,9 +985,12 @@ def _part_lines(p: dict, n: Optional[int], pad: str = "   ") -> list:
         L.append(f"{pad}uses: {_links(p['uses'])}")
     if p.get("used_by"):
         L.append(f"{pad}used by: {_links(p['used_by'])}")
-    for c in p.get("channels", ()):
+    chans = list(p.get("channels", ()))
+    for c in chans[:3]:
         L.append(f"{pad}channel: {c['channel']} {c['direction']} {c['other']}, {c['links']} link{'s' if c['links'] != 1 else ''}"
                  + (f" (e.g. {c['example']})" if c.get("example") else ""))
+    if len(chans) > 3:
+        L.append(f"{pad}and {len(chans) - 3} more channel{'s' if len(chans) > 4 else ''} (--json lists them)")
     if p.get("busiest"):
         L.append(f"{pad}busiest: " + ", ".join(f"{b['name']} ({_n(b['flows'], 'flow')})" for b in p["busiest"][:3]))
     if p.get("key_types"):

@@ -16,7 +16,7 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | `find_flows(description)` | `leyline find-flows "<description>"` |
 | `explain_path(start, to?, through?, max_steps?)` | `leyline explain-path <start> [--to X] [--through Y] [--steps N]` |
 | `diagram(ids)` | `leyline diagram <id or name> ...` |
-| `source(node_id)` | `leyline source <id>` |
+| `source(node_id)` | `leyline source <name or id>` |
 | `save_tour(title, stops)` | none: the server only |
 | `map` | `leyline map <repo>` |
 

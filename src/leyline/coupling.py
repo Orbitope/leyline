@@ -272,6 +272,8 @@ def _list(xs: list[str], k: int) -> str:
 def about(run: dict) -> str:
     """Where the numbers come from, said once above the lines."""
     bulk = f", leaving out {run['bulk']} that changed more than {BULK} files" if run.get("bulk") else ""
+    if not run.get("commits"):
+        return "no git history was read: a shallow clone has none (`git fetch --unshallow` brings it)"
     return f"from the last {run['commits']} commits{bulk}"
 
 

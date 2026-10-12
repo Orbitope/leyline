@@ -278,8 +278,9 @@ def test_two_systems_whose_anchors_share_a_name_are_named_apart(tmp_path):
     names = sorted(r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'system'"))
     text = " ".join(s["narrative"] for s in tours.get(c, "tour:orientation:c")["stops"])
     c.close()
-    assert names == ["Hub group (pkg/x/hub.py)", "Hub group (pkg/y/hub.py)"], names
-    assert "Hub group (pkg/x/hub.py), Hub group (pkg/y/hub.py)" in text, text
+    # A group is named after its busiest types, the anchor's first, so two anchored on a `Hub` each read apart.
+    assert names == ["Hub + X0 + X1 group", "Hub + Y0 + Y1 group"], names
+    assert "Hub + X0 + X1 group; Hub + Y0 + Y1 group" in text, text
 
 
 def test_a_python_override_with_other_parameters_still_overrides(tmp_path):
@@ -1289,6 +1290,7 @@ def test_map_plan_check_from_the_command_line(tmp_path, monkeypatch, capsys):
     assert main(["map", ".", "--exact", "off"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("Mapped repo in ") and "Map page: .leyline/map.html" in out and "Next: " in out
+    assert "To look around first: `leyline tour`" in out   # a change folder exists: planning comes first
     assert len(out.splitlines()) <= 10 and (work / ".leyline" / "map.html").exists()
 
     assert main(["plan", "loud-engine", "--tests", run_tests("before.txt")]) == 0

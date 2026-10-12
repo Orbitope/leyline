@@ -197,7 +197,7 @@ def test_impact_and_spec_finding_from_the_command_line(tmp_path, capsys):
     assert out.startswith("n:typescript:web.src.local.validateEntity.walkEffect") and "reached by" in out
     assert main(["--db", db, "impact", "web/src/host.ts"]) == 0
     assert main(["--db", db, "impact", "nothing_like_this"]) == 1
-    assert "nothing on the map" in capsys.readouterr().err
+    assert "No node is called" in capsys.readouterr().err
 
     ch = root / "openspec" / "changes" / "c1"
     ch.mkdir(parents=True)

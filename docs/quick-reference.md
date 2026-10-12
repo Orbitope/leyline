@@ -1,6 +1,8 @@
 # Leyline quick reference
 
-One page: what to ask, and the command or tool behind it. The [README](../README.md) has the detail.
+One page: what to ask, and the command or tool behind it. The [README](../README.md) is the start;
+[changes.md](changes.md), [understanding.md](understanding.md), [mcp-tools.md](mcp-tools.md) and
+[indexing.md](indexing.md) have the detail.
 
 ## Set up once
 
@@ -11,7 +13,8 @@ leyline skills install                    # copy the skills into .claude/skills
 ```
 
 Then ask your agent in plain words. It maps the code when it needs to. Every command also works by
-hand, and each one ends with a `Next:` line.
+hand, and each one ends with a `Next:` line. A name works wherever a command or tool takes an id
+(`Engine.start`, `core.py`, `editor/core`), as long as it is one thing on the map.
 
 Languages: C#, Python, TypeScript and JavaScript by default; `pip install 'leyline-code[languages]'`
 adds Go, Rust, Java, Kotlin, Swift, C, C++, Ruby, PHP, Scala, Lua, Bash and GDScript.
@@ -34,8 +37,9 @@ similar. `<id>` is an OpenSpec change folder, `openspec/changes/<id>/`.
 
 | Job | Ask, for example | Skill | Command | MCP tool |
 | --- | --- | --- | --- | --- |
-| Answer a question, citing code | "Who calls `saveOne`, and is that certain?" | `leyline-ask` | `search`, `expand`, `impact` | `search`, `expand`, `impact`, `trace` |
-| Explain a flow | "What happens when a user saves?" | `leyline-explain-flow` | `find-flows "<words>"`, `explain-path <start>` | `find_flows`, `explain_path`, `flow` |
+| See one thing in detail | "What is `saveOne`, and what uses it?" | `leyline-ask` | `show <name>` (`search <word>` first when unsure of the name) | `search`, `expand`, `context` |
+| Answer a question, citing code | "Who calls `saveOne`, and is that certain?" | `leyline-ask` | `show`, `impact`, `source` | `expand`, `impact`, `trace`, `source` |
+| Explain a flow | "What happens when a user saves?" | `leyline-explain-flow` | `show "<words>"` or `find-flows "<words>"`, then `explain-path <start>` | `find_flows`, `explain_path`, `flow` |
 | Get around a large module | "What's in `editor/host`?" | `leyline-explore-module` | `outline [module]`, `name-part` | `module_outline`, `name_part` |
 | Onboard someone | "Write a tour of the payment code" | `leyline-tour` | `tour [id]` | `tours`, `tour`, `save_tour` |
 | Context before editing | (the agent asks for this itself) | | `context <focus> --tokens N` | `context` |

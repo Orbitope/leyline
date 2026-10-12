@@ -538,6 +538,34 @@ def roots(con) -> dict:
     return out
 
 
+SIDE_DIRS = ("sample", "samples", "example", "examples", "bench", "benchmarks", "docs", "doc", "demo", "demos", "snippets",
+             "fixture", "fixtures", "testdata")
+
+
+def aside_modules(con) -> dict:
+    """The modules that are not the product, with why: {module id: "tests" | "samples" | "config"}. A test project
+    (see `test_places`) is "tests"; a module under a sample, example, docs, benchmark, fixture or test folder is
+    "samples"; one under a dot-folder is "config". What is left is the product: the tour, the overview and the map
+    page put it first, and a name that could be several things means the one in the product."""
+    _, mostly_tests = test_places(con)
+    out = {}
+    for r in con.execute("SELECT id, path FROM nodes WHERE kind = 'module'"):
+        parts = [x.lower() for x in (r[1] or "").split("/")]
+        if r[0] in mostly_tests:
+            out[r[0]] = "tests"
+        elif any(x in SIDE_DIRS or x.startswith("test") for x in parts):
+            out[r[0]] = "samples"
+        elif any(x.startswith(".") for x in parts):   # .devcontainer, .github: configuration, not the product
+            out[r[0]] = "config"
+    return out
+
+
+def module_of(con, node_id: str) -> Optional[str]:
+    """The module a node is in, or None."""
+    r = con.execute("SELECT module_id FROM ancestry WHERE node_id = ?", (node_id,)).fetchone()
+    return r[0] if r else None
+
+
 def test_places(con) -> tuple[set, set]:
     """Where the tests are: the files that hold a test (a test node, or the entry of a test flow), and the modules
     that are mostly such files (a test project). A module that holds a few test files beside its product code (a

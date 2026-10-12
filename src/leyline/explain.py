@@ -35,7 +35,8 @@ STOP = set("""a an the and or of to in on for with from by is are was were be be
 how what where when which who whom whose why does do did done doing happen happens happened there their then than
 into as at via after before through about our my your we you i me can could will would should shall may might must us
 them they he she his her if so not no yes also just one any all some each every way thing things work works get gets
-got going go goes like use used using let lets please show tell explain trace find walk step-by-step""".split())
+got going go goes like use used using let lets please show tell explain trace find walk step-by-step
+come comes coming arrive arrives arriving""".split())
 WEAK = set("user users writer writers author authors person people someone somebody customer customers client"
            " flow code function functions method methods class classes".split())
 
@@ -398,6 +399,13 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
         weight[t["stem"]] = (0.3 if t["weak"] else 1.5 if t.get("named") else 1.0) * math.log(1 + ix.n / (1 + df))
     weak = {t["stem"]: t["weak"] for t in ts}
     total = sum(weight.values()) or 1.0
+    # Code in tests, samples and fixtures counts for half, unless the question is about tests: a product's
+    # `wsgi_app` answers "what happens when a request comes in", not a test's `before_request1`.
+    wants_tests = any(t["word"] in ("test", "tests", "testing", "fixture", "fixtures", "sample", "samples", "example")
+                      for t in ts)
+    aside_prefixes = () if wants_tests else tuple(
+        r[0] + "/" for r in con.execute("SELECT path FROM nodes WHERE id IN (%s)" % ",".join(
+            "?" * len(store.aside_modules(con))), tuple(store.aside_modules(con))) if r[0] and r[0] != ".")
     found: dict[int, dict] = defaultdict(lambda: defaultdict(list))   # row -> term stem -> [(score, field, stem, quality)]
     for t in ts:
         for v, q in matches[t["stem"]].items():
@@ -431,6 +439,8 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
         raw = sum(weight[s] * term[s] for s in hits)
         strong = any(h[1] in ("name", "route", "test") and not weak[s] for s, h in hits.items())
         score = raw * (0.4 + covered / total) * KINDS[row["kind"]][1] * (1.0 if strong else 0.6)
+        if aside_prefixes and (row["path"] or "").startswith(aside_prefixes):
+            score *= 0.5
         scored.append((score, k))
     scored.sort(key=lambda x: (-x[0], ix.ids[x[1]]))
     picked, per_file, tests = [], defaultdict(int), 0
@@ -580,12 +590,24 @@ def _resolve(con, text: str) -> dict:
                 " AND json_extract(attrs, '$.address') = ?", (text, text)).fetchall()
         if len(rows) == 1:
             return {"id": rows[0][0]}
-    return query.resolve(con, text)
+    r = query.resolve(con, text)
+    if "id" in r and (query._node(con, r["id"]) or {"kind": ""})["kind"] == "file":
+        top = con.execute("SELECT id FROM nodes WHERE parent_id = ? AND kind = 'callable' AND name = '<module>'",
+                          (r["id"],)).fetchone()   # a script: walk from its top-level code
+        if top is not None:
+            return {"id": top[0]}
+    return r
+
+
+DOUBLES: list = []   # per walk: the test-double implementations left out of a walk that starts in product code
 
 
 def _walk(con, g: _Graph, start: str) -> tuple[list[dict], bool, Optional[str]]:
     """The steps from `start`: the stored flow that starts there if there is one, else a walk made now the same way
-    (depth first, in the order the code makes its calls, each function once). (steps, truncated, flow id)."""
+    (depth first, in the order the code makes its calls, each function once). (steps, truncated, flow id). A walk
+    from product code does not follow an interface into an implementation that lives in a test, a sample or a
+    fixture (a test double); DOUBLES lists what it left out."""
+    DOUBLES.clear()
     f = con.execute("SELECT id, attrs FROM flows WHERE entry_id = ? ORDER BY id LIMIT 1", (start,)).fetchone()
     if f is not None:
         steps = [{"seq": r[0], "depth": r[1], "id": r[2], "via": r[3], "line": r[4], "parent": r[5]} for r in con.execute(
@@ -594,6 +616,8 @@ def _walk(con, g: _Graph, start: str) -> tuple[list[dict], bool, Optional[str]]:
         return steps, bool(json.loads(f[1] or "{}").get("truncated")), f[0]
     steps = [{"seq": 0, "depth": 0, "id": start, "via": "start", "line": None, "parent": None}]
     seen, truncated = {start}, False
+    aside = store.aside_modules(con)
+    from_product = store.module_of(con, start) not in aside
 
     def walk(node, depth, parent):
         nonlocal truncated
@@ -602,6 +626,9 @@ def _walk(con, g: _Graph, start: str) -> tuple[list[dict], bool, Optional[str]]:
             return
         for order, dst, via, _guess in g.out.get(node, ()):
             if dst in seen:
+                continue
+            if via == "dispatch" and from_product and aside and store.module_of(con, dst) in aside:
+                DOUBLES.append(dst)
                 continue
             if len(steps) >= MAX_WALK:
                 truncated = True
@@ -807,6 +834,11 @@ def explain_path(con, frm: str, to: Optional[str] = None, through: Optional[str]
         notes.append(f"Step{'s' if len(dispatch) > 1 else ''} {_nums(dispatch)} go{'es' if len(dispatch) == 1 else ''}"
                      " through an interface or base method: which implementation runs is decided at run time, and the map"
                      " lists every one it knows.")
+    if DOUBLES:
+        notes.append(f"{len(DOUBLES)} implementation{'s' if len(DOUBLES) > 1 else ''} in test, sample or fixture code"
+                     f" {'were' if len(DOUBLES) > 1 else 'was'} left out of the walk (a test double): "
+                     + ", ".join(d.split(":")[-1].split("::")[-1] for d in DOUBLES[:4])
+                     + (f" and {len(DOUBLES) - 4} more" if len(DOUBLES) > 4 else "") + ".")
     if any("later_elsewhere" in s for s in out_steps):
         notes.append("A step marked later_elsewhere writes data (a file, a table, a key) that other code reads later; the"
                      " reader does not run as part of this walk.")

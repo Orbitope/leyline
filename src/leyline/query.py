@@ -97,6 +97,7 @@ def cross_repo(con, limit: int = 20) -> dict:
 def overview(con) -> dict:
     """The top-level map: repos, modules, how modules depend on each other, and what was analyzed."""
     repos = []
+    aside = store.aside_modules(con)
     for repo in con.execute("SELECT * FROM nodes WHERE kind = 'repo' ORDER BY id"):
         modules = []
         for m in con.execute("SELECT * FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY path", (repo["id"],)):
@@ -115,7 +116,9 @@ def overview(con) -> dict:
                 "types": counts.get("type", 0), "callables": counts.get("callable", 0),
                 "entry_points": counts.get("entry_point", 0),
                 **({"marker": _attrs(m)["marker"]} if _attrs(m).get("marker") else {}),
+                **({"aside": aside[m["id"]]} if m["id"] in aside else {}),
             })
+        modules.sort(key=lambda x: bool(x.get("aside")))   # the product first; tests, samples and fixtures after
         repos.append({"id": repo["id"], "commit": repo["commit_sha"], **_attrs(repo), "modules": modules})
     externals = []
     for x in con.execute("SELECT * FROM nodes WHERE kind = 'external' ORDER BY name"):
@@ -218,12 +221,28 @@ def _call_rows(con, node_id: str, direction: str, limit: int) -> dict:
     return {"total": len(rows), "items": items}
 
 
+def find(con, text: str) -> dict:
+    """The node a person or an agent means: {"id"} for a node id, or for a name that is one thing on the map
+    (`Owner.method`, `method`, a file path: see `resolve`); else {"error", "did_you_mean"}."""
+    r = resolve(con, text)
+    if "id" in r:
+        return r
+    hits = r.get("candidates") or []
+    if not hits and text.strip():   # the last word of an id someone mistyped
+        hits = search(con, text.split(":")[-1].split(".")[-1], limit=5)["results"]
+    if "could be" in r["error"]:
+        return {"error": f"No single node: {r['error']}.", "did_you_mean": hits}
+    return {"error": f"No node is called {text!r}. Find it with `search`.", "did_you_mean": hits}
+
+
 def expand(con, node_id: str, limit: int = 50) -> dict:
-    """One node in detail: what it contains, what it depends on, and what depends on it."""
+    """One node in detail: what it contains, what it depends on, and what depends on it. `node_id` is an id, or
+    a name that is one thing on the map."""
+    found = find(con, node_id)
+    if "error" in found:
+        return found
+    node_id = found["id"]
     row = _node(con, node_id)
-    if row is None:
-        hits = search(con, node_id.split(":")[-1], limit=5)["results"]
-        return {"error": f"No node with id {node_id!r}.", "did_you_mean": hits}
     out = _brief(row)
     out.update({k: v for k, v in _attrs(row).items() if k not in out and v not in (None, [], "")})
     if row["kind"] == "system":
@@ -241,15 +260,17 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
         files = [c for c in children if c["kind"] == "file"]
         out["files"] = [{"id": f["id"], "name": f["name"], "language": f["language"], "loc": f["span_end"]}
                         for f in files[:limit]]
+        out["files_total"] = len(files)
         types = con.execute(
             "SELECT n.* FROM ancestry a JOIN nodes n ON n.id = a.node_id"
             " WHERE a.module_id = ? AND n.kind = 'type' ORDER BY n.path, n.span_start", (node_id,)).fetchall()
         public = [t for t in types if "public" in (_attrs(t).get("visibility") or "")]
         out["public_types"] = {"total": len(public), "items": [_brief(t) for t in public[:limit]]}
         out["internal_types"] = len(types) - len(public)
-        out["entry_points"] = [_brief(e) for e in con.execute(
+        entries = [_brief(e) for e in con.execute(
             "SELECT n.* FROM ancestry a JOIN nodes n ON n.id = a.node_id"
-            " WHERE a.module_id = ? AND n.kind = 'entry_point' ORDER BY n.path", (node_id,))][:limit]
+            " WHERE a.module_id = ? AND n.kind = 'entry_point' ORDER BY n.path", (node_id,))]
+        out["entry_points"], out["entry_points_total"] = entries[:limit], len(entries)
         edges = module_edges(con)
         out["depends_on"] = [e for e in edges if e["from"] == node_id]
         out["depended_on_by"] = [e for e in edges if e["to"] == node_id]
@@ -343,6 +364,35 @@ def search(con, query: str, kind: Optional[str] = None, limit: int = 20) -> dict
     return {"query": query, "results": [_brief(r) for r in rows]}
 
 
+def _owner_is(row, owner: str) -> bool:
+    """Whether a node is what `owner` names in `owner.member`: a type or function by name, a file by its name or its
+    stem (`cli` for cli.py), a module by its name or the last part of its path."""
+    if row["name"] == owner:
+        return True
+    if row["kind"] == "file":
+        return (row["name"].rsplit(".", 1)[0] == owner) or (row["path"] or "").rsplit("/", 1)[-1].rsplit(".", 1)[0] == owner
+    return row["kind"] == "module" and (row["path"] or "").rsplit("/", 1)[-1] == owner
+
+
+def _inherited(con, owner: str, member: str) -> list:
+    """`member` as the types named `owner` inherit it: declared on a base (or a base's base) and not on the type."""
+    found, seen = [], set()
+    for t in con.execute("SELECT id FROM nodes WHERE kind = 'type' AND name = ?", (owner,)):
+        frontier = [t[0]]
+        for _ in range(8):   # as deep as a sane hierarchy goes
+            bases = [r[0] for cur in frontier for r in con.execute(
+                "SELECT dst_id FROM edges WHERE src_id = ? AND kind IN ('extends', 'implements')", (cur,)) if r[0] not in seen]
+            if not bases:
+                break
+            seen.update(bases)
+            found += con.execute(f"SELECT * FROM nodes WHERE name = ? AND kind IN ('callable', 'field')"
+                                 f" AND parent_id IN ({','.join('?' * len(bases))})", (member, *bases)).fetchall()
+            if found:
+                break   # the nearest base that has it
+            frontier = bases
+    return found
+
+
 def resolve(con, text: str) -> dict:
     """A node id, or the node a person means by a name: `Owner.method`, `method`, a file path. {"id": ...} when it is
     one thing; otherwise {"error": ..., "candidates": [...]}."""
@@ -351,8 +401,9 @@ def resolve(con, text: str) -> dict:
         return {"id": text}
     if "/" in text or re.search(r"\.\w{1,5}$", text) and con.execute(
             "SELECT 1 FROM nodes WHERE kind = 'file' AND (path = ? OR path LIKE ?) LIMIT 1", (text, "%/" + text)).fetchone():
-        rows = con.execute("SELECT * FROM nodes WHERE kind = 'file' AND (path = ? OR path LIKE ?) ORDER BY length(path)",
-                           (text, "%/" + text)).fetchall()
+        # A path: a file, or a module (a folder) by its path; a module named exactly comes before files under it.
+        rows = con.execute("SELECT * FROM nodes WHERE kind IN ('file', 'module') AND (path = ? OR path LIKE ?)"
+                           " ORDER BY path = ? DESC, length(path)", (text.rstrip("/"), "%/" + text.rstrip("/"), text.rstrip("/"))).fetchall()
     else:
         parts = text.split(".")
         rows = [r for r in con.execute("SELECT * FROM nodes WHERE name = ? AND kind IN ('callable', 'type', 'field', 'test',"
@@ -363,10 +414,18 @@ def resolve(con, text: str) -> dict:
                 cur = r
                 for _ in range(depth + 1):
                     cur = _node(con, cur["parent_id"]) if cur and cur["parent_id"] else None
-                if cur is not None and cur["name"] == owner:
+                if cur is not None and _owner_is(cur, owner):
                     keep.append(r)
             rows = keep
-    exact = [r for r in rows if r["path"] == text] or rows
+    exact = [r for r in rows if r["path"] == text.rstrip("/")] or rows
+    if not exact and "/" not in text and len(parts) >= 2:   # Flask.route, where route is written on a base class
+        exact = _inherited(con, parts[-2], parts[-1])
+    if len(exact) > 1:
+        # A test's own `Flask`, a sample's `app.py`: not what a person means when the product has one.
+        aside = store.aside_modules(con)
+        product = [r for r in exact if store.module_of(con, r["id"]) not in aside]
+        if len(product) == 1:
+            return {"id": product[0]["id"], "others": [_brief(r) for r in exact if r["id"] != product[0]["id"]][:8]}
     if len(exact) == 1:
         return {"id": exact[0]["id"]}
     if not exact:
@@ -378,9 +437,12 @@ def resolve(con, text: str) -> dict:
 
 def neighbors(con, node_id: str, direction: str = "both", kinds: Optional[list[str]] = None,
               limit: int = 100) -> dict:
-    """Raw edges around a node, optionally filtered by edge kind. 'calls' is a kind here too."""
-    if _node(con, node_id) is None:
-        return {"error": f"No node with id {node_id!r}."}
+    """Raw edges around a node, optionally filtered by edge kind. 'calls' is a kind here too. `node_id` is an id,
+    or a name that is one thing on the map."""
+    found = find(con, node_id)
+    if "error" in found:
+        return found
+    node_id = found["id"]
     out: dict = {"id": node_id}
     for d in (("out", "in") if direction == "both" else (direction,)):
         groups = _edge_rows(con, node_id, d, limit)
@@ -536,10 +598,13 @@ def impact(con, node_id: str, max_depth: int = 6, flows_limit: int = 40) -> dict
 
 
 def source(con, node_id: str, max_lines: int = 200) -> dict:
-    """The source text of a node, read from the working tree it was indexed from."""
+    """The source text of a node, read from the working tree it was indexed from. `node_id` is an id, or a name
+    that is one thing on the map."""
+    found = find(con, node_id)
+    if "error" in found:
+        return found
+    node_id = found["id"]
     row = _node(con, node_id)
-    if row is None:
-        return {"error": f"No node with id {node_id!r}."}
     if not row["path"] or not row["span_start"]:
         return {"error": f"{row['kind']} nodes have no source span."}
     root = store.roots(con).get(row["repo_id"])

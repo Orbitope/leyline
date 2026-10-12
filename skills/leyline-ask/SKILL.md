@@ -12,8 +12,8 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | MCP tool | Command |
 | --- | --- |
 | `map` | `leyline map <repo>` |
-| `overview`, `search`, `expand`, `source` | `leyline overview`, `leyline search <text>`, `leyline expand <id>`, `leyline source <id>` |
-| `neighbors` | `leyline neighbors <id> --direction in --kinds calls` |
+| `overview`, `search`, `expand`, `source` | `leyline overview`, `leyline search <text>`, `leyline show <name or id>` (`expand --json` for every field), `leyline source <name or id>` |
+| `neighbors` | `leyline neighbors <name or id> --direction in --kinds calls` |
 | `impact` | `leyline impact <name or id>` |
 | `context` | `leyline context <name, path or id> --tokens 2000` |
 | `module_outline` | `leyline outline [module]` |
@@ -33,7 +33,8 @@ If neither is there, say so and stop. If a tool says nothing is mapped, call `ma
 ## Steps
 
 1. **Find the code.** `search` with one distinctive word of the name, then `expand` the best hit to confirm it.
-   If two things fit, say which you picked and why, or ask.
+   A name that is one thing on the map (`Owner.method`, a file path) works in place of an id in every tool; one
+   that could be several things is an error listing them. If two things fit, say which you picked and why, or ask.
 2. **Use the narrowest tool.** Who calls it: `neighbors` (direction in, kinds calls). Everything that can reach
    it: `impact`. What it calls and the fields it touches: `expand`. The code around it: `context`. How one
    function reaches another: `trace`.

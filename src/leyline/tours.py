@@ -19,16 +19,13 @@ from . import store
 
 SOURCE = "leyline-tour/0.1"
 REF_KINDS = ("repo", "node", "flow", "pattern", "view")
-SIDE_DIRS = ("sample", "samples", "example", "examples", "bench", "benchmarks", "docs", "doc", "demo", "demos", "snippets")
-
-
 def _plural(n: int, word: str) -> str:
     return f"{n:,} {word}{'' if n == 1 else 's'}"
 
 
-def _names(items, limit=4) -> str:
+def _names(items, limit=4, sep=", ") -> str:
     items = list(items)
-    return ", ".join(items[:limit]) + (f" and {len(items) - limit} more" if len(items) > limit else "")
+    return sep.join(items[:limit]) + (f" and {len(items) - limit} more" if len(items) > limit else "")
 
 
 def _readme(con, repo_id: str) -> Optional[str]:
@@ -63,6 +60,16 @@ LANGUAGE_NAMES = {"csharp": "C#", "python": "Python", "typescript": "TypeScript"
                   "cpp": "C++", "ruby": "Ruby", "php": "PHP", "scala": "Scala", "lua": "Lua", "elixir": "Elixir",
                   "dart": "Dart", "zig": "Zig", "haskell": "Haskell", "ocaml": "OCaml", "julia": "Julia",
                   "bash": "Bash", "gdscript": "GDScript"}
+
+
+def _sure_name(con, name: str, node_id: str) -> str:
+    """`name` when it means `node_id` alone on the map (so a command can take it), else the id."""
+    from . import query
+    r = query.resolve(con, name)
+    row = query._node(con, node_id)
+    # A script's top-level code is reached by naming its file: explain-path walks from there.
+    ok = {node_id} | ({row["parent_id"]} if row is not None and row["name"] == "<module>" else set())
+    return name if r.get("id") in ok else node_id
 
 
 def generate(con, repo_id: str) -> dict:
@@ -104,9 +111,8 @@ def generate(con, repo_id: str) -> dict:
     # Tests kept beside the code they test (grocery.test.ts next to grocery.ts) do not make that code a test module.
     test_files, mostly_tests = store.test_places(con)
 
-    def side(m):  # samples, docs, benchmarks and test helpers: real code, but not the product
-        return any(part.lower() in SIDE_DIRS or part.lower().startswith("test") for part in (mods[m]["path"] or "").split("/"))
-    core = [m for m in mods if m not in mostly_tests and not side(m)] or list(mods)
+    aside = store.aside_modules(con)   # samples, docs, benchmarks, fixtures and test projects: not the product
+    core = [m for m in mods if m not in aside] or list(mods)
     size = {r["m"]: (r["files"], r["loc"]) for r in q(
         "SELECT a.module_id AS m, COUNT(*) AS files, SUM(COALESCE(n.span_end, 0)) AS loc FROM nodes n"
         " JOIN ancestry a ON a.node_id = n.id WHERE n.kind = 'file' GROUP BY a.module_id")}
@@ -156,8 +162,8 @@ def generate(con, repo_id: str) -> dict:
              + (f"The {_plural(len(all_starts), 'entry point')} found {'is a sample, benchmark or build script' if len(all_starts) == 1 else 'are samples, benchmarks or build scripts'}. " if all_starts else "")
              + "The tests are the best record of how it is meant to be called.")
     picked = []
-    for t in starts:  # at most two, from different modules
-        if len(picked) < 2 and module.get(t) not in {module.get(x) for x in picked}:
+    for t in starts:  # at most two, from different modules; a sample's or a fixture's only when the product has none
+        if len(picked) < 2 and module.get(t) not in {module.get(x) for x in picked} and (module.get(t) in core or not picked):
             picked.append(t)
     for t in picked:
         fid, n, ms = reach[t]
@@ -168,7 +174,8 @@ def generate(con, repo_id: str) -> dict:
              f"{body} {mods[m]['name'] if m in mods else 'this module'} is a program entry point. From here the code can reach "
              f"{_plural(n - 1, 'function')} in {_plural(len(ms), 'module')}"
              + (f": {_names(sorted(mods[x]['name'] for x in ms if x in mods))}." if ms else ".")
-             + " Open Flows to walk that path in order.")
+             + f" Open Flows, or run `leyline explain-path {_sure_name(con, path_of.get(t, '').rsplit('/', 1)[-1] if script else qual(t), t)}`,"
+               " to walk that path in order.")
     if len(all_starts) > len(picked) and picked:
         stops[-1]["narrative"] += f" There are {len(all_starts) - len(picked)} more entry points; the repository panel lists them."
 
@@ -185,17 +192,19 @@ def generate(con, repo_id: str) -> dict:
     for k, m in enumerate(order[:5]):
         files, loc = size.get(m, (0, 0))
         d, u = sorted(mods[x]["name"] for x in deps[m]), sorted(mods[x]["name"] for x in users[m])
+        # Named without tests, samples and fixtures: a dispatch into a test double is not a dependency to read.
+        dn, un = sorted(mods[x]["name"] for x in deps[m] if x not in aside), sorted(mods[x]["name"] for x in users[m] if x not in aside)
         role = ("Nothing else in the repository is needed to read it, so it is the place to start." if not d and u else
                 "Nothing depends on it, so it is an end point: an application, a tool or a host for the code below it." if d and not u else
                 "It stands alone: no other module uses it and it uses none." if not d and not u else "")
         tt = top_types(m)
         stop(("The foundation: " if k == 0 and u else "Module: ") + mods[m]["name"], "node", m,
              f"{mods[m]['name']} has {_plural(files, 'file')} and about {loc:,} lines. "
-             + (f"It is used by {_names(u)}. " if u else "")
-             + (f"It depends on {_names(d)}. " if d else "")
+             + (f"It is used by {_names(un)}. " if un else "It is used only by tests and samples. " if u else "")
+             + (f"It depends on {_names(dn)}. " if dn else "")
              + role + " "
              + (f"Its most used types are {_names(tt)}. " if tt else "")
-             + (f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5)}." if systems.get(m) else ""))
+             + (f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5, '; ')}." if systems.get(m) else ""))
     if len(order) > 5:
         stops[-1]["narrative"] += f" {len(order) - 5} smaller modules are left out of this tour."
 

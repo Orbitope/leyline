@@ -17,7 +17,7 @@ It works with the Leyline MCP server or with the `leyline` command alone. Withou
 `spec_review_facts` is `leyline spec facts <id> --reviewer logic` (or `performance`), which prints
 the same facts as JSON and records that the review ran; `spec_finding` is `leyline spec finding <id>
 --reviewer logic --severity medium --claim "..." --evidence <node id> ... --proposal "..."`;
-`source`, `expand`, `search` and `impact` are `leyline source <id>`, `leyline expand <id>`,
+`source`, `expand`, `search` and `impact` are `leyline source <name or id>`, `leyline expand <name or id>`,
 `leyline search <text>` and `leyline impact <name>`. If neither is there, say so and stop.
 
 ## Steps

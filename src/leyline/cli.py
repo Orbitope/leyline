@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -241,11 +242,9 @@ def _short(con, i: str) -> str:
 
 def _impact(con, args) -> int:
     """`leyline impact <name or id>`: the CLI side of the MCP `impact` tool."""
-    found = query.resolve(con, args.node)
+    found = query.find(con, args.node)
     if "error" in found:
-        print(f"leyline: {found['error']}", file=sys.stderr)
-        for c in found.get("candidates", [])[:15]:
-            print(f"  {c['id']}  ({c['kind']}{', ' + c['path'] if c.get('path') else ''})", file=sys.stderr)
+        print(f"leyline: {found['error']}\n{_candidates(found)}".rstrip(), file=sys.stderr)
         return 1
     r = query.impact(con, found["id"], args.depth)
     if args.json:
@@ -271,6 +270,206 @@ def _impact(con, args) -> int:
     return 0
 
 
+def _where(b: dict) -> str:
+    """Where a node sits, as a person reads it: path:first–last line."""
+    p, L = b.get("path") or "", b.get("lines")
+    if not p:
+        return ""
+    if not L or not L[0]:
+        return p
+    return f"{p}:{L[0]}" + (f"–{L[1]}" if L[1] and L[1] != L[0] else "")
+
+
+def _kind(b: dict) -> str:
+    return (b.get("native_kind") or b.get("kind") or "").replace("_", " ")
+
+
+def _names(con, items: list, most: int = 8) -> str:
+    """Up to `most` items by their short names, with how many more there are."""
+    out = ", ".join(_short(con, x["id"]) + (f" ({x['sites']} sites)" if x.get("sites", 1) > 1 else "")
+                    + (" (guess)" if x.get("precision") == "guess" or x.get("guessed") else "") for x in items[:most])
+    return out + (f" and {len(items) - most} more" if len(items) > most else "")
+
+
+def _search_text(con, r: dict) -> str:
+    hits = r["results"]
+    if not hits:
+        return (f"Nothing on the map is called {r['query']!r}. Try one word of the name, or `leyline overview` for the"
+                " modules and `leyline outline` for what each holds.")
+    L = []
+    for h in hits:
+        L.append(f"{_short(con, h['id']):<34} {_kind(h):<12} {_where(h)}\n    {h['id']}")
+    L.append(f"\n{_n(len(hits), 'match', 'matches')}, best first. Next: `leyline show <name>` on one of them; give its"
+             " id when the name could be several things.")
+    return "\n".join(L)
+
+
+EDGE_WORDS = {"calls": "calls", "imports": "imports", "uses_type": "uses the type", "instantiates": "creates",
+              "extends": "extends", "implements": "implements", "has_field": "has the field", "exposes": "exposes",
+              "depends_on": "depends on", "reads": "reads", "writes": "writes", "communicates": "sends to (a channel)",
+              "overrides": "overrides", "groups": "groups"}
+EDGE_WORDS_IN = {"calls": "called by", "imports": "imported by", "uses_type": "used as a type by",
+                 "instantiates": "created by", "extends": "extended by", "implements": "implemented by",
+                 "has_field": "a field of", "exposes": "exposed by", "depends_on": "depended on by", "reads": "read by",
+                 "writes": "written by", "communicates": "receives from (a channel)", "overrides": "overridden by",
+                 "groups": "grouped under"}
+
+
+def _edge_lines(con, groups: dict, direction: str, most: int = 8) -> list[str]:
+    words = EDGE_WORDS if direction == "out" else EDGE_WORDS_IN
+    L = []
+    for k, g in groups.items():
+        items, total = (g["items"], g["total"]) if isinstance(g, dict) else (g, len(g))
+        L.append(f"  {words.get(k, k)} ({total}): {_names(con, items, most)}")
+    return L
+
+
+def _expand_text(con, r: dict, most: int = 8) -> str:
+    """`leyline expand` as a person reads it: what a node is, holds, uses and is used by."""
+    head = f"{_short(con, r['id'])}  [{_kind(r)}]  {_where(r)}".rstrip()
+    L = [head]
+    if r.get("signature") and r["signature"] != r["name"]:
+        L.append(f"  {r['signature']}")
+    L.append(f"  id: {r['id']}")
+    if isinstance(r.get("parent"), dict):
+        L.append(f"  in: {r['parent']['name']} ({_kind(r['parent'])})")
+    if r.get("title"):
+        L.append(f"  {r['title']}")
+    if r.get("files"):
+        base = (r.get("path") or "").rstrip("/") + "/"
+        inside = [f["id"].split(":file:", 1)[-1] for f in r["files"]]
+        inside = [x[len(base):] if base != "/" and x.startswith(base) else x for x in inside]
+        total = r.get("files_total", len(inside))
+        L.append(f"  files ({total}): " + ", ".join(inside[:most]) + (f" and {total - most} more" if total > most else ""))
+    for key, word in (("entry_points", "entry points"), ("members", "members")):
+        if r.get(key):
+            total = r.get(key + "_total", len(r[key]))
+            L.append(f"  {word} ({total}): {_names(con, r[key], most)}"
+                     + (f" and {total - len(r[key])} more" if total > len(r[key]) >= most else ""))
+    if isinstance(r.get("public_types"), dict) and (r["public_types"]["total"] or r.get("internal_types")):
+        L.append(f"  public types ({r['public_types']['total']}): {_names(con, r['public_types']['items'], most)}"
+                 + (f"; {r['internal_types']} internal" if r.get("internal_types") else ""))
+    for key, word in (("depends_on", "depends on"), ("depended_on_by", "depended on by")):
+        es = r.get(key) or []
+        if es:
+            other = lambda e: (e["to"] if key == "depends_on" else e["from"]).split(":module:")[-1]
+            L.append(f"  {word} ({len(es)}): " + ", ".join(f"{other(e)} ({e['total']} links)" for e in es[:most])
+                     + (f" and {len(es) - most} more" if len(es) > most else ""))
+    if r.get("externals"):
+        L.append(f"  outside packages ({len(r['externals'])}): " + ", ".join(r["externals"][:12])
+                 + (f" and {len(r['externals']) - 12} more" if len(r["externals"]) > 12 else ""))
+    for kind, g in (r.get("contains") or {}).items():
+        L.append(f"  {kind.replace('_', ' ')}s ({g['total']}): {_names(con, g['items'], most)}")
+    for key, word in (("calls", "calls"), ("called_by", "called by")):
+        g = r.get(key)
+        if not g:
+            continue
+        if g["total"] <= 3:
+            L.append(f"  {word} ({g['total']}): {_names(con, g['items'], most)}")
+            continue
+        L.append(f"  {word} ({g['total']}):")   # one a line: a busy function's callers did not read on one
+        for x in g["items"][:most]:
+            sites = f"{x['sites']} sites" if x.get("sites", 1) > 1 else ""
+            L.append(f"    {_short(con, x['id']):<40} {sites:<8} {_where(x)}" + (" (guess)" if x.get("precision") == "guess" else ""))
+        if g["total"] > most:
+            L.append(f"    and {g['total'] - most} more")
+    data = r.get("data") or {}
+    for key, word in (("reads", "reads the fields"), ("writes", "writes the fields"), ("read_by", "read by"),
+                      ("written_by", "written by")):
+        if data.get(key):
+            L.append(f"  {word} ({len(data[key])}): " + ", ".join(x["name"] for x in data[key][:most])
+                     + (f" and {len(data[key]) - most} more" if len(data[key]) > most else ""))
+    if data.get("fields"):
+        L.append("  fields used: " + ", ".join(f"{f['name']} ({f['readers']} readers, {f['writers']} writers)"
+                                               for f in data["fields"][:most]))
+    said = ("calls", "reads", "writes", "has_field")   # shown above, as calls, fields and members
+    L += _edge_lines(con, {k: v for k, v in (r.get("out") or {}).items() if k not in said}, "out", most)
+    L += _edge_lines(con, {k: v for k, v in (r.get("in") or {}).items() if k not in said}, "in", most)
+    if r.get("used_by_module"):
+        L.append("  used by modules: " + ", ".join(f"{m.split(':module:')[-1]} ({n})"
+                                                   for m, n in r["used_by_module"].items()))
+    for x in r.get("patterns") or []:
+        role = f", as {', '.join(x['roles_here'])}" if x.get("roles_here") else ""
+        L.append(f"  pattern {x['pattern']} ({x['confidence']:.0%}{role}): {x['rationale']}")
+    for a in r.get("annotations") or []:
+        L.append(f"  note {a['key']}: {a['value']}" + (" (stale)" if a.get("stale") else ""))
+    return "\n".join(L)
+
+
+def _neighbors_text(con, r: dict) -> str:
+    L = [f"Links around {_short(con, r['id'])}  ({r['id']})"]
+    for d, word in (("out", "from it"), ("in", "to it")):
+        if d in r:
+            L.append(f"{word}:" if r[d] else f"{word}: none")
+            L += _edge_lines(con, r[d], d, 15)
+    return "\n".join(L)
+
+
+def _candidates(found: dict) -> str:
+    """The near matches of a name that is not one thing, one a line with its id."""
+    return "\n".join(f"  {c.get('name', c['id']):<30} {_kind(c):<12} {_where(c)}\n      {c['id']}"
+                     for c in found.get("did_you_mean", [])[:12])
+
+
+def _show(con, args) -> int:
+    """`leyline show <name or words>`: one thing in detail, with the code around it; words find where a behavior
+    starts and what is named like them."""
+    text = " ".join(args.what).strip()
+    if not text:
+        print("leyline: name what to show (`leyline show Engine.start`), or describe it in words.", file=sys.stderr)
+        return 2
+    found = query.find(con, text) if " " not in text else {"error": "words"}
+    if "error" not in found:
+        r = query.expand(con, found["id"], 8)
+        if args.json:
+            from . import context
+            r["context"] = context.build(con, [found["id"]], 1200)
+            _print(r)
+            return 0
+        print(_expand_text(con, r))
+        if found.get("others"):
+            others = found["others"]
+            print("  also called this, in tests or samples: " + ", ".join(_where(o) or o["id"] for o in others[:4])
+                  + (f" and {len(others) - 4} more" if len(others) > 4 else ""))
+        if r["kind"] in ("type", "callable", "field", "test"):
+            from . import context
+            c = context.build(con, [found["id"]], 1200)
+            if "error" not in c:
+                print("\n" + c["text"].rstrip())
+        name = _short(con, found["id"]) if r["kind"] in ("type", "callable", "field") else found["id"]
+        nxt = [f"`leyline source {name}` reads it"] if r["kind"] in ("type", "callable", "field") else []
+        nxt += [f"`leyline impact {name}` says what can reach it"] if r["kind"] in ("callable", "field", "type") else []
+        nxt += [f"`leyline explain-path {name}` walks what runs from it"] if r["kind"] in ("callable", "test") else []
+        nxt += [f"`leyline outline {r.get('path') or r['id']}` splits it into parts"] if r["kind"] == "module" else []
+        nxt += ["`leyline show <name>` on one of its functions or types"] if r["kind"] == "file" else []
+        if nxt:
+            print("\nNext: " + "; ".join(nxt) + ".")
+        return 0
+    if " " not in text:
+        hits = found.get("did_you_mean") or []
+        if hits and "could be" in found["error"]:
+            print(f"{text!r} could be {len(hits)} things. Give the id, or write it as Owner.name:\n{_candidates(found)}")
+        elif hits:
+            print(f"Nothing on the map is called {text!r}. Closest names:\n{_candidates(found)}")
+        else:
+            print(f"Nothing on the map is called {text!r}. `leyline overview` lists the modules; `leyline search <word>`"
+                  " finds a name from one word of it.")
+        return 1
+    from . import explain
+    r = explain.find_flows(con, text, 6)
+    hits = query.search(con, text, None, 6)["results"]
+    if args.json:
+        _print({"flows": r, "search": hits})
+        return 0 if "error" not in r else 1
+    print(explain.find_text(r) if "error" not in r else r["error"])
+    if hits:
+        print(f"\nNamed like {text!r}:")
+        for h in hits:
+            print(f"  {_short(con, h['id']):<34} {_kind(h):<12} {_where(h)}")
+    print("\nNext: `leyline show <name>` on one of them, or `leyline explain-path <name>` to walk what runs from it.")
+    return 0
+
+
 def _n(n: int, word: str, plural: str = "") -> str:
     """A count and its noun: 1 file, 2 files."""
     return f"{n:,} {word if n == 1 else plural or word + 's'}"
@@ -292,7 +491,11 @@ def _summary(o: dict) -> str:
     lines = []
     for repo in o["repos"]:
         lines.append(f"{repo['id']}  ({(repo.get('commit') or 'no commit')[:10]})")
+        said_aside = False
         for m in repo["modules"]:
+            if m.get("aside") and not said_aside:
+                lines.append("  tests, samples and fixtures:")
+                said_aside = True
             langs = ", ".join(f"{k} {v}" for k, v in m["languages"].items())
             lines.append(f"  {m['path']:<22} {m['files']:>3} files {m['loc']:>6} loc "
                          f"{m['types']:>4} types {m['callables']:>4} callables  [{langs}]"
@@ -314,14 +517,25 @@ def _summary(o: dict) -> str:
     return "\n".join(lines)
 
 
-ABOUT = """Leyline maps a codebase so that a person can plan a change, have an agent write the code, and check
-that it was done as agreed. The usual path is three commands:
+ABOUT = """Leyline maps a codebase so that a person or a coding agent can understand it, and so that a person can
+plan a change, have an agent write the code, and check that it was done as agreed. To change code, three commands:
 
   leyline map [repo ...]                index the code; prints a short overview and where the map page is
   leyline plan <change>                 write and print the one-page plan for an OpenSpec change folder
                                         (openspec/changes/<id>/, or just <id>); says what is still needed
   leyline check <change> --tests FILE   after the change: re-map, read the test output, and say whether
                                         it was done as agreed
+
+To understand code that is mapped (a name works wherever an id does: Engine.start, a file path):
+
+  leyline tour                          a guided walk: what this repository is and where to start reading
+  leyline show <name>                   one thing in detail: what it is, who uses it, what it uses, the code around it
+  leyline show "<what happens>"         where a behavior described in words starts
+  leyline search <words>                find a type, function or file by part of its name
+  leyline outline [module]              a module split into parts, with what each holds and how they connect
+  leyline explain-path <start>          what runs from there, step by step, with a diagram
+  leyline impact <name>                 what can reach it: its callers near and far
+  leyline view                          the map in a browser
 
 Each command ends with the next step. To review a change someone else wrote, with no spec:
 
@@ -336,26 +550,24 @@ A small change needs no spec folder:
 To work through a coding agent, give it Leyline's skills:
 
   leyline skills install                copy them into this repository's .claude/skills (and .agents/skills)
-  leyline skills list                   what each one is for"""
+  leyline skills list                   what each one is for
+
+One page of what to ask and the command or tool behind it: docs/quick-reference.md
+(https://github.com/Orbitope/leyline/blob/main/docs/quick-reference.md)."""
 
 ADVANCED = """advanced commands (leyline <command> -h for each):
   index         index without the summary; prints the full statistics
   overview      the module map
-  search        find nodes by name
-  expand        one node in detail
-  neighbors     edges around a node
-  impact        what can reach a function, a type or a field: its callers near and far, and the flows through it
+  expand        one node in detail (what `show` prints first; --json for every field)
+  neighbors     the links around a node, by kind
   source        source text of a node
   context       a short ranked outline of the code around a focus, cut to a token budget, for an agent
-  outline       a large module split into parts (folders, or groups of files): what each holds and how they link
   name-part     give a part from the outline a name and a one-line summary
   find-flows    where a behavior described in words could start: entry points, handlers, tests, ranked
-  explain-path  an ordered walk across calls and channels from one of them, with the lines that make each step
   diagram       a Mermaid sequence diagram of how execution reaches some functions and what they call
   state         fields assigned from outside the type that declares them
   coupling      files that usually change together, from git history
   patterns      design patterns found by their shape
-  tour          a guided walk through the repository
   coverage      import measured test coverage, or show it
   rules         check the architecture rules
   affected-tests  the tests to run for a change, as a command
@@ -542,15 +754,29 @@ def _store_problem(e: Exception) -> str:
     return f"the store could not be read ({type(e).__name__}: {msg}). Running `leyline map --full` rebuilds it."
 
 
+class _Parser(argparse.ArgumentParser):
+    """A mistyped command gets the closest command's name, not a list of thirty-seven."""
+
+    def error(self, message):
+        m = re.match(r"argument command: invalid choice: '([^']*)' \(choose from (.*)\)", message)
+        if m:
+            import difflib
+            choices = re.findall(r"'([^']+)'", m.group(2))
+            near = difflib.get_close_matches(m.group(1), choices, n=3, cutoff=0.5)
+            hint = (("Did you mean " + " or ".join(f"`leyline {c}`" for c in near) + "?") if near
+                    else "`leyline --help` lists the commands.")
+            self.exit(2, f"leyline: no command named {m.group(1)!r}. {hint}\n")
+        super().error(message)
+
+
 def _main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="leyline", usage="%(prog)s [-h] [--version] [--db DB] command ...",
-                                 description=ABOUT, epilog=ADVANCED,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = _Parser(prog="leyline", usage="%(prog)s [-h] [--version] [--db DB] command ...",
+                 description=ABOUT, epilog=ADVANCED, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=__version__)
     ap.add_argument("--db", default=os.environ.get("LEYLINE_DB"),
                     help="path to the store (default: .leyline/leyline.db in the repository)")
     # The commands are listed by ABOUT and ADVANCED, so the usual three come first.
-    sub = ap.add_subparsers(dest="cmd", required=True, metavar="command", help=argparse.SUPPRESS)
+    sub = ap.add_subparsers(dest="cmd", required=False, metavar="command", help=argparse.SUPPRESS)
     p = sub.add_parser("map", description="Index one or more repositories, print a short overview, and write the map page.")
     p.add_argument("path", nargs="*", default=[], help="the repository (default: the current directory, or the workspace"
                                                       " mapped from it); name several to map them together")
@@ -643,26 +869,35 @@ def _main(argv=None) -> int:
                         " other languages. auto (the default) uses whatever is available")
     p.add_argument("--scip", action="append", default=[], metavar="FILE", help="a SCIP index to read (repeatable)")
     p.add_argument("--full", action="store_true", help="index everything again, not only what changed since the last index")
+    p = sub.add_parser("show", aliases=["ask"], description="One thing on the map in detail: what it is, what it holds,"
+                                                           " who uses it and what it uses, then the code around it."
+                                                           " Several words find where a behavior described in them"
+                                                           " starts, and what is named like them.")
+    p.add_argument("what", nargs="+", help="a name (Engine.start, a file path, a module), an id, or words in quotes")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("overview", description="the module map")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("expand", description="one node in detail")
-    p.add_argument("node_id")
+    p.add_argument("node_id", help="a node id, or a name that is one thing on the map (Owner.method, a file path)")
     p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--json", action="store_true", help="every field, as the MCP tool returns them")
     p = sub.add_parser("search", description="find nodes by name")
     p.add_argument("text")
     p.add_argument("--kind")
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true", help="every field, as the MCP tool returns them")
     p = sub.add_parser("neighbors", description="edges around a node")
-    p.add_argument("node_id")
+    p.add_argument("node_id", help="a node id, or a name that is one thing on the map")
     p.add_argument("--direction", default="both", choices=["in", "out", "both"])
     p.add_argument("--kinds", nargs="*")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("impact", description="what can reach a node through calls and channels, grouped by module,"
                                              " and the flows that pass through it")
     p.add_argument("node", help="a node id, or a name such as Owner.method or a file path")
     p.add_argument("--depth", type=int, default=6, help="how many calls back to follow (default 6)")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("source", description="source text of a node")
-    p.add_argument("node_id")
+    p.add_argument("node_id", help="a node id, or a name that is one thing on the map")
     p = sub.add_parser("context", description="a short outline of the code around a focus, most related first, cut to a"
                                               " token budget: declaration lines file by file, the focus marked >")
     p.add_argument("focus", nargs="+", help="node ids, names (Owner.method), file paths, a change id (spec-<id>,"
@@ -768,7 +1003,17 @@ def _main(argv=None) -> int:
     p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
     p = sub.add_parser("view", description="serve the map on localhost")
     p.add_argument("--port", type=int, default=8765)
+    for name, sp in sub.choices.items():   # `leyline spec -h` starts "usage: leyline spec", not the top-level options
+        sp.prog = f"leyline {name}"
+    p = sub.choices["spec"]
+    p.usage = "leyline spec {brief,verify,facts,finding,findings,resolve,forget} <target> [options]"
+    sub.choices["quick"].usage = ('leyline quick "<what>" --about NAME [NAME ...] [--tests FILE]\n'
+                                  '       leyline quick --done quick-<slug> --tests FILE [--coverage FILE]\n'
+                                  '       leyline quick --to-spec <spec id> quick-<slug>')
     args, extra = ap.parse_known_args(argv)
+    if args.cmd is None:   # `leyline` alone: the help, not an error
+        ap.print_help()
+        return 0
     # Python before 3.12 stops filling a list of names once an option follows the first of them
     # (`skills install --to repo ask`): the names after the options come back here.
     if extra and getattr(args, "names", None) is not None and not any(e.startswith("-") for e in extra):
@@ -959,17 +1204,26 @@ def _with_store(args, con) -> int:
     elif args.cmd == "overview":
         o = query.overview(con)
         _print(o) if args.json else print(_summary(o))
+    elif args.cmd in ("show", "ask"):
+        return _show(con, args)
     elif args.cmd == "expand":
         r = query.expand(con, args.node_id, args.limit)
-        _print(r)
+        if args.json or "error" in r:
+            _print(r)
+        else:
+            print(_expand_text(con, r, args.limit))
         return 1 if "error" in r else 0
     elif args.cmd == "search":
-        _print(query.search(con, args.text, args.kind, args.limit))
+        r = query.search(con, args.text, args.kind, args.limit)
+        _print(r) if args.json else print(_search_text(con, r))
     elif args.cmd == "impact":
         return _impact(con, args)
     elif args.cmd == "neighbors":
         r = query.neighbors(con, args.node_id, args.direction, args.kinds)
-        _print(r)
+        if args.json or "error" in r:
+            _print(r)
+        else:
+            print(_neighbors_text(con, r))
         return 1 if "error" in r else 0
     elif args.cmd == "source":
         r = query.source(con, args.node_id)
@@ -989,7 +1243,7 @@ def _with_store(args, con) -> int:
             if not text and r.get("found") is False:   # no path between the two: say so, as the JSON does
                 text = r.get("note", "") + (f"\nNext: {r['next']}" if r.get("next") else "")
             if "candidates" in r and r["candidates"]:
-                text += "\nDid you mean: " + ", ".join(c["id"] for c in r["candidates"][:5])
+                text += "\nDid you mean:\n" + _candidates({"did_you_mean": r["candidates"]})
         else:
             r = explain.diagram(con, args.ids)
             text = r.get("error") or "```mermaid\n" + r["mermaid"] + "\n```\n\n" + r["legend"]
