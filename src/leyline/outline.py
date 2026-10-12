@@ -973,9 +973,12 @@ def _part_lines(p: dict, n: Optional[int], pad: str = "   ") -> list:
         L.append(f"{pad}uses: {_links(p['uses'])}")
     if p.get("used_by"):
         L.append(f"{pad}used by: {_links(p['used_by'])}")
-    for c in p.get("channels", ()):
+    chans = list(p.get("channels", ()))
+    for c in chans[:3]:
         L.append(f"{pad}channel: {c['channel']} {c['direction']} {c['other']}, {c['links']} link{'s' if c['links'] != 1 else ''}"
                  + (f" (e.g. {c['example']})" if c.get("example") else ""))
+    if len(chans) > 3:
+        L.append(f"{pad}and {len(chans) - 3} more channel{'s' if len(chans) > 4 else ''} (--json lists them)")
     if p.get("busiest"):
         L.append(f"{pad}busiest: " + ", ".join(f"{b['name']} ({_n(b['flows'], 'flow')})" for b in p["busiest"][:3]))
     if p.get("key_types"):

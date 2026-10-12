@@ -257,15 +257,17 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
         files = [c for c in children if c["kind"] == "file"]
         out["files"] = [{"id": f["id"], "name": f["name"], "language": f["language"], "loc": f["span_end"]}
                         for f in files[:limit]]
+        out["files_total"] = len(files)
         types = con.execute(
             "SELECT n.* FROM ancestry a JOIN nodes n ON n.id = a.node_id"
             " WHERE a.module_id = ? AND n.kind = 'type' ORDER BY n.path, n.span_start", (node_id,)).fetchall()
         public = [t for t in types if "public" in (_attrs(t).get("visibility") or "")]
         out["public_types"] = {"total": len(public), "items": [_brief(t) for t in public[:limit]]}
         out["internal_types"] = len(types) - len(public)
-        out["entry_points"] = [_brief(e) for e in con.execute(
+        entries = [_brief(e) for e in con.execute(
             "SELECT n.* FROM ancestry a JOIN nodes n ON n.id = a.node_id"
-            " WHERE a.module_id = ? AND n.kind = 'entry_point' ORDER BY n.path", (node_id,))][:limit]
+            " WHERE a.module_id = ? AND n.kind = 'entry_point' ORDER BY n.path", (node_id,))]
+        out["entry_points"], out["entry_points_total"] = entries[:limit], len(entries)
         edges = module_edges(con)
         out["depends_on"] = [e for e in edges if e["from"] == node_id]
         out["depended_on_by"] = [e for e in edges if e["to"] == node_id]
@@ -359,6 +361,16 @@ def search(con, query: str, kind: Optional[str] = None, limit: int = 20) -> dict
     return {"query": query, "results": [_brief(r) for r in rows]}
 
 
+def _owner_is(row, owner: str) -> bool:
+    """Whether a node is what `owner` names in `owner.member`: a type or function by name, a file by its name or its
+    stem (`cli` for cli.py), a module by its name or the last part of its path."""
+    if row["name"] == owner:
+        return True
+    if row["kind"] == "file":
+        return (row["name"].rsplit(".", 1)[0] == owner) or (row["path"] or "").rsplit("/", 1)[-1].rsplit(".", 1)[0] == owner
+    return row["kind"] == "module" and (row["path"] or "").rsplit("/", 1)[-1] == owner
+
+
 def resolve(con, text: str) -> dict:
     """A node id, or the node a person means by a name: `Owner.method`, `method`, a file path. {"id": ...} when it is
     one thing; otherwise {"error": ..., "candidates": [...]}."""
@@ -380,7 +392,7 @@ def resolve(con, text: str) -> dict:
                 cur = r
                 for _ in range(depth + 1):
                     cur = _node(con, cur["parent_id"]) if cur and cur["parent_id"] else None
-                if cur is not None and cur["name"] == owner:
+                if cur is not None and _owner_is(cur, owner):
                     keep.append(r)
             rows = keep
     exact = [r for r in rows if r["path"] == text.rstrip("/")] or rows

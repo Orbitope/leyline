@@ -46,6 +46,10 @@ def test_a_name_works_wherever_an_id_does(repo, capsys):
     assert "called by (3): test_chain" in capsys.readouterr().out
     assert main(["expand", "py/src/pkg"]) == 0 and "[module]" in capsys.readouterr().out   # a module by its path
     assert main(["expand", "core.py"]) == 0 and "[file]" in capsys.readouterr().out
+    assert main(["expand", "core.make_engine"]) == 0   # file.function, by the file's stem
+    assert "id: repo:python:py.src.pkg.core.make_engine" in capsys.readouterr().out
+    assert main(["expand", "pkg.core.make_engine"]) == 0   # and the module above it, by its last path part
+    assert "make_engine" in capsys.readouterr().out
     assert main(["expand", "stop"]) == 1   # Base.stop and Engine.stop
     err = json.loads(capsys.readouterr().out)
     assert "could be 2 things" in err["error"] and {h["name"] for h in err["did_you_mean"]} == {"stop"}

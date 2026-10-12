@@ -65,6 +65,16 @@ LANGUAGE_NAMES = {"csharp": "C#", "python": "Python", "typescript": "TypeScript"
                   "bash": "Bash", "gdscript": "GDScript"}
 
 
+def _sure_name(con, name: str, node_id: str) -> str:
+    """`name` when it means `node_id` alone on the map (so a command can take it), else the id."""
+    from . import query
+    r = query.resolve(con, name)
+    row = query._node(con, node_id)
+    # A script's top-level code is reached by naming its file: explain-path walks from there.
+    ok = {node_id} | ({row["parent_id"]} if row is not None and row["name"] == "<module>" else set())
+    return name if r.get("id") in ok else node_id
+
+
 def generate(con, repo_id: str) -> dict:
     """Write the orientation tour for a repo, replacing the previous one."""
     q = lambda sql, *a: con.execute(sql, a).fetchall()
@@ -168,7 +178,8 @@ def generate(con, repo_id: str) -> dict:
              f"{body} {mods[m]['name'] if m in mods else 'this module'} is a program entry point. From here the code can reach "
              f"{_plural(n - 1, 'function')} in {_plural(len(ms), 'module')}"
              + (f": {_names(sorted(mods[x]['name'] for x in ms if x in mods))}." if ms else ".")
-             + " Open Flows to walk that path in order.")
+             + f" Open Flows, or run `leyline explain-path {_sure_name(con, path_of.get(t, '').rsplit('/', 1)[-1] if script else qual(t), t)}`,"
+               " to walk that path in order.")
     if len(all_starts) > len(picked) and picked:
         stops[-1]["narrative"] += f" There are {len(all_starts) - len(picked)} more entry points; the repository panel lists them."
 

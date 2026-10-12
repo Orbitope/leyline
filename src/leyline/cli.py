@@ -241,11 +241,9 @@ def _short(con, i: str) -> str:
 
 def _impact(con, args) -> int:
     """`leyline impact <name or id>`: the CLI side of the MCP `impact` tool."""
-    found = query.resolve(con, args.node)
+    found = query.find(con, args.node)
     if "error" in found:
-        print(f"leyline: {found['error']}", file=sys.stderr)
-        for c in found.get("candidates", [])[:15]:
-            print(f"  {c['id']}  ({c['kind']}{', ' + c['path'] if c.get('path') else ''})", file=sys.stderr)
+        print(f"leyline: {found['error']}\n{_candidates(found)}".rstrip(), file=sys.stderr)
         return 1
     r = query.impact(con, found["id"], args.depth)
     if args.json:
@@ -336,9 +334,17 @@ def _expand_text(con, r: dict, most: int = 8) -> str:
         L.append(f"  in: {r['parent']['name']} ({_kind(r['parent'])})")
     if r.get("title"):
         L.append(f"  {r['title']}")
-    for key, word in (("files", "files"), ("entry_points", "entry points"), ("members", "members")):
+    if r.get("files"):
+        base = (r.get("path") or "").rstrip("/") + "/"
+        inside = [f["id"].split(":file:", 1)[-1] for f in r["files"]]
+        inside = [x[len(base):] if base != "/" and x.startswith(base) else x for x in inside]
+        total = r.get("files_total", len(inside))
+        L.append(f"  files ({total}): " + ", ".join(inside[:most]) + (f" and {total - most} more" if total > most else ""))
+    for key, word in (("entry_points", "entry points"), ("members", "members")):
         if r.get(key):
-            L.append(f"  {word} ({len(r[key])}): {_names(con, r[key], most)}")
+            total = r.get(key + "_total", len(r[key]))
+            L.append(f"  {word} ({total}): {_names(con, r[key], most)}"
+                     + (f" and {total - len(r[key])} more" if total > len(r[key]) >= most else ""))
     if isinstance(r.get("public_types"), dict) and (r["public_types"]["total"] or r.get("internal_types")):
         L.append(f"  public types ({r['public_types']['total']}): {_names(con, r['public_types']['items'], most)}"
                  + (f"; {r['internal_types']} internal" if r.get("internal_types") else ""))
@@ -411,7 +417,7 @@ def _show(con, args) -> int:
             _print(r)
             return 0
         print(_expand_text(con, r))
-        if r["kind"] in ("type", "callable", "field", "test", "file"):
+        if r["kind"] in ("type", "callable", "field", "test"):
             from . import context
             c = context.build(con, [found["id"]], 1200)
             if "error" not in c:
@@ -421,6 +427,7 @@ def _show(con, args) -> int:
         nxt += [f"`leyline impact {name}` says what can reach it"] if r["kind"] in ("callable", "field", "type") else []
         nxt += [f"`leyline explain-path {name}` walks what runs from it"] if r["kind"] in ("callable", "test") else []
         nxt += [f"`leyline outline {r.get('path') or r['id']}` splits it into parts"] if r["kind"] == "module" else []
+        nxt += ["`leyline show <name>` on one of its functions or types"] if r["kind"] == "file" else []
         if nxt:
             print("\nNext: " + "; ".join(nxt) + ".")
         return 0
@@ -964,6 +971,13 @@ def _main(argv=None) -> int:
     p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
     p = sub.add_parser("view", description="serve the map on localhost")
     p.add_argument("--port", type=int, default=8765)
+    for name, sp in sub.choices.items():   # `leyline spec -h` starts "usage: leyline spec", not the top-level options
+        sp.prog = f"leyline {name}"
+    p = sub.choices["spec"]
+    p.usage = "leyline spec {brief,verify,facts,finding,findings,resolve,forget} <target> [options]"
+    sub.choices["quick"].usage = ('leyline quick "<what>" --about NAME [NAME ...] [--tests FILE]\n'
+                                  '       leyline quick --done quick-<slug> --tests FILE [--coverage FILE]\n'
+                                  '       leyline quick --to-spec <spec id> quick-<slug>')
     args, extra = ap.parse_known_args(argv)
     # Python before 3.12 stops filling a list of names once an option follows the first of them
     # (`skills install --to repo ask`): the names after the options come back here.
@@ -1194,7 +1208,7 @@ def _with_store(args, con) -> int:
             if not text and r.get("found") is False:   # no path between the two: say so, as the JSON does
                 text = r.get("note", "") + (f"\nNext: {r['next']}" if r.get("next") else "")
             if "candidates" in r and r["candidates"]:
-                text += "\nDid you mean: " + ", ".join(c["id"] for c in r["candidates"][:5])
+                text += "\nDid you mean:\n" + _candidates({"did_you_mean": r["candidates"]})
         else:
             r = explain.diagram(con, args.ids)
             text = r.get("error") or "```mermaid\n" + r["mermaid"] + "\n```\n\n" + r["legend"]

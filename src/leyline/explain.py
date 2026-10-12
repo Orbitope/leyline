@@ -580,7 +580,13 @@ def _resolve(con, text: str) -> dict:
                 " AND json_extract(attrs, '$.address') = ?", (text, text)).fetchall()
         if len(rows) == 1:
             return {"id": rows[0][0]}
-    return query.resolve(con, text)
+    r = query.resolve(con, text)
+    if "id" in r and (query._node(con, r["id"]) or {"kind": ""})["kind"] == "file":
+        top = con.execute("SELECT id FROM nodes WHERE parent_id = ? AND kind = 'callable' AND name = '<module>'",
+                          (r["id"],)).fetchone()   # a script: walk from its top-level code
+        if top is not None:
+            return {"id": top[0]}
+    return r
 
 
 def _walk(con, g: _Graph, start: str) -> tuple[list[dict], bool, Optional[str]]:
