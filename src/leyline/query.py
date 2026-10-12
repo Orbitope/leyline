@@ -374,6 +374,25 @@ def _owner_is(row, owner: str) -> bool:
     return row["kind"] == "module" and (row["path"] or "").rsplit("/", 1)[-1] == owner
 
 
+def _inherited(con, owner: str, member: str) -> list:
+    """`member` as the types named `owner` inherit it: declared on a base (or a base's base) and not on the type."""
+    found, seen = [], set()
+    for t in con.execute("SELECT id FROM nodes WHERE kind = 'type' AND name = ?", (owner,)):
+        frontier = [t[0]]
+        for _ in range(8):   # as deep as a sane hierarchy goes
+            bases = [r[0] for cur in frontier for r in con.execute(
+                "SELECT dst_id FROM edges WHERE src_id = ? AND kind IN ('extends', 'implements')", (cur,)) if r[0] not in seen]
+            if not bases:
+                break
+            seen.update(bases)
+            found += con.execute(f"SELECT * FROM nodes WHERE name = ? AND kind IN ('callable', 'field')"
+                                 f" AND parent_id IN ({','.join('?' * len(bases))})", (member, *bases)).fetchall()
+            if found:
+                break   # the nearest base that has it
+            frontier = bases
+    return found
+
+
 def resolve(con, text: str) -> dict:
     """A node id, or the node a person means by a name: `Owner.method`, `method`, a file path. {"id": ...} when it is
     one thing; otherwise {"error": ..., "candidates": [...]}."""
@@ -399,6 +418,14 @@ def resolve(con, text: str) -> dict:
                     keep.append(r)
             rows = keep
     exact = [r for r in rows if r["path"] == text.rstrip("/")] or rows
+    if not exact and "/" not in text and len(parts) >= 2:   # Flask.route, where route is written on a base class
+        exact = _inherited(con, parts[-2], parts[-1])
+    if len(exact) > 1:
+        # A test's own `Flask`, a sample's `app.py`: not what a person means when the product has one.
+        aside = store.aside_modules(con)
+        product = [r for r in exact if store.module_of(con, r["id"]) not in aside]
+        if len(product) == 1:
+            return {"id": product[0]["id"], "others": [_brief(r) for r in exact if r["id"] != product[0]["id"]][:8]}
     if len(exact) == 1:
         return {"id": exact[0]["id"]}
     if not exact:

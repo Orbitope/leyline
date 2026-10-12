@@ -191,3 +191,30 @@ def test_grade_with_no_such_index_says_so_before_indexing(repo, capsys, monkeypa
     assert main(["grade", str(repo), str(repo / "missing.scip")]) == 2
     err = capsys.readouterr().err
     assert "missing.scip" in err and "Traceback" not in err and len(err.strip().splitlines()) == 1
+
+
+def test_a_name_means_the_product_and_an_inherited_member_is_found(tmp_path, capsys, monkeypatch):
+    """A test file's own `Child` is not what a person means by `Child` when the product has one; `Child.go` finds
+    `go` where it is written, on the base class."""
+    root = tmp_path / "r"
+    (root / "src").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "src/thing.py").write_text("class Base:\n    def go(self):\n        return 1\n\n\nclass Child(Base):\n    pass\n")
+    (root / "tests/test_thing.py").write_text("from src.thing import Child\n\n\nclass Child:\n    pass\n\n\n"
+                                              "def test_go():\n    assert Child().go() == 1\n")
+    index(str(root), str(root / ".leyline/leyline.db"))
+    monkeypatch.chdir(root)
+    assert main(["show", "Child"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Child  [class]  src/thing.py") and "also called this, in tests or samples: tests/test_thing.py" in out
+    assert main(["expand", "Child.go"]) == 0
+    assert "id: r:python:src.thing.Base.go" in capsys.readouterr().out
+    assert main(["expand", "Child.gone"]) == 1
+
+
+def test_no_command_prints_the_help_and_a_typo_names_the_nearest_command(capsys):
+    assert main([]) == 0
+    assert "leyline show <name>" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as e:
+        main(["shw", "x"])
+    assert e.value.code == 2 and "Did you mean `leyline show`?" in capsys.readouterr().err

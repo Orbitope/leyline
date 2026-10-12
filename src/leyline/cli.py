@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -426,6 +427,10 @@ def _show(con, args) -> int:
             _print(r)
             return 0
         print(_expand_text(con, r))
+        if found.get("others"):
+            others = found["others"]
+            print("  also called this, in tests or samples: " + ", ".join(_where(o) or o["id"] for o in others[:4])
+                  + (f" and {len(others) - 4} more" if len(others) > 4 else ""))
         if r["kind"] in ("type", "callable", "field", "test"):
             from . import context
             c = context.build(con, [found["id"]], 1200)
@@ -749,15 +754,29 @@ def _store_problem(e: Exception) -> str:
     return f"the store could not be read ({type(e).__name__}: {msg}). Running `leyline map --full` rebuilds it."
 
 
+class _Parser(argparse.ArgumentParser):
+    """A mistyped command gets the closest command's name, not a list of thirty-seven."""
+
+    def error(self, message):
+        m = re.match(r"argument command: invalid choice: '([^']*)' \(choose from (.*)\)", message)
+        if m:
+            import difflib
+            choices = re.findall(r"'([^']+)'", m.group(2))
+            near = difflib.get_close_matches(m.group(1), choices, n=3, cutoff=0.5)
+            hint = (("Did you mean " + " or ".join(f"`leyline {c}`" for c in near) + "?") if near
+                    else "`leyline --help` lists the commands.")
+            self.exit(2, f"leyline: no command named {m.group(1)!r}. {hint}\n")
+        super().error(message)
+
+
 def _main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="leyline", usage="%(prog)s [-h] [--version] [--db DB] command ...",
-                                 description=ABOUT, epilog=ADVANCED,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = _Parser(prog="leyline", usage="%(prog)s [-h] [--version] [--db DB] command ...",
+                 description=ABOUT, epilog=ADVANCED, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=__version__)
     ap.add_argument("--db", default=os.environ.get("LEYLINE_DB"),
                     help="path to the store (default: .leyline/leyline.db in the repository)")
     # The commands are listed by ABOUT and ADVANCED, so the usual three come first.
-    sub = ap.add_subparsers(dest="cmd", required=True, metavar="command", help=argparse.SUPPRESS)
+    sub = ap.add_subparsers(dest="cmd", required=False, metavar="command", help=argparse.SUPPRESS)
     p = sub.add_parser("map", description="Index one or more repositories, print a short overview, and write the map page.")
     p.add_argument("path", nargs="*", default=[], help="the repository (default: the current directory, or the workspace"
                                                       " mapped from it); name several to map them together")
@@ -992,6 +1011,9 @@ def _main(argv=None) -> int:
                                   '       leyline quick --done quick-<slug> --tests FILE [--coverage FILE]\n'
                                   '       leyline quick --to-spec <spec id> quick-<slug>')
     args, extra = ap.parse_known_args(argv)
+    if args.cmd is None:   # `leyline` alone: the help, not an error
+        ap.print_help()
+        return 0
     # Python before 3.12 stops filling a list of names once an option follows the first of them
     # (`skills install --to repo ask`): the names after the options come back here.
     if extra and getattr(args, "names", None) is not None and not any(e.startswith("-") for e in extra):

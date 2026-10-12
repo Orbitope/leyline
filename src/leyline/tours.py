@@ -192,14 +192,16 @@ def generate(con, repo_id: str) -> dict:
     for k, m in enumerate(order[:5]):
         files, loc = size.get(m, (0, 0))
         d, u = sorted(mods[x]["name"] for x in deps[m]), sorted(mods[x]["name"] for x in users[m])
+        # Named without tests, samples and fixtures: a dispatch into a test double is not a dependency to read.
+        dn, un = sorted(mods[x]["name"] for x in deps[m] if x not in aside), sorted(mods[x]["name"] for x in users[m] if x not in aside)
         role = ("Nothing else in the repository is needed to read it, so it is the place to start." if not d and u else
                 "Nothing depends on it, so it is an end point: an application, a tool or a host for the code below it." if d and not u else
                 "It stands alone: no other module uses it and it uses none." if not d and not u else "")
         tt = top_types(m)
         stop(("The foundation: " if k == 0 and u else "Module: ") + mods[m]["name"], "node", m,
              f"{mods[m]['name']} has {_plural(files, 'file')} and about {loc:,} lines. "
-             + (f"It is used by {_names(u)}. " if u else "")
-             + (f"It depends on {_names(d)}. " if d else "")
+             + (f"It is used by {_names(un)}. " if un else "It is used only by tests and samples. " if u else "")
+             + (f"It depends on {_names(dn)}. " if dn else "")
              + role + " "
              + (f"Its most used types are {_names(tt)}. " if tt else "")
              + (f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5, '; ')}." if systems.get(m) else ""))

@@ -38,10 +38,9 @@ def _units(con, repo_id: str, only: str = "") -> tuple[dict, dict]:
 
 
 def _label(ranked: list, names: dict, paths: dict) -> str:
-    """A group's name: its three busiest files (the anchor's first). A unit is a type or a file; a type stands
-    for its file."""
-    files = list(dict.fromkeys((paths.get(v) or "").rsplit("/", 1)[-1] or names[v] for v in ranked))
-    return ", ".join(files[:3]) + " group"
+    """A group's name: its three busiest units (types, or files where functions sit loose), the anchor's first.
+    Joined with +, so the name still reads inside a comma-separated list."""
+    return " + ".join(dict.fromkeys(names[v] for v in ranked[:3])) + " group"
 
 
 def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, seed: int = 7,

@@ -506,6 +506,8 @@ const ROLE_LABEL = { changed: "will change", new: "new code goes in here", contr
   done: "changed, as planned", done_new: "new, as planned", helper: "helper added, only planned code calls it", test_changed: "test added or changed",
   drift: "changed, but not in the spec", missed: "expected to change, and did not" };
 const FLOWS = D.flows || [];
+// A flow that starts in a test project, a sample or a fixture comes after the product's own flows.
+const flowAside = (i) => { const m = moduleOf[FLOWS[i].entry]; return m != null && N[m].x && N[m].x.aside ? 1 : 0; };
 const flowsOf = new Map();
 FLOWS.forEach((f, fi) => { for (const st of f.steps) { if (!flowsOf.has(st[0])) flowsOf.set(st[0], []); flowsOf.get(st[0]).push(fi); } });
 const entryTargets = new Set(D.edges.filter((e) => e[0] === "exposes").map((e) => e[2]));
@@ -1262,7 +1264,7 @@ function drawFlow() {
   const hay = (x) => (flowName(x) + " " + N[moduleOf[x.entry]].n + " " + (N[x.entry].f || "")).toLowerCase();
   const CAP = 400; let shown = 0, matched = 0;
   const optsFor = () => ["Program starts", "Tests", "Framework callbacks"].filter((g) => groups[g]).map((g) => {
-    const hit = groups[g].filter((i) => i === S.flow || !words.length || words.every((w) => hay(FLOWS[i]).includes(w)));
+    const hit = groups[g].filter((i) => i === S.flow || !words.length || words.every((w) => hay(FLOWS[i]).includes(w))).sort((a, b) => flowAside(a) - flowAside(b) || a - b);
     matched += hit.length;
     const list = hit.slice(0, Math.max(0, CAP - shown)); if (hit.includes(S.flow) && !list.includes(S.flow)) list.push(S.flow); shown += list.length;
     return list.length ? `<optgroup label="${g} (${hit.length})">${list.map((i) => `<option value="${i}"${i === S.flow ? " selected" : ""}>${esc(flowName(FLOWS[i]))} (${FLOWS[i].steps.length})</option>`).join("")}</optgroup>` : "";
@@ -1620,6 +1622,7 @@ $("q").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("results
 document.addEventListener("click", (e) => { if (!e.target.closest(".search")) $("results").hidden = true; });
 
 /* ---------- start ---------- */
+S.flow = Math.max(0, FLOWS.findIndex((f, i) => !flowAside(i)));   // the Flows tab opens on a product flow
 $("hint-cross").hidden = !WS;
 $("change-count").textContent = CHANGES.length ? " " + CHANGES.length : "";
 const asked = decodeURIComponent((location.hash.match(/change=([^&]+)/) || [])[1] || "") || (D.start && D.start.change);

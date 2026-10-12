@@ -252,7 +252,7 @@ class Part:
 
 
 def _group_label(m, fs: list, own: set, anchor: str) -> str:
-    """A group's name: its three busiest files (the anchor's first), so "spec.py, pr.py, server.py group" rather than
+    """A group's name: its three busiest files (the anchor's first), so "spec.py + pr.py + server.py group" rather than
     one file or type standing for twenty-five."""
     def weight(f):
         return sum(w for u in m.units_of_file.get(f, ()) for v, w in m.uadj.get(u, {}).items() if v in own)
@@ -260,7 +260,7 @@ def _group_label(m, fs: list, own: set, anchor: str) -> str:
     ranked = sorted(fs, key=lambda f: (f != first, -weight(f), f))
     base = lambda f: m.files.get(f, {}).get("path", f).rsplit("/", 1)[-1]
     names = list(dict.fromkeys(base(f) for f in ranked))
-    return ", ".join(names[:3]) + " group"
+    return " + ".join(names[:3]) + " group"
 
 
 def _dir_id(repo: str, path: str) -> str:
