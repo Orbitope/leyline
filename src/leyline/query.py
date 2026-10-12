@@ -97,6 +97,7 @@ def cross_repo(con, limit: int = 20) -> dict:
 def overview(con) -> dict:
     """The top-level map: repos, modules, how modules depend on each other, and what was analyzed."""
     repos = []
+    aside = store.aside_modules(con)
     for repo in con.execute("SELECT * FROM nodes WHERE kind = 'repo' ORDER BY id"):
         modules = []
         for m in con.execute("SELECT * FROM nodes WHERE kind = 'module' AND repo_id = ? ORDER BY path", (repo["id"],)):
@@ -115,7 +116,9 @@ def overview(con) -> dict:
                 "types": counts.get("type", 0), "callables": counts.get("callable", 0),
                 "entry_points": counts.get("entry_point", 0),
                 **({"marker": _attrs(m)["marker"]} if _attrs(m).get("marker") else {}),
+                **({"aside": aside[m["id"]]} if m["id"] in aside else {}),
             })
+        modules.sort(key=lambda x: bool(x.get("aside")))   # the product first; tests, samples and fixtures after
         repos.append({"id": repo["id"], "commit": repo["commit_sha"], **_attrs(repo), "modules": modules})
     externals = []
     for x in con.execute("SELECT * FROM nodes WHERE kind = 'external' ORDER BY name"):

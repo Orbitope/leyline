@@ -37,6 +37,13 @@ def _units(con, repo_id: str, only: str = "") -> tuple[dict, dict]:
     return unit, module
 
 
+def _label(ranked: list, names: dict, paths: dict) -> str:
+    """A group's name: its three busiest files (the anchor's first). A unit is a type or a file; a type stands
+    for its file."""
+    files = list(dict.fromkeys((paths.get(v) or "").rsplit("/", 1)[-1] or names[v] for v in ranked))
+    return ", ".join(files[:3]) + " group"
+
+
 def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, seed: int = 7,
             min_modularity: float = 0.3, modules: Optional[set] = None) -> dict:
     """Replace the proposed systems of a repo. Returns counts per module. With `modules`, only those modules are
@@ -54,7 +61,9 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
         only = " AND id IN (SELECT node_id FROM ancestry WHERE module_id IN (SELECT id FROM cluster_mods))"
         src_only = " AND src_id IN (SELECT node_id FROM ancestry WHERE module_id IN (SELECT id FROM cluster_mods))"
     unit, module = _units(con, repo_id, only)
-    names = {r["id"]: r["name"] for r in con.execute(f"SELECT id, name FROM nodes WHERE repo_id = ?{only}", (repo_id,))}
+    names, paths = {}, {}
+    for r in con.execute(f"SELECT id, name, path FROM nodes WHERE repo_id = ?{only}", (repo_id,)):
+        names[r["id"]], paths[r["id"]] = r["name"], r["path"] or ""
     kinds = {r["id"]: r["kind"] for r in con.execute(f"SELECT id, kind FROM nodes WHERE repo_id = ?{only}", (repo_id,))}
     has_code = {u for i, u in unit.items() if kinds.get(i) in ("callable", "type")}
     by_module: dict[str, set] = defaultdict(set)
@@ -119,7 +128,7 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                 con.execute(
                     "INSERT OR REPLACE INTO nodes (id, kind, name, parent_id, repo_id, layer, source, attrs)"
                     " VALUES (?, 'system', ?, ?, ?, 'inferred', ?, ?)",
-                    (sid, f"{names[anchor]} group", mod, repo_id, SOURCE, json.dumps({
+                    (sid, _label(ranked, names, paths), mod, repo_id, SOURCE, json.dumps({
                         "anchor": anchor, "members": len(community), "modularity": round(modularity, 3),
                         "cohesion": round(internal / (internal + boundary), 3) if internal + boundary else 0.0,
                         "top": [names[v] for v in ranked[:6]], "method": "louvain"})))
@@ -127,15 +136,17 @@ def propose(con, repo_id: str, min_units: int = 12, resolution: float = 1.0, see
                                          for u in sorted(community)])
                 made += 1
                 anchors.append((sid, anchor))
-            # Groups anchored on types of the same name (a _Walker in each of three files): named with the anchor's file.
+            # Two groups that come out with one name (a _Walker in each of three files, with files named alike):
+            # told apart by the folder of their anchors.
             seen = defaultdict(list)
             for sid, anchor in anchors:
-                seen[names[anchor]].append((sid, anchor))
+                seen[con.execute("SELECT name FROM nodes WHERE id = ?", (sid,)).fetchone()[0]].append((sid, anchor))
             for same in (v for v in seen.values() if len(v) > 1):
                 for sid, anchor in same:
-                    row = con.execute("SELECT path FROM nodes WHERE id = ?", (anchor,)).fetchone()
-                    if row and row[0]:
-                        con.execute("UPDATE nodes SET name = ? WHERE id = ?", (f"{names[anchor]} group ({row[0]})", sid))
+                    folder = paths.get(anchor, "").rsplit("/", 1)[0] if "/" in paths.get(anchor, "") else ""
+                    if folder:
+                        label = con.execute("SELECT name FROM nodes WHERE id = ?", (sid,)).fetchone()[0]
+                        con.execute("UPDATE nodes SET name = ? WHERE id = ?", (f"{label} ({folder})", sid))
             result[mod.split(":module:")[-1]] = {"units": len(members), "systems": made,
                                                  "modularity": round(modularity, 3)}
         if modules is not None:

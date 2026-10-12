@@ -359,10 +359,19 @@ def _expand_text(con, r: dict, most: int = 8) -> str:
                  + (f" and {len(r['externals']) - 12} more" if len(r["externals"]) > 12 else ""))
     for kind, g in (r.get("contains") or {}).items():
         L.append(f"  {kind.replace('_', ' ')}s ({g['total']}): {_names(con, g['items'], most)}")
-    if r.get("calls"):
-        L.append(f"  calls ({r['calls']['total']}): {_names(con, r['calls']['items'], most)}")
-    if r.get("called_by"):
-        L.append(f"  called by ({r['called_by']['total']}): {_names(con, r['called_by']['items'], most)}")
+    for key, word in (("calls", "calls"), ("called_by", "called by")):
+        g = r.get(key)
+        if not g:
+            continue
+        if g["total"] <= 3:
+            L.append(f"  {word} ({g['total']}): {_names(con, g['items'], most)}")
+            continue
+        L.append(f"  {word} ({g['total']}):")   # one a line: a busy function's callers did not read on one
+        for x in g["items"][:most]:
+            sites = f"{x['sites']} sites" if x.get("sites", 1) > 1 else ""
+            L.append(f"    {_short(con, x['id']):<40} {sites:<8} {_where(x)}" + (" (guess)" if x.get("precision") == "guess" else ""))
+        if g["total"] > most:
+            L.append(f"    and {g['total'] - most} more")
     data = r.get("data") or {}
     for key, word in (("reads", "reads the fields"), ("writes", "writes the fields"), ("read_by", "read by"),
                       ("written_by", "written by")):
@@ -477,7 +486,11 @@ def _summary(o: dict) -> str:
     lines = []
     for repo in o["repos"]:
         lines.append(f"{repo['id']}  ({(repo.get('commit') or 'no commit')[:10]})")
+        said_aside = False
         for m in repo["modules"]:
+            if m.get("aside") and not said_aside:
+                lines.append("  tests, samples and fixtures:")
+                said_aside = True
             langs = ", ".join(f"{k} {v}" for k, v in m["languages"].items())
             lines.append(f"  {m['path']:<22} {m['files']:>3} files {m['loc']:>6} loc "
                          f"{m['types']:>4} types {m['callables']:>4} callables  [{langs}]"

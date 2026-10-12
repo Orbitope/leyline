@@ -19,16 +19,13 @@ from . import store
 
 SOURCE = "leyline-tour/0.1"
 REF_KINDS = ("repo", "node", "flow", "pattern", "view")
-SIDE_DIRS = ("sample", "samples", "example", "examples", "bench", "benchmarks", "docs", "doc", "demo", "demos", "snippets")
-
-
 def _plural(n: int, word: str) -> str:
     return f"{n:,} {word}{'' if n == 1 else 's'}"
 
 
-def _names(items, limit=4) -> str:
+def _names(items, limit=4, sep=", ") -> str:
     items = list(items)
-    return ", ".join(items[:limit]) + (f" and {len(items) - limit} more" if len(items) > limit else "")
+    return sep.join(items[:limit]) + (f" and {len(items) - limit} more" if len(items) > limit else "")
 
 
 def _readme(con, repo_id: str) -> Optional[str]:
@@ -114,9 +111,8 @@ def generate(con, repo_id: str) -> dict:
     # Tests kept beside the code they test (grocery.test.ts next to grocery.ts) do not make that code a test module.
     test_files, mostly_tests = store.test_places(con)
 
-    def side(m):  # samples, docs, benchmarks and test helpers: real code, but not the product
-        return any(part.lower() in SIDE_DIRS or part.lower().startswith("test") for part in (mods[m]["path"] or "").split("/"))
-    core = [m for m in mods if m not in mostly_tests and not side(m)] or list(mods)
+    aside = store.aside_modules(con)   # samples, docs, benchmarks, fixtures and test projects: not the product
+    core = [m for m in mods if m not in aside] or list(mods)
     size = {r["m"]: (r["files"], r["loc"]) for r in q(
         "SELECT a.module_id AS m, COUNT(*) AS files, SUM(COALESCE(n.span_end, 0)) AS loc FROM nodes n"
         " JOIN ancestry a ON a.node_id = n.id WHERE n.kind = 'file' GROUP BY a.module_id")}
@@ -166,8 +162,8 @@ def generate(con, repo_id: str) -> dict:
              + (f"The {_plural(len(all_starts), 'entry point')} found {'is a sample, benchmark or build script' if len(all_starts) == 1 else 'are samples, benchmarks or build scripts'}. " if all_starts else "")
              + "The tests are the best record of how it is meant to be called.")
     picked = []
-    for t in starts:  # at most two, from different modules
-        if len(picked) < 2 and module.get(t) not in {module.get(x) for x in picked}:
+    for t in starts:  # at most two, from different modules; a sample's or a fixture's only when the product has none
+        if len(picked) < 2 and module.get(t) not in {module.get(x) for x in picked} and (module.get(t) in core or not picked):
             picked.append(t)
     for t in picked:
         fid, n, ms = reach[t]
@@ -206,7 +202,7 @@ def generate(con, repo_id: str) -> dict:
              + (f"It depends on {_names(d)}. " if d else "")
              + role + " "
              + (f"Its most used types are {_names(tt)}. " if tt else "")
-             + (f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5)}." if systems.get(m) else ""))
+             + (f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5, '; ')}." if systems.get(m) else ""))
     if len(order) > 5:
         stops[-1]["narrative"] += f" {len(order) - 5} smaller modules are left out of this tour."
 

@@ -247,9 +247,11 @@ def write_page(con, db: str | Path, open_change: Optional[str] = None, always: b
 
 def counts(con) -> dict:
     one = lambda sql: con.execute(sql).fetchone()[0]
-    modules = [{"name": r["path"] or r["name"], "repo": r["repo_id"], "files": r["n"]} for r in con.execute(
-        "SELECT m.path, m.name, m.repo_id, COUNT(f.id) AS n FROM nodes m LEFT JOIN nodes f ON f.parent_id = m.id AND f.kind = 'file'"
-        " WHERE m.kind = 'module' GROUP BY m.id ORDER BY n DESC, m.path")]
+    aside = store.aside_modules(con)
+    modules = [{"name": r["path"] or r["name"], "repo": r["repo_id"], "files": r["n"],
+                **({"aside": aside[r["id"]]} if r["id"] in aside else {})} for r in con.execute(
+        "SELECT m.id, m.path, m.name, m.repo_id, COUNT(f.id) AS n FROM nodes m LEFT JOIN nodes f ON f.parent_id = m.id"
+        " AND f.kind = 'file' WHERE m.kind = 'module' GROUP BY m.id ORDER BY n DESC, m.path")]
     from . import patterns as found
     patterns = dict(sorted(found.listing(con, limit=1)["by_pattern"].items()))
     return {
@@ -285,11 +287,14 @@ def map_text(m: dict) -> str:
     who = repos[0] if len(repos) == 1 else f"{len(repos)} repositories ({', '.join(repos)})"
     mods = m["modules"]
     n = lambda k, word: f"{k:,} {word}{'' if k == 1 else 's'}"
+    product = [x for x in mods if not x.get("aside")] or mods   # tests, samples and fixtures come after the product
+    rest = len(mods) - len(product)
     L = [f"Mapped {who} in {m['seconds']} s: {n(m['files'], 'file')}, {n(m['lines'], 'line')}, {n(len(mods), 'module')}.",
          f"Found {spec._n(m['types'], 'type')}, {spec._n(m['functions'], 'function')}, {spec._n(m['tests'], 'test')} and "
          f"{spec._n(m['entry_points'], 'entry point')} (where a program starts).",
-         ("Largest modules: " if len(mods) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({n(x['files'], 'file')})" for x in mods[:5])
-         + (f" and {len(mods) - 5} more" if len(mods) > 5 else "")]
+         ("Largest modules: " if len(product) > 5 else "Modules: ") + ", ".join(f"{x['name']} ({n(x['files'], 'file')})" for x in product[:5])
+         + (f" and {len(product) - 5} more" if len(product) > 5 else "")
+         + (f"; {n(rest, 'module')} of tests, samples or fixtures" if rest else "")]
     if not mods:
         L.pop()
     if not m["files"]:

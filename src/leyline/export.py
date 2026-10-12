@@ -47,6 +47,7 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
     were drawn last time (see `layout`); without it the layout is worked out afresh, the same way each time."""
     rows = con.execute("SELECT * FROM nodes ORDER BY kind = 'repo' DESC, id").fetchall()
     index = {r["id"]: i for i, r in enumerate(rows)}
+    aside = store.aside_modules(con)
     nodes = []
     module_names: dict[str, int] = {}
     for r in rows:
@@ -70,6 +71,8 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
         if r["kind"] == "system":
             x.update({k: attrs[k] for k in ("members", "cohesion", "top") if k in attrs})
             x["layer"] = r["layer"]
+        if r["id"] in aside:
+            x["aside"] = aside[r["id"]]
         if x:
             n["x"] = x
         nodes.append(n)

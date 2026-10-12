@@ -538,6 +538,25 @@ def roots(con) -> dict:
     return out
 
 
+SIDE_DIRS = ("sample", "samples", "example", "examples", "bench", "benchmarks", "docs", "doc", "demo", "demos", "snippets",
+             "fixture", "fixtures", "testdata")
+
+
+def aside_modules(con) -> dict:
+    """The modules that are not the product, with why: {module id: "tests" | "samples"}. A test project (see
+    `test_places`) is "tests"; a module under a sample, example, docs, benchmark, fixture or test folder is "samples".
+    What is left is the product: the tour, the overview and the map page put it first."""
+    _, mostly_tests = test_places(con)
+    out = {}
+    for r in con.execute("SELECT id, path FROM nodes WHERE kind = 'module'"):
+        parts = [x.lower() for x in (r[1] or "").split("/")]
+        if r[0] in mostly_tests:
+            out[r[0]] = "tests"
+        elif any(x in SIDE_DIRS or x.startswith("test") for x in parts):
+            out[r[0]] = "samples"
+    return out
+
+
 def test_places(con) -> tuple[set, set]:
     """Where the tests are: the files that hold a test (a test node, or the entry of a test flow), and the modules
     that are mostly such files (a test project). A module that holds a few test files beside its product code (a

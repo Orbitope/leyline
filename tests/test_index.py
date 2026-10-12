@@ -278,8 +278,9 @@ def test_two_systems_whose_anchors_share_a_name_are_named_apart(tmp_path):
     names = sorted(r[0] for r in c.execute("SELECT name FROM nodes WHERE kind = 'system'"))
     text = " ".join(s["narrative"] for s in tours.get(c, "tour:orientation:c")["stops"])
     c.close()
-    assert names == ["Hub group (pkg/x/hub.py)", "Hub group (pkg/y/hub.py)"], names
-    assert "Hub group (pkg/x/hub.py), Hub group (pkg/y/hub.py)" in text, text
+    # A group is named after its busiest files, the anchor's first; two that come out alike get their folder.
+    assert names == ["hub.py, m0.py, m1.py group (pkg/x)", "hub.py, m0.py, m1.py group (pkg/y)"], names
+    assert "hub.py, m0.py, m1.py group (pkg/x); hub.py, m0.py, m1.py group (pkg/y)" in text, text
 
 
 def test_a_python_override_with_other_parameters_still_overrides(tmp_path):

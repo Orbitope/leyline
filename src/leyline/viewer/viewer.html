@@ -88,6 +88,8 @@ button { cursor: pointer; }
 .node text { fill: var(--ink); font: 500 12.5px var(--mono); pointer-events: none; }
 .node text.meta { fill: var(--muted); font: 11px var(--sans); }
 .node { cursor: pointer; }
+.node.aside rect:first-child { stroke: var(--line); fill: var(--bg); }
+.node.aside text { fill: var(--muted); }
 .node.stub rect { fill: var(--bg); stroke-dasharray: 2 3; }
 .node.stub text { fill: var(--muted); }
 .node.iso rect { stroke: var(--line); }
@@ -765,7 +767,7 @@ function metaLine(i) {
   if (n.k === "part") { const x = n.x || {}; return `${x.files || 0} file${x.files === 1 ? "" : "s"} · ${(x.functions || 0).toLocaleString()} functions · ${big(x.lines || 0)} lines${x.stale ? " · name may be stale" : ""}`; }
   if (n.k !== "module") return kindName(i);
   const f = kids[i].filter((c) => N[c].k === "file").length;
-  return `${f} file${f === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines`;
+  return `${f} file${f === 1 ? "" : "s"} · ${linesOf(i).toLocaleString()} lines${n.x && n.x.aside ? " · " + n.x.aside : ""}`;
 }
 
 /* ---------- draw ---------- */
@@ -804,7 +806,7 @@ function draw() {
     if (b.dummy) continue;
     const n = N[b.i];
     const role = S.level === "view" ? VW.boxes.get(b.i) : OVER ? OVER.get(b.i) : null;
-    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (b.away ? " other" : "") + (role ? " role-" + (S.level === "view" ? VW.cls(role) : role) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
+    const g = el("g", { class: "node" + (b.stub ? " stub" : "") + (b.away ? " other" : "") + (n.k === "module" && n.x && n.x.aside ? " aside" : "") + (role ? " role-" + (S.level === "view" ? VW.cls(role) : role) : ""), transform: `translate(${b.x - b.w / 2},${b.y})`, tabindex: 0, "data-i": b.i, role: "button", "aria-label": n.n }, gN);
     el("rect", { width: b.w, height: b.h, rx: 5 }, g);
     el("rect", { class: "lang-" + langOf(b.i), x: 0, y: 0, width: 4, height: b.h, rx: 2, style: "stroke:none" }, g);
     const t = el("text", { x: 14, y: b.meta ? 19 : 19.5 }, g); t.textContent = b.label;

@@ -1,6 +1,8 @@
 # Leyline quick reference
 
-One page: what to ask, and the command or tool behind it. The [README](../README.md) has the detail.
+One page: what to ask, and the command or tool behind it. The [README](../README.md) is the start;
+[changes.md](changes.md), [understanding.md](understanding.md), [mcp-tools.md](mcp-tools.md) and
+[indexing.md](indexing.md) have the detail.
 
 ## Set up once
 
