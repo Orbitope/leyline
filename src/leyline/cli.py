@@ -758,10 +758,12 @@ class _Parser(argparse.ArgumentParser):
     """A mistyped command gets the closest command's name, not a list of thirty-seven."""
 
     def error(self, message):
-        m = re.match(r"argument command: invalid choice: '([^']*)' \(choose from (.*)\)", message)
+        # The wording of the choices differs between Python versions (quoted on some, bare on others): the command
+        # names come from the parser, only the mistyped word from the message.
+        m = re.match(r"argument command: invalid choice: '?(.*?)'? \(choose from ", message)
         if m:
             import difflib
-            choices = re.findall(r"'([^']+)'", m.group(2))
+            choices = [c for a in self._actions if isinstance(a, argparse._SubParsersAction) for c in a.choices]
             near = difflib.get_close_matches(m.group(1), choices, n=3, cutoff=0.5)
             hint = (("Did you mean " + " or ".join(f"`leyline {c}`" for c in near) + "?") if near
                     else "`leyline --help` lists the commands.")
