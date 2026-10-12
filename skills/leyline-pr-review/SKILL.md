@@ -19,7 +19,7 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | `spec_finding` | `leyline spec finding pr-<id> --reviewer logic --severity high --claim "..." --evidence <node id> --proposal "..."` |
 | `spec_findings` | `leyline spec findings pr-<id>` |
 | `affected_tests` | `leyline affected-tests pr-<id>` |
-| `source`, `expand`, `impact` | `leyline source <id>`, `leyline expand <id>`, `leyline impact <name>` |
+| `source`, `expand`, `impact` | `leyline source <name or id>`, `leyline expand <name or id>`, `leyline impact <name>` |
 
 If neither is there, say so and stop.
 

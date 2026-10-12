@@ -218,12 +218,28 @@ def _call_rows(con, node_id: str, direction: str, limit: int) -> dict:
     return {"total": len(rows), "items": items}
 
 
+def find(con, text: str) -> dict:
+    """The node a person or an agent means: {"id"} for a node id, or for a name that is one thing on the map
+    (`Owner.method`, `method`, a file path: see `resolve`); else {"error", "did_you_mean"}."""
+    r = resolve(con, text)
+    if "id" in r:
+        return r
+    hits = r.get("candidates") or []
+    if not hits and text.strip():   # the last word of an id someone mistyped
+        hits = search(con, text.split(":")[-1].split(".")[-1], limit=5)["results"]
+    if "could be" in r["error"]:
+        return {"error": f"No single node: {r['error']}.", "did_you_mean": hits}
+    return {"error": f"No node is called {text!r}. Find it with `search`.", "did_you_mean": hits}
+
+
 def expand(con, node_id: str, limit: int = 50) -> dict:
-    """One node in detail: what it contains, what it depends on, and what depends on it."""
+    """One node in detail: what it contains, what it depends on, and what depends on it. `node_id` is an id, or
+    a name that is one thing on the map."""
+    found = find(con, node_id)
+    if "error" in found:
+        return found
+    node_id = found["id"]
     row = _node(con, node_id)
-    if row is None:
-        hits = search(con, node_id.split(":")[-1], limit=5)["results"]
-        return {"error": f"No node with id {node_id!r}.", "did_you_mean": hits}
     out = _brief(row)
     out.update({k: v for k, v in _attrs(row).items() if k not in out and v not in (None, [], "")})
     if row["kind"] == "system":
@@ -351,8 +367,9 @@ def resolve(con, text: str) -> dict:
         return {"id": text}
     if "/" in text or re.search(r"\.\w{1,5}$", text) and con.execute(
             "SELECT 1 FROM nodes WHERE kind = 'file' AND (path = ? OR path LIKE ?) LIMIT 1", (text, "%/" + text)).fetchone():
-        rows = con.execute("SELECT * FROM nodes WHERE kind = 'file' AND (path = ? OR path LIKE ?) ORDER BY length(path)",
-                           (text, "%/" + text)).fetchall()
+        # A path: a file, or a module (a folder) by its path; a module named exactly comes before files under it.
+        rows = con.execute("SELECT * FROM nodes WHERE kind IN ('file', 'module') AND (path = ? OR path LIKE ?)"
+                           " ORDER BY path = ? DESC, length(path)", (text.rstrip("/"), "%/" + text.rstrip("/"), text.rstrip("/"))).fetchall()
     else:
         parts = text.split(".")
         rows = [r for r in con.execute("SELECT * FROM nodes WHERE name = ? AND kind IN ('callable', 'type', 'field', 'test',"
@@ -366,7 +383,7 @@ def resolve(con, text: str) -> dict:
                 if cur is not None and cur["name"] == owner:
                     keep.append(r)
             rows = keep
-    exact = [r for r in rows if r["path"] == text] or rows
+    exact = [r for r in rows if r["path"] == text.rstrip("/")] or rows
     if len(exact) == 1:
         return {"id": exact[0]["id"]}
     if not exact:
@@ -378,9 +395,12 @@ def resolve(con, text: str) -> dict:
 
 def neighbors(con, node_id: str, direction: str = "both", kinds: Optional[list[str]] = None,
               limit: int = 100) -> dict:
-    """Raw edges around a node, optionally filtered by edge kind. 'calls' is a kind here too."""
-    if _node(con, node_id) is None:
-        return {"error": f"No node with id {node_id!r}."}
+    """Raw edges around a node, optionally filtered by edge kind. 'calls' is a kind here too. `node_id` is an id,
+    or a name that is one thing on the map."""
+    found = find(con, node_id)
+    if "error" in found:
+        return found
+    node_id = found["id"]
     out: dict = {"id": node_id}
     for d in (("out", "in") if direction == "both" else (direction,)):
         groups = _edge_rows(con, node_id, d, limit)
@@ -536,10 +556,13 @@ def impact(con, node_id: str, max_depth: int = 6, flows_limit: int = 40) -> dict
 
 
 def source(con, node_id: str, max_lines: int = 200) -> dict:
-    """The source text of a node, read from the working tree it was indexed from."""
+    """The source text of a node, read from the working tree it was indexed from. `node_id` is an id, or a name
+    that is one thing on the map."""
+    found = find(con, node_id)
+    if "error" in found:
+        return found
+    node_id = found["id"]
     row = _node(con, node_id)
-    if row is None:
-        return {"error": f"No node with id {node_id!r}."}
     if not row["path"] or not row["span_start"]:
         return {"error": f"{row['kind']} nodes have no source span."}
     root = store.roots(con).get(row["repo_id"])

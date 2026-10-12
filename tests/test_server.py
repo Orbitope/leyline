@@ -404,6 +404,9 @@ def test_tool_descriptions_name_every_argument(repo):
     async def script(a: Agent, tools, init):
         order = [init.instructions.index(f"`{t}`") for t in ("map", "plan", "spec_review_facts", "check")]
         assert order == sorted(order)
+        # Understanding the code, the most common ask, comes before the loop; a name works where an id does.
+        assert init.instructions.index("`find_flows`") < init.instructions.index("`map`")
+        assert "Owner.method" in tools["expand"].input_schema["properties"]["node_id"]["description"]
         assert len(tools) >= 35
         for t in tools.values():
             assert t.description and len(t.description) > 40, t.name

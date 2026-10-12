@@ -1289,6 +1289,7 @@ def test_map_plan_check_from_the_command_line(tmp_path, monkeypatch, capsys):
     assert main(["map", ".", "--exact", "off"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("Mapped repo in ") and "Map page: .leyline/map.html" in out and "Next: " in out
+    assert "To look around first: `leyline tour`" in out   # a change folder exists: planning comes first
     assert len(out.splitlines()) <= 10 and (work / ".leyline" / "map.html").exists()
 
     assert main(["plan", "loud-engine", "--tests", run_tests("before.txt")]) == 0

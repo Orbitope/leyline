@@ -223,7 +223,9 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
                 con.execute("INSERT OR REPLACE INTO meta VALUES ('exact', ?)", (exact,))
         out = {"db": str(db), "seconds": round(time.perf_counter() - began, 1), **counts(con),
                "timing": stats.get("timing", {}), "exact": {k: v for k, v in stats.items() if k.startswith("exact:")},
-               "left_out": _left_out(stats.get("left_out") or {})}
+               "left_out": _left_out(stats.get("left_out") or {}),
+               "changes": sum(1 for root in _roots(con).values() for c in (root / "openspec" / "changes").glob("*")
+                              if c.is_dir() and c.name != "archive")}
         if page:
             out["page"] = str(write_page(con, db, always=True))
     finally:
@@ -308,8 +310,14 @@ def map_text(m: dict) -> str:
     L.append(f"Store: {Path(m['db']).as_posix()}")
     if m.get("page"):
         L.append(f"Map page: {Path(m['page']).as_posix()} (open it in a browser)")
-    L.append("Next: write the change you want as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the "
-             "leyline-spec skill says how), then run `leyline plan <id>`.")
+    if m.get("changes"):
+        L.append("Next: `leyline plan <id>` on a change under openspec/changes/, or write a new one there (ask your agent;"
+                 " the leyline-spec skill says how). To look around first: `leyline tour`, or `leyline show <name>`.")
+    else:
+        L.append("Next: to look around, `leyline tour` says what this is and where to start reading, and `leyline show"
+                 " <name>` explains one thing; or ask your agent how something works. To change the code, write the"
+                 " change as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the leyline-spec skill says"
+                 " how), then run `leyline plan <id>`.")
     return "\n".join(L)
 
 

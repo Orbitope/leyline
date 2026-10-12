@@ -15,7 +15,7 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | `quick` (`what`, `names`, `test_output`) | `<test command> \| leyline quick "<what>" --about <names> --tests -` |
 | `quick` (`done`, `test_output`) | `<test command> \| leyline quick --done quick-<slug> --tests -` |
 | `quick` (`done`, `names`) | `leyline quick --done quick-<slug> --about <name>` |
-| `search`, `expand`, `source` | `leyline search <text>`, `leyline expand <id>`, `leyline source <id>` |
+| `search`, `expand`, `source` | `leyline search <text>`, `leyline expand <name or id>`, `leyline source <name or id>` |
 | `affected_tests` | `leyline affected-tests quick-<slug>` |
 | none | `leyline quick --to-spec <id> quick-<slug>` |
 

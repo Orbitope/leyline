@@ -32,7 +32,21 @@ The rest of this page is what the agent does underneath, and the commands for do
 
 ## Start here
 
-Leyline lets a person design a change to a codebase while a coding agent writes it. Before any code is
+To understand a codebase, map it and look around. Names work wherever an id does (`Engine.start`, a file path):
+
+```bash
+leyline map path/to/repo                 # once; writes .leyline/map.html, which opens on a guided tour
+leyline tour                             # what this repository is, and where to start reading
+leyline show Engine.start                # one thing: what it is, who uses it, what it uses, the code around it
+leyline show "what happens when a user saves"   # where a behavior described in words starts
+leyline outline editor/core              # a large module split into parts, with what each holds
+leyline explain-path DialogueCanvas.save # what runs from there, step by step, with a diagram
+```
+
+Or ask your agent in plain words (see [Working through an agent](#working-through-an-agent)). One page of what to
+ask and the command or tool behind it: [docs/quick-reference.md](docs/quick-reference.md).
+
+Leyline also lets a person design a change to a codebase while a coding agent writes it. Before any code is
 written it shows, on one page, what code will be written, what it will affect and how you will know it
 was done; afterwards it says on the same page whether the change was done as agreed. Everything on that
 page comes from the code and the test results, not from the agent's account of its own work.
@@ -203,7 +217,7 @@ leyline index path/to/repo          # the same index, printing the full statisti
 leyline --db ... coverage .coverage # import measured test coverage
 leyline --db path/to/repo/.leyline/leyline.db overview
 leyline --db ... search "Simulation Step"
-leyline --db ... expand "<node id>"
+leyline --db ... show "Simulation.Step"   # one thing in detail (expand --json for every field)
 leyline --db ... tour               # a guided walk through the repository
 leyline --db ... patterns           # design patterns found by their shape
 leyline --db ... state              # fields assigned from outside their own type
@@ -970,10 +984,12 @@ make up an arrow, and source text. Double-click a box to open it. Solid arrows a
 arrows were worked out from syntax, dotted arrows are guesses, and blue dash-dot arrows are events and
 process launches.
 
-The Matrix tab shows the same level as a dependency matrix, ordered so that cycles appear above the
-diagonal. The Flows tab steps through one flow at a time, with the source of the selected step beside it.
-The Views tab shows saved views: for a proposed change, the marked code colored by role beside the
-impact report.
+The page opens on the first stop of the orientation tour (what the repository is, where to start reading,
+the patterns and the paths worth tracing), until you end the tour once; the Tour tab brings it back, and
+any tour an agent saved. Under More, the Matrix tab shows the same level as a dependency matrix, ordered
+so that cycles appear above the diagonal; the Flows tab steps through one flow at a time, with the source
+of the selected step beside it; the Saved views tab shows saved views: for a proposed change, the marked
+code colored by role beside the impact report.
 
 The exported page embeds the graph and the source text of every indexed file, so share it with the
 same care as the repository. Pass `--no-sources` to leave source text out.

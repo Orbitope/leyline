@@ -28,10 +28,50 @@ def test_an_unknown_id_fails_the_command(repo, capsys):
         assert main(cmd) == 1, cmd
         out = capsys.readouterr()
         assert "nope" in out.out + out.err
-    assert main(["expand", "repo:python:py.src.pkg.core.Engine.start"]) == 0
+    assert main(["expand", "--json", "repo:python:py.src.pkg.core.Engine.start"]) == 0
     assert json.loads(capsys.readouterr().out)["name"] == "start"
     assert main(["source", "repo:python:py.src.pkg.core.Engine.start"]) == 0
     assert "def start(self)" in capsys.readouterr().out
+
+
+def test_a_name_works_wherever_an_id_does(repo, capsys):
+    """A person reads `Engine.start`, not `repo:python:py.src.pkg.core.Engine.start`: every command that takes an id
+    takes a name that is one thing on the map, and says what a name could be when it is several."""
+    assert main(["expand", "Engine.start"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Engine.start  [method]  py/src/pkg/core.py:10") and "called by (3)" in out
+    assert "id: repo:python:py.src.pkg.core.Engine.start" in out
+    assert main(["source", "Engine.start"]) == 0 and "def start(self)" in capsys.readouterr().out
+    assert main(["neighbors", "Engine.start", "--direction", "in"]) == 0
+    assert "called by (3): test_chain" in capsys.readouterr().out
+    assert main(["expand", "py/src/pkg"]) == 0 and "[module]" in capsys.readouterr().out   # a module by its path
+    assert main(["expand", "core.py"]) == 0 and "[file]" in capsys.readouterr().out
+    assert main(["expand", "stop"]) == 1   # Base.stop and Engine.stop
+    err = json.loads(capsys.readouterr().out)
+    assert "could be 2 things" in err["error"] and {h["name"] for h in err["did_you_mean"]} == {"stop"}
+    assert main(["expand", "Engine.stop"]) == 0 and "Engine.stop" in capsys.readouterr().out
+
+
+def test_map_with_no_change_folder_points_at_looking_around_first(repo, capsys):
+    assert main(["map", ".", "--exact", "off"]) == 0
+    assert "Next: to look around, `leyline tour` says what this is" in capsys.readouterr().out
+
+
+def test_show_is_one_thing_with_the_code_around_it_or_where_words_start(repo, capsys):
+    assert main(["show", "Engine.start"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Engine.start  [method]") and "Code around" in out and "> " in out
+    assert "Next: `leyline source Engine.start`" in out and "`leyline explain-path Engine.start`" in out
+    assert main(["show", "stop"]) == 1 and "could be 2 things" in capsys.readouterr().out
+    assert main(["show", "nothing_of_the_kind"]) == 1 and "Nothing on the map is called" in capsys.readouterr().out
+    assert main(["ask", "start an engine"]) == 0   # words: where the behavior could start, and what is named like them
+    out = capsys.readouterr().out
+    assert out.startswith('Where "start an engine" could start') and "Engine.start" in out and out.rstrip().endswith("runs from it.")
+    assert main(["show", "--json", "Engine.start"]) == 0
+    assert json.loads(capsys.readouterr().out)["context"]["text"]
+    assert main(["search", "Engine"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Engine ") and "repo:python:py.src.pkg.core.Engine\n" in out and "Next: `leyline show <name>`" in out
 
 
 def test_the_repository_store_is_found_from_a_folder_inside_it(repo, capsys, monkeypatch):
@@ -39,7 +79,7 @@ def test_the_repository_store_is_found_from_a_folder_inside_it(repo, capsys, mon
     in the subfolder, and every query command said there was no store."""
     monkeypatch.delenv("LEYLINE_DB", raising=False)
     monkeypatch.chdir(repo / "py" / "src")
-    assert main(["search", "Engine"]) == 0
+    assert main(["search", "--json", "Engine"]) == 0
     assert json.loads(capsys.readouterr().out)["results"]
     assert main(["--db", "elsewhere.db", "search", "Engine"]) == 2     # a store named outright is still that one
     assert "no store at elsewhere.db" in capsys.readouterr().err

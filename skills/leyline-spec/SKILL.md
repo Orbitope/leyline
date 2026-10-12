@@ -22,7 +22,7 @@ command for each tool this skill names:
 | `map` | `leyline map <repo>` |
 | `plan` (with `test_output`) | `<test command> \| leyline plan <id> --tests -` (`--new-baseline` for `new_baseline`) |
 | `check` (with `test_output`) | `<test command> \| leyline check <id> --tests -` |
-| `overview`, `search`, `expand`, `impact`, `source` | `leyline overview`, `leyline search <text>`, `leyline expand <id>`, `leyline impact <name>`, `leyline source <id>` |
+| `overview`, `search`, `expand`, `impact`, `source` | `leyline overview`, `leyline search <text>`, `leyline expand <name or id>`, `leyline impact <name>`, `leyline source <name or id>` |
 | `spec_review_facts` | `leyline spec facts <id> --reviewer logic` (or `performance`) |
 | `spec_finding` | `leyline spec finding <id> --reviewer logic --severity medium --claim "..." --evidence <node id> --proposal "..."` |
 | `spec_findings`, `spec_resolve` | `leyline spec findings <id>`, `leyline spec resolve <finding id> accepted\|rejected\|deferred "why"` |
