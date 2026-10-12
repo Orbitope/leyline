@@ -310,5 +310,5 @@ def test_the_skill_names_the_tools_and_their_commands():
     for said in ("`find_flows(description)`", "`leyline find-flows \"<description>\"`", "`explain_path(start",
                  "`leyline explain-path <start>", "`leyline diagram", "save_tour", "Every claim cites a node"):
         assert said in text, said
-    readme = (root / "README.md").read_text()
-    assert "### Asking how something works" in readme and "| `find_flows(description, limit?)` |" in readme
+    docs = (root / "docs" / "understanding.md").read_text() + (root / "docs" / "mcp-tools.md").read_text()
+    assert "### Asking how something works" in docs and "| `find_flows(description, limit?)` |" in docs
