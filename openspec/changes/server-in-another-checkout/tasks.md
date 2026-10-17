@@ -1,0 +1,20 @@
+- [ ] 1.1 Add `loop.worktrees_of`: the linked worktrees of a git repository, from `git worktree list --porcelain`, resolved
+- [ ] 1.2 Change `loop.find_change` to search the store's roots before the server's directory
+- [ ] 1.3 Add `server._linked`, the linked worktrees of the repository the server started in, listed once and again on each `map`
+- [ ] 1.4 Add `server._start_repo`, the git repository the server started in, asked of git once
+- [ ] 1.5 Add `server._home`, the first repository the store maps, else the server's directory
+- [ ] 1.6 Add `server._home_store`, the store the server started with
+- [ ] 1.7 Change `server._path` to return the store `map` made current for this process, starting from the store the server started with
+- [ ] 1.8 Change the top level of `src/leyline/server.py` to add the current-store variable and the caches of the start repository and the worktrees
+- [ ] 1.9 Change `server._outside` to allow the store's roots, the server's directory and its repository, and the linked worktrees from a list made once
+- [ ] 1.10 Change `server._missing` to say "an agent working in another checkout passes that checkout's absolute path to `map`"
+- [ ] 1.11 Change `server.map_code` to skip the fold for a directory that is itself a git top level, to use the checkout's own store when it is not the server's own, to make it current only after `loop.map_repos` returns without error inside the lock, and to name the current store and the restart rule in its answer
+- [ ] 1.12 Change `server.review_pr` and `server.drift` to default their path to the first repository the store maps
+- [ ] 1.13 Change skills/leyline-ask/SKILL.md and skills/leyline-explain-flow/SKILL.md to say that `map` takes the absolute path of the repository the agent works in, which may not be the server's directory
+- [ ] 2.1 Add the test "A linked worktree under the main checkout is mapped as itself"
+- [ ] 2.2 Add the test "Mapping another checkout moves the store to it"
+- [ ] 2.3 Add the test "A refused store leaves the old one current"
+- [ ] 2.4 Add the test "After the move the paths the server defaults to follow the store"
+- [ ] 2.5 Add the test "Accepting a worktree runs no git per call"
+- [ ] 2.6 Add the test "The nothing-mapped error names the directory the server started in"
+- [ ] 3.1 Document in README.md and docs/mcp-tools.md that a checkout other than the server's own is mapped as itself and its store is read until the server restarts

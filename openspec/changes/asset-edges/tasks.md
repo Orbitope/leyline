@@ -1,0 +1,57 @@
+- [ ] 1.1 Add `src/leyline/adapters/godot.py` with `parse`, which reads a Godot scene or resource in a stream into the scripts it runs, the scenes it includes and the methods its signal connections call
+- [ ] 1.2 Add `src/leyline/adapters/unity.py` with `parse`, which reads a Unity scene, prefab or asset in a stream into the GUIDs of the scripts and prefabs it names and the methods its persistent events call, following fileIDs inside the file
+- [ ] 1.3 Add `src/leyline/model.py: AssetRef`, what an asset names: a script, an include, or a method on the script of a node or component, kept once however many times the asset names it
+- [ ] 1.4 Add `model.FileResult.assets`, the asset references of a file
+- [ ] 1.5 Change the top level of `src/leyline/adapters/__init__.py` to register the two asset adapters whatever `LEYLINE_GENERIC` says, and to list their languages
+- [ ] 1.6 Add `indexer.max_asset_bytes`, the size limit of an asset, 64 MB or what `LEYLINE_MAX_ASSET_MB` says
+- [ ] 1.7 Change `indexer._unusable` to apply the limit of an asset, and not the test for long lines, to a file of an asset adapter
+- [ ] 1.8 Change `indexer._parse_file` to read a file of an asset adapter in a stream, without the list of its lines, the decoded text or the hashes of its nodes
+- [ ] 1.9 Add `src/leyline/indexer.py: _asset_module`, the module folder of an asset: the nearest folder at or above it that holds code the map reads
+- [ ] 1.10 Change `Indexer._parse_repo` to put an asset in the module `Indexer._asset_module` gives
+- [ ] 1.11 Add `src/leyline/indexer.py: read_meta`, the GUID in a Unity `.meta` file and a digest of its head, for a file that is not a link
+- [ ] 1.12 Add `Indexer._unity_guids`, which reads the `.meta` file beside each file the map holds, only when the repository holds a Unity asset, and counts the scripts that have none
+- [ ] 1.13 Add `src/leyline/indexer.py: _note`, which counts what an asset names and the map cannot tie to code by reason and keeps the first few
+- [ ] 1.14 Add `Indexer._script_methods`, the methods of a script file with a name, of its class or a base class on the map, or its functions when it has no class
+- [ ] 1.15 Add `Indexer._asset_target`, the file a reference names: a Godot `res://` path read from the folder of the `project.godot` above the scene, or a Unity GUID, with the reason when there is none
+- [ ] 1.16 Add `Indexer._asset_scripts`, the script files an asset runs
+- [ ] 1.17 Add `Indexer._link_asset`, which makes the `imports` edge (exact) of one asset to each script, scene or prefab it names, and one `communicates` edge on the channel `asset` (heuristic) to each method however many connections name it
+- [ ] 1.18 Add `Indexer._resolve_assets`, which links every asset of each repository, and does nothing when there is none
+- [ ] 1.19 Change `Indexer.run` to run `Indexer._resolve_assets` after the calls and endpoints are resolved and before the results are let go
+- [ ] 1.20 Change `Indexer._write_coverage` to record the assets extractor's counts and the first names of what it could not link, to leave out the extractor of assets a repository has none of, and to keep the digests of the `.meta` files
+- [ ] 1.21 Add `Indexer.meta_digests`, the digests of the `.meta` files read, set in `Indexer.__init__`
+- [ ] 1.22 Add `Indexer.asset_notes`, the notes on what could not be linked, set in `Indexer.__init__`
+- [ ] 1.23 Change the top level of `src/leyline/indexer.py` to add the size limit of an asset and how many names of each reason are kept
+- [ ] 1.24 Change `loop._changes` to count a `.meta` file beside a script or an asset as a changed file, only when the map holds Unity assets
+- [ ] 1.25 Change `loop.map_text` to leave the asset languages out of the languages it lists
+- [ ] 1.26 Change `fncoupling._adapter` to give no adapter for an asset, which has no functions to couple
+- [ ] 1.27 Add `src/leyline/incremental.py: _stat_key`, the size and modification time of a file old enough to be trusted
+- [ ] 1.28 Change `Run.lookup` to take an unchanged asset from the cache by its size and modification time, without reading it again
+- [ ] 1.29 Change `Run.keep` to keep the size and modification time of an asset
+- [ ] 1.30 Change `_Cache._open` to add the column for them to a cache made before
+- [ ] 1.31 Change the top level of `src/leyline/incremental.py` to raise the cache version
+- [ ] 1.32 Change `Run.__init__` to put the size limit of an asset in `Run.key`, the cache's key
+- [ ] 1.33 Add `src/leyline/query.py: _assets_run`, the reverse step from the contents of a script to the assets that run it, and from a scene or prefab to those that include it
+- [ ] 1.34 Change `query._adjacency` to take that step in the reverse walk
+- [ ] 1.35 Change `export.graph` to leave the text of asset files out of the page's sources
+- [ ] 1.36 Change docs/indexing.md to say which engine files are read, what they link to and what the limits are, and README.md to mention them
+- [ ] 2.1 Add the test "A Godot scene is linked to the script it runs"
+- [ ] 2.2 Add the test "A Godot project in a subfolder is resolved from its own root"
+- [ ] 2.3 Add the test "A Godot signal connection is linked to its method"
+- [ ] 2.4 Add the test "A Godot scene that includes another scene is linked to it"
+- [ ] 2.5 Add the test "A Godot script missing its grammar is said so"
+- [ ] 2.6 Add the test "A Unity prefab is linked to the script a component runs"
+- [ ] 2.7 Add the test "A Unity event is linked to the method it calls"
+- [ ] 2.8 Add the test "A method of a base class counts as a method of the script"
+- [ ] 2.9 Add the test "A Unity scene that includes a prefab is linked to it"
+- [ ] 2.10 Add the test "Impact of a script class lists the prefab that runs it"
+- [ ] 2.11 Add the test "A reference to a script outside the repository is counted"
+- [ ] 2.12 Add the test "A GUID that two files claim is not linked"
+- [ ] 2.13 Add the test "A call on a built-in component is not counted as missing"
+- [ ] 2.14 Add the test "A folder of assets alone is not a module"
+- [ ] 2.15 Add the test "The page leaves the text of assets out"
+- [ ] 2.16 Add the test "A large asset is read in a stream", measured with the standard library's memory tracer
+- [ ] 2.17 Add the test "A binary asset is left out and named"
+- [ ] 2.18 Add the test "A changed meta file links the assets again"
+- [ ] 2.19 Add the test "An unchanged asset is not read again"
+- [ ] 2.20 Add the test "Both engines map in one repository"
+- [ ] 2.21 Add the test "A repository without assets maps as before"

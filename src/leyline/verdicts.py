@@ -27,13 +27,18 @@ from pathlib import Path
 from typing import Optional
 
 PROVEN, PARTIAL, CONTRADICTED, INCONCLUSIVE, PERSON = "proven", "partial", "contradicted", "inconclusive", "needs a person"
-VERDICTS = (PROVEN, PARTIAL, CONTRADICTED, INCONCLUSIVE, PERSON)
+# Given only when a mutation plan's results were passed to `check` (leyline.mutants): the scenario passes, but none of its
+# own tests failed a mutant of the code it reaches, so it would pass whatever the change did. It does not block unless a
+# project lists it, since a mutant that changes nothing (an equivalent one) looks the same.
+UNASSERTED = "unasserted"
+VERDICTS = (PROVEN, PARTIAL, CONTRADICTED, INCONCLUSIVE, PERSON, UNASSERTED)
 DEFAULT_BLOCKING = (PARTIAL, CONTRADICTED, INCONCLUSIVE)
 CONFIG = "leyline.toml"           # in the `openspec/` folder that holds the changes
 # The order the summary line counts them in, and the words it uses.
-ORDER = (PROVEN, PERSON, PARTIAL, CONTRADICTED, INCONCLUSIVE)
+ORDER = (PROVEN, PERSON, UNASSERTED, PARTIAL, CONTRADICTED, INCONCLUSIVE)
 SHORT = {PERSON: "needs you"}
-ALIASES = {"needs you": PERSON, "needs person": PERSON, "person": PERSON, "proved": PROVEN, "partly": PARTIAL}
+ALIASES = {"needs you": PERSON, "needs person": PERSON, "person": PERSON, "proved": PROVEN, "partly": PARTIAL,
+           "not asserted": UNASSERTED, "covered, but not asserted": UNASSERTED}
 
 
 # -- config ----------------------------------------------------------------------------------------
@@ -239,6 +244,8 @@ def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str
     if ran is False:
         return PERSON, ("its test passes, but measured per-test coverage shows it never ran the changed code, so it"
                         " would pass whatever the change did")
+    if s.get("asserted") is False:   # mutants of the changed code were run, and none failed its own tests (leyline.mutants)
+        return UNASSERTED, s.get("unasserted_why") or "its own tests failed none of the mutants of the changed code"
     # No result before: the test is new since the plan when the baseline does not hold it. One the baseline holds was
     # merely left out of the run before (a subset was passed), so it is judged by whether it reaches the change.
     new_test = s.get("test") is None or s.get("test_new", True)
@@ -308,7 +315,9 @@ def summary_line(counts: dict) -> str:
 def blocking_line(info: dict) -> str:
     """"Blocking: partial, contradicted, inconclusive. Not blocking: needs you (the default)."."""
     b = [SHORT.get(v, v) for v in ORDER if v in info["blocking"]]
-    free = [SHORT.get(v, v) for v in ORDER if v not in info["blocking"] and v != PROVEN]
+    # `unasserted` is named only when an item has it: without mutation results the line reads as it always has.
+    free = [SHORT.get(v, v) for v in ORDER if v not in info["blocking"] and v != PROVEN
+            and (v != UNASSERTED or (info.get("counts") or {}).get(UNASSERTED))]
     return (f"Blocking: {', '.join(b) or 'nothing'}." + (f" Not blocking: {', '.join(free)}." if free else "")
             + (f" (Set in {info['config']}.)" if info.get("config") else " (The default.)"))
 

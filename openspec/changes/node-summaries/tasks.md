@@ -1,0 +1,30 @@
+- [ ] 1.1 Add `summaries.declared_doc` in `src/leyline/summaries.py`, the reader of the comment above a declaration and of a Python docstring
+- [ ] 1.2 Remove `explain.leading_doc`
+- [ ] 1.3 Change `indexer._parse_file` to decode the file once with `indexer.text_lines` for every adapter and set `doc` in the attributes of each callable and type node from `summaries.declared_doc`
+- [ ] 1.4 Change the top level of `src/leyline/incremental.py` to add doc to the POSITIONS list of attributes, so `Run._shapes` leaves it out of the shape hash
+- [ ] 1.5 Add `summaries.for_nodes`, `summaries.first_sentence` and `summaries.annotation_text` in `src/leyline/summaries.py`: the summary of some node ids in one query (a `responsibility` annotation that is not stale, the intent layer before the inferred one, else the node's `doc`, cut to its first sentence or 200 characters), and the annotation text `find_flows` reads on each call
+- [ ] 1.6 Change `query.search` and `query.expand` to add `summary` to their rows after `query._brief`, with one `summaries.for_nodes` call per answer
+- [ ] 1.7 Change `cli._search_text` and `cli._expand_text` to print the summary after a row's name
+- [ ] 1.8 Change `context.build` and `cost` to add the summary of the focus and of each shown direct neighbour as a `--` line, looked up once for the focus and its direct neighbours only, within the budget
+- [ ] 1.9 Change the top level of `src/leyline/context.py` to add `SUMMARY_WIDTH`
+- [ ] 1.10 Add `outline._summarize_items`, which adds `summary` to the busiest functions, key types and key functions of an answer in one lookup
+- [ ] 1.11 Change `outline.outline` to call `outline._summarize_items` on its answer
+- [ ] 1.12 Change `outline._part_lines` and `outline.text` to print the summaries
+- [ ] 1.13 Change the top level of `src/leyline/outline.py` to add `SUMMARY_WIDTH`
+- [ ] 1.14 Change `explain.explain_path` to add `summary` to each step, cut to 120 characters
+- [ ] 1.15 Change `explain.walk_text` to print the summary after the step's name
+- [ ] 1.16 Add `Index.where` in `src/leyline/explain.py`, a node id's row in the index
+- [ ] 1.17 Change `explain.Index.__init__` to read `doc` from the node's attributes instead of the source
+- [ ] 1.18 Change `explain.find_flows` to read annotation text fresh on each call as a `note` field matched like the words of the code, and to multiply a candidate's score by 1.5 when it matches two or more distinct description words in strong fields, keeping the strong-field rule and the halving of tests and samples
+- [ ] 1.19 Change the top level of `src/leyline/explain.py` to add a note weight to the WEIGHT table, and the STRONG and STEP_SUMMARY constants
+- [ ] 1.20 Change `test_a_comment_above_and_a_docstring_below_are_read` to call `summaries.declared_doc`
+- [ ] 2.1 Add the test "The docstring of a function is on the map"
+- [ ] 2.2 Add the test "A comment edited above a function re-parses only its own file"
+- [ ] 2.3 Add the test "An annotation overrides the docstring in a summary"
+- [ ] 2.4 Add the test "Search and expand say what a function does"
+- [ ] 2.5 Add the test "The context outline says what the focus does"
+- [ ] 2.6 Add the test "The busiest functions of an outline carry their summary"
+- [ ] 2.7 Add the test "Each step of a walk says what it does"
+- [ ] 2.8 Add the test "A match on several words outranks a match on one word in a name"
+- [ ] 2.9 Add the test "An annotation written after the map is found at once"
+- [ ] 3.1 Document the summary and doc fields in README.md, docs/understanding.md and docs/mcp-tools.md

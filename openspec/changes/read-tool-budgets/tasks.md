@@ -1,0 +1,13 @@
+- [ ] 1.1 Change the top level of `src/leyline/server.py` to define `Budget`, the annotated type of a `budget_tokens` argument (600 to 6,000 tokens, four characters each), and the floors the answer is cut to
+- [ ] 1.2 Change `server._fit` to take the floors it cuts to, with a last floor of no items and 80 characters used only under a budget
+- [ ] 1.3 Change `server._tool` and `_tool.run` to take a `budgeted` flag and, for a budgeted tool given `budget_tokens`, cut the answer to the smaller of the budget times four and the tool's limit, with `more` naming `budget_tokens` beside the tool's own knob
+- [ ] 1.4 Change the signature of `server.overview`, `server.expand`, `server.impact`, `server.module_outline`, `server.explain_path`, `server.find_flows` and `server.neighbors` to take `budget_tokens`, and `server.explain_path` and `server.module_outline` to lower `max_steps` or depth to fit it
+- [ ] 1.5 Change `cli._main` to give the tour command a `--json` flag
+- [ ] 1.6 Change `cli._with_store` to print the whole tour as the tours module returns it when `--json` is given
+- [ ] 1.7 Change skills/leyline-explain-flow/SKILL.md to say `--json` works on find-flows, explain-path and diagram only
+- [ ] 1.8 Document `budget_tokens` in docs/mcp-tools.md
+- [ ] 1.9 Change `test_the_skill_names_the_tools_and_their_commands` to expect `budget_tokens` in the docs row of `find_flows`
+- [ ] 2.1 Add the test "A read tool answers within the budget it was given"
+- [ ] 2.2 Add the test "A budget below the default cuts lists and says so"
+- [ ] 2.3 Add the test "Context keeps its own budget"
+- [ ] 2.4 Add the test "Tour prints JSON when asked"

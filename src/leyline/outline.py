@@ -40,12 +40,16 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import cluster, store
+from . import cluster, store, summaries
 
 MAX_PARTS = 12
+SUMMARY_WIDTH = 120   # characters of what a busiest function, a key type or a key function is for
 MIN_CLUSTER_FILES = 8     # a folder with fewer loose files lists them as they are
 MIN_CLUSTER_FILES_BESIDE = 15   # the same, for loose files beside subfolders: fewer are one part, "files in x/"
 MIN_MODULARITY = 0.3      # as cluster.py: a weaker split is noise
+RESPLIT_SHARE = 0.4       # a group holding more than this share of its level's loose lines is split once more
+RESPLIT_FILES = 6         # ... when it has at least this many files
+RESPLIT_MODULARITY = 0.2  # a group a first split chose is a weaker split by nature: its pieces need less to count
 NEARLY_ALL = 0.9          # a folder holding this share of a part's files, with at most SMALL_REST others, is shown instead
 SMALL_REST = 5
 KEPT_FOR_FRESH = 0.5      # a named part that kept less than this share of its files may be stale
@@ -260,7 +264,8 @@ def _group_label(m, fs: list, own: set, anchor: str) -> str:
     ranked = sorted(fs, key=lambda f: (f != first, -weight(f), f))
     base = lambda f: m.files.get(f, {}).get("path", f).rsplit("/", 1)[-1]
     names = list(dict.fromkeys(base(f) for f in ranked))
-    return " + ".join(names[:3]) + " group"
+    more = len(names) - 3
+    return " + ".join(names[:3]) + (f" + {more} more" if more > 0 else "") + " group"
 
 
 def _dir_id(repo: str, path: str) -> str:
@@ -477,6 +482,10 @@ def _groups(m: Model, part: Part, base: str, loose: list) -> list:
             sid = f"{folder}#system:{nm}" + (f"~{used[nm]}" if used[nm] > 1 else "")
         out.append(Part(sid, "system", label, fs, base, mod, part.repo, folder,
                         around=[m.name.get(v) or m.files.get(v, {}).get("path", v).rsplit("/", 1)[-1] for v in around]))
+    whole = m.lines(loose)
+    out = [q for p in out for q in (_resplit(m, p, folder, used)
+                                    if p.kind == "system" and len(p.files) >= RESPLIT_FILES
+                                    and m.lines(p.files) > RESPLIT_SHARE * whole else [p])]
     if len(left) == 1:
         out.append(file_part(m, left[0], folder))
     elif left:
@@ -485,9 +494,56 @@ def _groups(m: Model, part: Part, base: str, loose: list) -> list:
     return out
 
 
-def _louvain(nx, m: Model, U: set, ctx: set) -> list:
+def _resplit(m: Model, g: Part, folder: str, used: Counter) -> list:
+    """A group holding most of its level, split once more: its communities by the two steps `_groups` takes (its own
+    units, then its units with the code they use in the graph), each a part of the level; the files no community took
+    stay together under the group's own id and label, so a name given to the group stays with them. The group itself
+    when it gives fewer than two pieces. One round: a piece still large is left as it is."""
+    try:
+        import networkx as nx
+    except ImportError:
+        return [g]
+    U = {u for f in g.files for u in m.units_of_file.get(f, ())}
+    found = _louvain(nx, m, U, set(), RESPLIT_MODULARITY)
+    if len(found) < 2:
+        ctx = {v for u in U for v in m.uadj.get(u, ()) if v not in U}
+        found = _louvain(nx, m, U, ctx, RESPLIT_MODULARITY)
+    if len(found) < 2:
+        return [g]
+    votes: dict = defaultdict(Counter)
+    for k, x in enumerate(found):
+        for u in x[0]:
+            votes[m.file_of.get(u) or u][k] += 1
+    by_piece: dict = defaultdict(list)
+    left = []
+    for f in g.files:
+        if votes.get(f):
+            by_piece[sorted(votes[f].items(), key=lambda kv: (-kv[1], -len(found[kv[0]][0]), kv[0]))[0][0]].append(f)
+        else:
+            left.append(f)
+    if len(by_piece) < 2:
+        return [g]
+    out = []
+    for k, fs in sorted(by_piece.items()):
+        units, _sid, around = found[k]
+        if len(fs) == 1:
+            out.append(file_part(m, fs[0], folder))
+            continue
+        own = {u for f in fs for u in m.units_of_file.get(f, ())} & units
+        anchor = sorted(own or units, key=lambda u: (-sum(w for v, w in m.uadj.get(u, {}).items() if v in own), u))[0]
+        nm = m.name.get(anchor) or m.files.get(anchor, {}).get("path", anchor).rsplit("/", 1)[-1]
+        used[nm] += 1
+        sid = f"{folder}#system:{nm}" + (f"~{used[nm]}" if used[nm] > 1 else "")
+        out.append(Part(sid, "system", _group_label(m, fs, own, anchor), fs, g.path, g.module, g.repo, folder,
+                        around=[m.name.get(v) or m.files.get(v, {}).get("path", v).rsplit("/", 1)[-1] for v in around]))
+    if left:
+        out.append(Part(g.id, g.kind, g.label, sorted(left), g.path, g.module, g.repo, g.parent, around=g.around))
+    return out
+
+
+def _louvain(nx, m: Model, U: set, ctx: set, floor: float = MIN_MODULARITY) -> list:
     """Louvain communities of U (with ctx in the graph but not in the result) holding two or more units of U, as
-    [(units of U, None, the ctx units it is most linked to)]. [] when the split is weak."""
+    [(units of U, None, the ctx units it is most linked to)]. [] when the split is weaker than `floor`."""
     nodes = U | ctx
     g = nx.Graph()
     g.add_nodes_from(sorted(nodes))
@@ -498,7 +554,7 @@ def _louvain(nx, m: Model, U: set, ctx: set) -> list:
     if not g.number_of_edges():
         return []
     comms = nx.community.louvain_communities(g, weight="weight", seed=7)
-    if nx.community.modularity(g, comms, weight="weight") < MIN_MODULARITY:
+    if nx.community.modularity(g, comms, weight="weight") < floor:
         return []
     out = []
     for c in sorted((c for c in comms if len(c & U) >= 2), key=lambda c: (-len(c & U), sorted(c & U)[0])):
@@ -594,19 +650,23 @@ def names(con, parts: list) -> dict:
         return {}
     out = {}
     ids = {p.id for p in parts}
+    # An old group whose id is gone (its anchor changed, or `_resplit` split it) gives its name to the group here that
+    # shares most of its files, which `_stale` then marks when less than half of them were kept. A group with a name
+    # under its own id keeps that one.
+    heir: dict = {}
+    for x in sorted((x for x in rows.values() if x["kind"] == "system" and x["id"] not in ids and x["members"]),
+                    key=lambda x: x["id"]):
+        had = set(x["members"])
+        near = [(len(had & set(p.files)), p) for p in parts
+                if p.kind == "system" and p.id not in rows and p.id not in heir]
+        near = [(n, p) for n, p in near if n and 4 * n >= len(had)]
+        if near:
+            _n, best = max(near, key=lambda t: (t[0], t[1].id))
+            heir[best.id] = x
     for p in parts:
         r = rows.get(p.id)
-        if r is None and p.kind == "system":
-            # Its anchor (and so its id) changed: the name of the old group of this folder it shares most files with.
-            best, score = None, 0.0
-            for x in rows.values():
-                if x["kind"] == "system" and x["parent"] == p.parent and x["id"] not in ids and x["members"]:
-                    a, b = set(x["members"]), set(p.files)
-                    j = len(a & b) / len(a | b)
-                    if j > score:
-                        best, score = x, j
-            if best is not None and score >= KEPT_FOR_FRESH:
-                r = {**best, "from": best["id"]}
+        if r is None and p.id in heir:
+            r = {**heir[p.id], "from": heir[p.id]["id"]}
         if r is None:
             continue
         item = {"name": r["name"], "summary": r["summary"]}
@@ -668,7 +728,8 @@ def name_part(con, part_id: str, name: str, summary: str = "", evidence: Optiona
         if summary:
             store.annotate(con, p.id, "responsibility", summary, layer, source, None, evidence)
     return {"part_id": p.id, "name": name, "summary": summary, "layer": layer, "files": len(p.files),
-            "next": "Name the other parts the same way; module_outline shows the names, and the map page after `map`."}
+            "next": "Name the other parts the same way; module_outline shows the names now, and the map page and the"
+                    " orientation tour (`tour`) show them after the next `map`."}
 
 
 def labels(con, node_ids: list) -> dict:
@@ -921,6 +982,7 @@ def outline(con, part_id: Optional[str] = None, depth: int = 2) -> dict:
     head["size"] = {"files": len(p.files), "functions": fns, "lines": m.lines(p.files)}
     if not kids:
         out = {**head, **{k: v for k, v in _leaf(con, m, p, given).items() if k not in head}}
+        _summarize_items(con, out)
         out["next"] = ("Read the key code (`source` with an id from key) before saying what it does; name this part"
                        f" with name_part(\"{p.id}\", name, summary, evidence).")
         return out
@@ -944,9 +1006,27 @@ def outline(con, part_id: Optional[str] = None, depth: int = 2) -> dict:
     if note:
         out["note"] = note
     out["parts"] = parts
+    _summarize_items(con, out)
     out["next"] = ("Drill into a part with module_outline(\"<part id>\") (CLI: leyline outline <part id>). Read a part's"
                    " key code (`source`, `context`), then name it with name_part(part_id, name, summary, evidence).")
     return out
+
+
+def _summarize_items(con, out: dict) -> None:
+    """What each busiest function, key type and key function is for (`summaries`), in one lookup for the whole answer."""
+    rows, todo = [], [out]
+    while todo:
+        x = todo.pop()
+        if isinstance(x, dict):
+            for k in ("busiest", "key_types", "key"):
+                rows += [i for i in x.get(k) or () if isinstance(i, dict) and "id" in i]
+            todo.extend(v for v in x.values() if isinstance(v, (dict, list)))
+        elif isinstance(x, list):
+            todo.extend(x)
+    said = summaries.for_nodes(con, [r["id"] for r in rows], width=SUMMARY_WIDTH)
+    for r in rows:
+        if r["id"] in said:
+            r["summary"] = said[r["id"]]
 
 
 # -- text for the command line ----------------------------------------------------------------------------------------
@@ -993,8 +1073,10 @@ def _part_lines(p: dict, n: Optional[int], pad: str = "   ") -> list:
         L.append(f"{pad}and {len(chans) - 3} more channel{'s' if len(chans) > 4 else ''} (--json lists them)")
     if p.get("busiest"):
         L.append(f"{pad}busiest: " + ", ".join(f"{b['name']} ({_n(b['flows'], 'flow')})" for b in p["busiest"][:3]))
+        L += [f"{pad}  {b['name']}: {b['summary']}" for b in p["busiest"][:3] if b.get("summary")]
     if p.get("key_types"):
         L.append(f"{pad}key types: " + ", ".join(t["name"] for t in p["key_types"]))
+        L += [f"{pad}  {t['name']}: {t['summary']}" for t in p["key_types"] if t.get("summary")]
     if p.get("risky"):
         L.append(f"{pad}risky: " + "; ".join(p["risky"]))
     if p.get("holds"):
@@ -1033,6 +1115,8 @@ def text(r: dict) -> str:
             for x in r["key"]:
                 L.append(f"  {x['name']}  {_n(x['flows'], 'flow')}, {_n(x['lines'], 'line')}" + (f", {x['entry']}" if x.get("entry") else "")
                          + ("" if x.get("tested") else ", on no test's path") + f"  [{x['id']}]")
+                if x.get("summary"):
+                    L.append(f"      {x['summary']}")
     name = f"`leyline name-part {r['id'] if 'key' in r else '<part id>'} \"<name>\" --summary \"<one line>\" --evidence <node ids>`"
     if "key" in r:
         L += ["", f"Read the key code (`leyline source <id>`) before saying what it does; then name this part: {name}."]

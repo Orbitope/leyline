@@ -15,16 +15,20 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | `overview`, `search`, `expand`, `source` | `leyline overview`, `leyline search <text>`, `leyline show <name or id>` (`expand --json` for every field), `leyline source <name or id>` |
 | `neighbors` | `leyline neighbors <name or id> --direction in --kinds calls` |
 | `impact` | `leyline impact <name or id>` |
-| `context` | `leyline context <name, path or id> --tokens 2000` |
+| `context` | `leyline context <name, path or id> --tokens 2000` (`--bodies` adds the code: the focus's body, the types it takes and the lines around each call to it) |
 | `module_outline` | `leyline outline [module]` |
+| `tours`, `tour` | `leyline tour` (the orientation tour: what this is and where to start reading) |
 | `trace`, `flows`, `flow` | none; use the server |
 
-If neither is there, say so and stop. If a tool says nothing is mapped, call `map` first.
+If neither is there, say so and stop. If a tool says nothing is mapped, call `map` first. `map` takes the absolute path
+of the repository you work in, which may not be the directory the server was started in (a git worktree, say): the server
+then reads that checkout's store from the map on.
 
 ## Route the question
 
 | The question | Do this |
 | --- | --- |
+| What is this codebase? How is it organized? | `overview`, then the orientation tour (`tour`), then the leyline-explore-module skill on the largest module (it names its parts, and the tour then says what each is for) |
 | How does X work? What happens when Y? | the leyline-explain-flow skill |
 | What is in this part? Where do I start? | the leyline-explore-module skill |
 | What would changing X affect? | the leyline-change-impact skill (`impact` alone for a quick answer) |
@@ -36,7 +40,8 @@ If neither is there, say so and stop. If a tool says nothing is mapped, call `ma
    A name that is one thing on the map (`Owner.method`, a file path) works in place of an id in every tool; one
    that could be several things is an error listing them. If two things fit, say which you picked and why, or ask.
 2. **Use the narrowest tool.** Who calls it: `neighbors` (direction in, kinds calls). Everything that can reach
-   it: `impact`. What it calls and the fields it touches: `expand`. The code around it: `context`. How one
+   it: `impact`. What it calls, the fields it touches, and which tests reach it: `expand` (`tests_reaching`;
+   `tests_measured` when coverage was imported). The code around it: `context`. How one
    function reaches another: `trace`.
 3. **Read before you claim.** Call `source` on each thing you will say something about. The map says that A
    calls B, not why or under what condition.

@@ -1,0 +1,3 @@
+- [ ] 1.1 Add `incremental._fingerprint`: 8 bytes of an object, by blake2b when `hashlib` has it at the time of the call, else the first 8 bytes of sha256
+- [ ] 1.2 Change `Run._groups` to hash with `incremental._fingerprint`
+- [ ] 2.1 Add the test "A Python without blake2b still maps"

@@ -48,7 +48,8 @@ _TABLE = ("CREATE TABLE IF NOT EXISTS coupling_functions (repo_id TEXT, path TEX
 
 def _adapter(path: str):
     from .adapters import BY_EXTENSION
-    return BY_EXTENSION.get("." + path.rsplit(".", 1)[-1] if "." in path else "")
+    adapter = BY_EXTENSION.get("." + path.rsplit(".", 1)[-1] if "." in path else "")
+    return None if getattr(adapter, "ASSET", False) else adapter   # an engine asset has no functions to couple
 
 
 def _range_commits(root: Path, sha: str, path: str, start: int, end: int, n: int) -> list[str]:

@@ -1,0 +1,2748 @@
+{
+  "about": "Written by Leyline (`leyline check`, `leyline drift --accept`): what each code name in these specs meant when it was last known to be right. `leyline drift` compares the code with it. Commit it with the specs.",
+  "anchors": {
+    "asset-edges": {
+      "anchors": [
+        {
+          "body_hash": "3867623e275eed27",
+          "decl": "def __init__(self, root: str | Path, repo_id: Optional[str] = None, others: Optional[list[tuple[str | Path, str]]] = None)",
+          "decl_hash": "918ffb672475d0dd",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer.__init__",
+          "name": "__init__",
+          "node": "python:src.leyline.indexer.Indexer.__init__",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "1c1f99f300d5f7e5",
+          "written": "Indexer.__init__"
+        },
+        {
+          "body_hash": "fc5f0d2d6cadd82e",
+          "decl": "def _asset_scripts(self, repo: str, fid: str, listed: set, guids: dict, godots: list) -> list[str]",
+          "decl_hash": "ea891868ba9eba1b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._asset_scripts",
+          "name": "_asset_scripts",
+          "node": "python:src.leyline.indexer.Indexer._asset_scripts",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "f35b54982e7e5cc2",
+          "written": "Indexer._asset_scripts"
+        },
+        {
+          "body_hash": "a06a27d43e74b1b1",
+          "decl": "def _asset_target(self, repo: str, fid: str, ref, listed: set, guids: dict, godots: list)",
+          "decl_hash": "cc3d6a3ede428ff5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._asset_target",
+          "name": "_asset_target",
+          "node": "python:src.leyline.indexer.Indexer._asset_target",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "29c705cfc60ac913",
+          "written": "Indexer._asset_target"
+        },
+        {
+          "body_hash": "54ca9b49c2d80871",
+          "decl": "def _link_asset(self, repo: str, fid: str, listed: set, guids: dict, godots: list) -> None",
+          "decl_hash": "5bbb57171cca4893",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._link_asset",
+          "name": "_link_asset",
+          "node": "python:src.leyline.indexer.Indexer._link_asset",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "85f8c515db454b51",
+          "written": "Indexer._link_asset"
+        },
+        {
+          "body_hash": "47d6a1b235976da6",
+          "decl": "def _parse_repo(self, repo: str, root: Path, files: list[str]) -> None",
+          "decl_hash": "42dcdf07c2821c65",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._parse_repo",
+          "name": "_parse_repo",
+          "node": "python:src.leyline.indexer.Indexer._parse_repo",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "f7a8c05cb227d19c",
+          "written": "Indexer._parse_repo"
+        },
+        {
+          "body_hash": "03174cb418cc5fa8",
+          "decl": "def _resolve_assets(self) -> None",
+          "decl_hash": "f5862bbf1ebd1df9",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._resolve_assets",
+          "name": "_resolve_assets",
+          "node": "python:src.leyline.indexer.Indexer._resolve_assets",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "4ca3e85010de7a38",
+          "written": "Indexer._resolve_assets"
+        },
+        {
+          "body_hash": "07ba9d1c59ea874e",
+          "decl": "def _script_methods(self, tid: str, name: str) -> list[Node]",
+          "decl_hash": "1a8b2e53ad8f4aca",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._script_methods",
+          "name": "_script_methods",
+          "node": "python:src.leyline.indexer.Indexer._script_methods",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "89e05c7896d9627d",
+          "written": "Indexer._script_methods"
+        },
+        {
+          "body_hash": "152025845165335a",
+          "decl": "def _unity_guids(self, repo: str, files: list[str]) -> tuple[dict, dict]",
+          "decl_hash": "cfdb6e1ec5396c9e",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._unity_guids",
+          "name": "_unity_guids",
+          "node": "python:src.leyline.indexer.Indexer._unity_guids",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "8e9263300306cf51",
+          "written": "Indexer._unity_guids"
+        },
+        {
+          "body_hash": "0986af68a9559d64",
+          "decl": "def _write_coverage(self, con, flows: int, steps: int) -> None",
+          "decl_hash": "71223ded826deea5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer._write_coverage",
+          "name": "_write_coverage",
+          "node": "python:src.leyline.indexer.Indexer._write_coverage",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "9f93777afcba18ab",
+          "written": "Indexer._write_coverage"
+        },
+        {
+          "body_hash": "310ac3592d77c374",
+          "decl": "dict[str, dict]",
+          "decl_hash": "27f1e3e2e6e7050f",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "Indexer.asset_notes",
+          "name": "asset_notes",
+          "node": "python:src.leyline.indexer.Indexer.asset_notes",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "51c0c114f6b68d8d",
+          "written": "Indexer.asset_notes"
+        },
+        {
+          "body_hash": "d6437ece21fa313d",
+          "decl": "dict[str, dict]",
+          "decl_hash": "27f1e3e2e6e7050f",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "Indexer.meta_digests",
+          "name": "meta_digests",
+          "node": "python:src.leyline.indexer.Indexer.meta_digests",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "01375f1e5e85a3b7",
+          "written": "Indexer.meta_digests"
+        },
+        {
+          "body_hash": "fa742499b69d134a",
+          "decl": "def run(self, con) -> dict",
+          "decl_hash": "f439b578ca8d550b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Indexer.run",
+          "name": "run",
+          "node": "python:src.leyline.indexer.Indexer.run",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "f260c55dc23a5038",
+          "written": "Indexer.run"
+        },
+        {
+          "body_hash": "2dfbb2c52ac258a4",
+          "decl": "def __init__(self, con, db_path, ix, full: bool = False)",
+          "decl_hash": "9443f9ca9a73a5d5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Run.__init__",
+          "name": "__init__",
+          "node": "python:src.leyline.incremental.Run.__init__",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "24197103688d3977",
+          "written": "Run.__init__"
+        },
+        {
+          "body_hash": "c7005eafdea48947",
+          "decl": "def keep(self, file_id: str, got: tuple, fresh: bool, keep_ext: bool = False) -> None",
+          "decl_hash": "aa3f37283997ef4f",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Run.keep",
+          "name": "keep",
+          "node": "python:src.leyline.incremental.Run.keep",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "95dfc22253ab1d35",
+          "written": "Run.keep"
+        },
+        {
+          "body_hash": "29a8a9eb53417e09",
+          "decl": "key",
+          "decl_hash": "a62f2225bf70bfac",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "Run.key",
+          "name": "key",
+          "node": "python:src.leyline.incremental.Run.key",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "71de8b44488671f3",
+          "written": "Run.key"
+        },
+        {
+          "body_hash": "fb16ec9c9244daf9",
+          "decl": "def lookup(self, repo: str, root: Path, work: list, keep_ext: frozenset = frozenset()) -> dict",
+          "decl_hash": "9d9d1b990272eab4",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Run.lookup",
+          "name": "lookup",
+          "node": "python:src.leyline.incremental.Run.lookup",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "7a78455d83a8edc2",
+          "written": "Run.lookup"
+        },
+        {
+          "body_hash": "468386febf018105",
+          "decl": "def _open(self, path: Path) -> None",
+          "decl_hash": "dc1da86fa7775fae",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_Cache._open",
+          "name": "_open",
+          "node": "python:src.leyline.incremental._Cache._open",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "3db82a52fd4937c7",
+          "written": "_Cache._open"
+        },
+        {
+          "body_hash": "eb8fe3dffce6a0aa",
+          "decl": "def graph(con, with_sources: bool = True, memory: Optional[Path] = None, found: Optional[list] = None) -> dict",
+          "decl_hash": "fc9e1ca9141622f8",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "graph",
+          "name": "graph",
+          "node": "python:src.leyline.export.graph",
+          "path": "src/leyline/export.py",
+          "shape_hash": "3effa3c2a7d6f93a",
+          "written": "export.graph"
+        },
+        {
+          "body_hash": "1f590d99be63f191",
+          "decl": "def _adapter(path: str)",
+          "decl_hash": "8f1372a10e54a1fb",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_adapter",
+          "name": "_adapter",
+          "node": "python:src.leyline.fncoupling._adapter",
+          "path": "src/leyline/fncoupling.py",
+          "shape_hash": "5859038d3c157744",
+          "written": "fncoupling._adapter"
+        },
+        {
+          "body_hash": "fd73cb227d8df8fa",
+          "decl": "def _parse_file(job)",
+          "decl_hash": "443865e7a304b8ba",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_parse_file",
+          "name": "_parse_file",
+          "node": "python:src.leyline.indexer._parse_file",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "5a43294d74756e3e",
+          "written": "indexer._parse_file"
+        },
+        {
+          "body_hash": "8b87d4af9442973a",
+          "decl": "def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, listed: set) -> Optional[str]",
+          "decl_hash": "6a851b2d77c432e4",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_unusable",
+          "name": "_unusable",
+          "node": "python:src.leyline.indexer._unusable",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "07436e33f325700b",
+          "written": "indexer._unusable"
+        },
+        {
+          "body_hash": "abab6a8197688af1",
+          "decl": "def max_asset_bytes() -> int",
+          "decl_hash": "07250741645af5ba",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "max_asset_bytes",
+          "name": "max_asset_bytes",
+          "node": "python:src.leyline.indexer.max_asset_bytes",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "e4ed06d14c4fe95d",
+          "written": "indexer.max_asset_bytes"
+        },
+        {
+          "body_hash": "79375457514272be",
+          "decl": "def _changes(db: str | Path) -> tuple[list[str], dict]",
+          "decl_hash": "77b2d0f9a1196e7a",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_changes",
+          "name": "_changes",
+          "node": "python:src.leyline.loop._changes",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "84081fc738fd11c4",
+          "written": "loop._changes"
+        },
+        {
+          "body_hash": "3327902a43228721",
+          "decl": "def map_text(m: dict) -> str",
+          "decl_hash": "f91436604444f540",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "map_text",
+          "name": "map_text",
+          "node": "python:src.leyline.loop.map_text",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "c0c28c74562de4d6",
+          "written": "loop.map_text"
+        },
+        {
+          "body_hash": "d2d8095d62e01d98",
+          "decl": "list[AssetRef]",
+          "decl_hash": "f1c417d268249320",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "FileResult.assets",
+          "name": "assets",
+          "node": "python:src.leyline.model.FileResult.assets",
+          "path": "src/leyline/model.py",
+          "shape_hash": "a9bf40aa809cb24a",
+          "written": "model.FileResult.assets"
+        },
+        {
+          "body_hash": "29db704cdf4e0baa",
+          "decl": "def _adjacency(con, reverse: bool = False) -> dict",
+          "decl_hash": "2079bf8b0eb6e7cc",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_adjacency",
+          "name": "_adjacency",
+          "node": "python:src.leyline.query._adjacency",
+          "path": "src/leyline/query.py",
+          "shape_hash": "6c6b50c7124d6a13",
+          "written": "query._adjacency"
+        },
+        {
+          "body_hash": "a5e5e10c75329f2c8c2948eb8f8e488c9c362032",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/adapters/__init__.py",
+          "name": "__init__.py",
+          "node": "file:src/leyline/adapters/__init__.py",
+          "path": "src/leyline/adapters/__init__.py",
+          "written": "src/leyline/adapters/__init__.py"
+        },
+        {
+          "body_hash": "7259585115ee7126b387f1f5d175086f6c03875b",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/adapters/godot.py",
+          "name": "godot.py",
+          "node": "file:src/leyline/adapters/godot.py",
+          "path": "src/leyline/adapters/godot.py",
+          "written": "src/leyline/adapters/godot.py"
+        },
+        {
+          "body_hash": "63c5c2d502a5b11f4db9dd9acc446b8dc5651fcd",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/adapters/unity.py",
+          "name": "unity.py",
+          "node": "file:src/leyline/adapters/unity.py",
+          "path": "src/leyline/adapters/unity.py",
+          "written": "src/leyline/adapters/unity.py"
+        },
+        {
+          "body_hash": "67d53fcac75494dd74cbfc09dec0dccb305affc4",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/incremental.py",
+          "name": "incremental.py",
+          "node": "file:src/leyline/incremental.py",
+          "path": "src/leyline/incremental.py",
+          "written": "src/leyline/incremental.py"
+        },
+        {
+          "body_hash": "8af501bce8555a69",
+          "decl": "def _stat_key(path: Path, settled: bool = True) -> Optional[str]",
+          "decl_hash": "61534f98d138d396",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_stat_key",
+          "name": "_stat_key",
+          "node": "python:src.leyline.incremental._stat_key",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "26e72ee15c09a3d2",
+          "written": "src/leyline/incremental.py: _stat_key"
+        },
+        {
+          "body_hash": "3e88fcb816b8914e575086bbec2be73daf7f283e",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/indexer.py",
+          "name": "indexer.py",
+          "node": "file:src/leyline/indexer.py",
+          "path": "src/leyline/indexer.py",
+          "written": "src/leyline/indexer.py"
+        },
+        {
+          "body_hash": "f04606e8ccc50a65",
+          "decl": "def _asset_module(path: str, code_dirs: set[str]) -> str",
+          "decl_hash": "5232eb2f7e1b40bf",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_asset_module",
+          "name": "_asset_module",
+          "node": "python:src.leyline.indexer._asset_module",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "60b13527d0ef3f0d",
+          "written": "src/leyline/indexer.py: _asset_module"
+        },
+        {
+          "body_hash": "bb4f86b09168e34c",
+          "decl": "def read_meta(path: Path) -> Optional[tuple]",
+          "decl_hash": "8519b65183c0eafa",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "read_meta",
+          "name": "read_meta",
+          "node": "python:src.leyline.indexer.read_meta",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "e60433418054d909",
+          "written": "src/leyline/indexer.py: read_meta"
+        },
+        {
+          "body_hash": "21656adc972f4ff0",
+          "decl": "class AssetRef",
+          "decl_hash": "8deda2743b47a16c",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "type",
+          "label": "AssetRef",
+          "members": [
+            "builtin",
+            "line",
+            "owner",
+            "target",
+            "what"
+          ],
+          "name": "AssetRef",
+          "node": "python:src.leyline.model.AssetRef",
+          "path": "src/leyline/model.py",
+          "shape_hash": "e0a74b157cc75229",
+          "written": "src/leyline/model.py: AssetRef"
+        },
+        {
+          "body_hash": "5cc9a791a42d41a7",
+          "decl": "def _assets_run(con, adj: dict) -> None",
+          "decl_hash": "67a01fef414fbda6",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_assets_run",
+          "name": "_assets_run",
+          "node": "python:src.leyline.query._assets_run",
+          "path": "src/leyline/query.py",
+          "shape_hash": "90b2389efaade4c0",
+          "written": "src/leyline/query.py: _assets_run"
+        }
+      ],
+      "recorded": "2026-10-15"
+    },
+    "context-bodies": {
+      "anchors": [
+        {
+          "body_hash": "314bf3bb10ede4df",
+          "decl": "list[int]",
+          "decl_hash": "e4c2cba06eac44fb",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "Graph.end",
+          "name": "end",
+          "node": "python:src.leyline.context.Graph.end",
+          "path": "src/leyline/context.py",
+          "shape_hash": "8a4297339c85bf98",
+          "written": "Graph.end"
+        },
+        {
+          "body_hash": "9298a1e334bcc3fa",
+          "decl": "list[Optional[str]]",
+          "decl_hash": "09ebb8c3275bcfe3",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "Graph.hash",
+          "name": "hash",
+          "node": "python:src.leyline.context.Graph.hash",
+          "path": "src/leyline/context.py",
+          "shape_hash": "8cc93989aa438c67",
+          "written": "Graph.hash"
+        },
+        {
+          "body_hash": "b55ec206ce795e59",
+          "decl": "dict",
+          "decl_hash": "76e94348139b788d",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "_Sources.refused",
+          "name": "refused",
+          "node": "python:src.leyline.context._Sources.refused",
+          "path": "src/leyline/context.py",
+          "shape_hash": "6c181f60dfcf75af",
+          "written": "_Sources.refused"
+        },
+        {
+          "body_hash": "ae1c46c9c4be5245",
+          "decl": "def _main(argv=None) -> int",
+          "decl_hash": "6cb85531bf8f3a40",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_main",
+          "name": "_main",
+          "node": "python:src.leyline.cli._main",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "30befafd91f292e8",
+          "written": "cli._main"
+        },
+        {
+          "body_hash": "cdd8214cbab1df70",
+          "decl": "def _with_store(args, con) -> int",
+          "decl_hash": "e2ecb01e181e56f0",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_with_store",
+          "name": "_with_store",
+          "node": "python:src.leyline.cli._with_store",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "7f14d25d2f8db992",
+          "written": "cli._with_store"
+        },
+        {
+          "body_hash": "e420b8cfff86f9ef",
+          "decl": "def __init__(self, con)",
+          "decl_hash": "b5410d3e49b85eca",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Graph.__init__",
+          "name": "__init__",
+          "node": "python:src.leyline.context.Graph.__init__",
+          "path": "src/leyline/context.py",
+          "shape_hash": "e0f4c76b4baede37",
+          "written": "context.Graph.__init__"
+        },
+        {
+          "body_hash": "3e43ff93f46342e6",
+          "decl": "def line(self, node_id: str, path: str, line: int) -> Optional[str]",
+          "decl_hash": "36a89a4f4075c333",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_Sources.line",
+          "name": "line",
+          "node": "python:src.leyline.context._Sources.line",
+          "path": "src/leyline/context.py",
+          "shape_hash": "2653ce8bb606635b",
+          "written": "context._Sources.line"
+        },
+        {
+          "body_hash": "8379b3a3c1f05ff7",
+          "decl": "def build(con, focus: list[str] | str, budget_tokens: int = 2000, bodies: bool = False) -> dict",
+          "decl_hash": "79dfa064320dff50",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "build",
+          "name": "build",
+          "node": "python:src.leyline.context.build",
+          "path": "src/leyline/context.py",
+          "shape_hash": "e0d1d3c0600ccecf",
+          "written": "context.build"
+        },
+        {
+          "body_hash": "5f58e765120dc38c",
+          "decl": "def context(focus: Annotated[list[str], Field(min_length=1, description=\"What you are working on: node ids, names\" \" (`Owner.method`), file paths, a change id\" \" (spec-<id>, pr-<id>) or words to search for.\")], budget_tokens: Annotated[int, Field(ge=200, le=8000, description=\"How long the outline may be, in tokens\" \" (characters / 4).\")] = 2000, bodies: Annotated[bool, Field(description=\"Also give the code: the whole body of the focus function (at most\" \" three), the lines around the call in each function that calls\" \" it, and the declaration and fields of the types it takes or\" \" returns. The outline then takes a third of the budget, which is\" \" at least 600 tokens.\")] = False) -> dict",
+          "decl_hash": "95850596611bb7c5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "context",
+          "name": "context",
+          "node": "python:src.leyline.server.context",
+          "path": "src/leyline/server.py",
+          "shape_hash": "4d654729c850388e",
+          "written": "server.context"
+        },
+        {
+          "body_hash": "ea00c4503afd34504f90c6f95eb1713ee567cf36",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/context.py",
+          "name": "context.py",
+          "node": "file:src/leyline/context.py",
+          "path": "src/leyline/context.py",
+          "written": "src/leyline/context.py"
+        },
+        {
+          "body_hash": "57ab07149202443f",
+          "decl": "def _bodies(con, g: Graph, sources: \"_Sources\", fset: set, seeds: dict, weight, room: int) -> tuple[list[str], list[dict], int]",
+          "decl_hash": "bd223193cae5e3b2",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_bodies",
+          "name": "_bodies",
+          "node": "python:src.leyline.context._bodies",
+          "path": "src/leyline/context.py",
+          "shape_hash": "c538e70416a3a91f",
+          "written": "src/leyline/context.py: _bodies"
+        },
+        {
+          "body_hash": "f2dd80eb3eade0ea",
+          "decl": "def _body(g: Graph, u: int, sources: \"_Sources\", around: Optional[int] = None, limit: int = BODY_LINES) -> dict",
+          "decl_hash": "f8cb04cc85da61d6",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_body",
+          "name": "_body",
+          "node": "python:src.leyline.context._body",
+          "path": "src/leyline/context.py",
+          "shape_hash": "12645f53c35ba243",
+          "written": "src/leyline/context.py: _body"
+        },
+        {
+          "body_hash": "ba92780e638512d5",
+          "decl": "def _callers_of(con, g: Graph, funcs: list[int], weight) -> list[dict]",
+          "decl_hash": "27e3f93be50e8842",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_callers_of",
+          "name": "_callers_of",
+          "node": "python:src.leyline.context._callers_of",
+          "path": "src/leyline/context.py",
+          "shape_hash": "80c414f388887617",
+          "written": "src/leyline/context.py: _callers_of"
+        },
+        {
+          "body_hash": "77820089feae80cc",
+          "decl": "def _focus_types(con, g: Graph, funcs: list[int], own: list[int]) -> list[int]",
+          "decl_hash": "ea70f2904828cda9",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_focus_types",
+          "name": "_focus_types",
+          "node": "python:src.leyline.context._focus_types",
+          "path": "src/leyline/context.py",
+          "shape_hash": "a6317b839b2dbd30",
+          "written": "src/leyline/context.py: _focus_types"
+        },
+        {
+          "body_hash": "4cd92dcbc517d446",
+          "decl": "def _type_lines(con, g: Graph, u: int, sources: \"_Sources\") -> list[str]",
+          "decl_hash": "9478e14b0004be79",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_type_lines",
+          "name": "_type_lines",
+          "node": "python:src.leyline.context._type_lines",
+          "path": "src/leyline/context.py",
+          "shape_hash": "3f12c07987069537",
+          "written": "src/leyline/context.py: _type_lines"
+        }
+      ],
+      "recorded": "2026-10-14"
+    },
+    "hash-fallback": {
+      "anchors": [
+        {
+          "body_hash": "7c1a23265fb31fea",
+          "decl": "def _groups(self, ancestry: bool = True) -> tuple[dict, dict, dict]",
+          "decl_hash": "6083518415102a9c",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Run._groups",
+          "name": "_groups",
+          "node": "python:src.leyline.incremental.Run._groups",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "797fadb6a8ddb04a",
+          "written": "Run._groups"
+        },
+        {
+          "body_hash": "dc01633ad1dc07fd",
+          "decl": "def _fingerprint(obj) -> bytes",
+          "decl_hash": "fa8dc0ec94279595",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_fingerprint",
+          "name": "_fingerprint",
+          "node": "python:src.leyline.incremental._fingerprint",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "1a39d4ff8a194253",
+          "written": "incremental._fingerprint"
+        }
+      ],
+      "recorded": "2026-10-13"
+    },
+    "node-summaries": {
+      "anchors": [
+        {
+          "body_hash": "9ffb26ee4d685ed0",
+          "decl": "where",
+          "decl_hash": "46148cc3b4d2b3ac",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "field",
+          "label": "Index.where",
+          "name": "where",
+          "node": "python:src.leyline.explain.Index.where",
+          "path": "src/leyline/explain.py",
+          "shape_hash": "8d5ac6e4fbc8d25c",
+          "written": "Index.where"
+        },
+        {
+          "body_hash": "42caada375076002",
+          "decl": "def _shapes(self) -> dict",
+          "decl_hash": "27c3e64519a246e5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Run._shapes",
+          "name": "_shapes",
+          "node": "python:src.leyline.incremental.Run._shapes",
+          "path": "src/leyline/incremental.py",
+          "shape_hash": "5ff083f31d67bdae",
+          "written": "Run._shapes"
+        },
+        {
+          "body_hash": "7996f67ddc8af93f",
+          "decl": "def answers(end, address)",
+          "decl_hash": "1567ac799108ee73",
+          "from": [
+            "specs/understanding/spec.md"
+          ],
+          "kind": "callable",
+          "label": "answers",
+          "name": "answers",
+          "node": "python:src.leyline.pr._touching.answers",
+          "path": "src/leyline/pr.py",
+          "shape_hash": "da1f381a7896305f",
+          "written": "answers"
+        },
+        {
+          "body_hash": "be154f47cd1bc4ed",
+          "decl": "def _expand_text(con, r: dict, most: int = 8) -> str",
+          "decl_hash": "861573adb503c608",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_expand_text",
+          "name": "_expand_text",
+          "node": "python:src.leyline.cli._expand_text",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "c47e43cf5979dd9d",
+          "written": "cli._expand_text"
+        },
+        {
+          "body_hash": "36fa0ca301e9e22a",
+          "decl": "def _search_text(con, r: dict) -> str",
+          "decl_hash": "89939497f785645f",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_search_text",
+          "name": "_search_text",
+          "node": "python:src.leyline.cli._search_text",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "da6bfe3f46252a90",
+          "written": "cli._search_text"
+        },
+        {
+          "body_hash": "5907613003013499",
+          "decl": "def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict",
+          "decl_hash": "da9cfbbed83811e8",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "build",
+          "name": "build",
+          "node": "python:src.leyline.context.build",
+          "path": "src/leyline/context.py",
+          "shape_hash": "4842d0f361ffbdf7",
+          "written": "context.build"
+        },
+        {
+          "body_hash": "363f964919e2cb51",
+          "decl": "def cost(u)",
+          "decl_hash": "ad745fa1a920d25b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "cost",
+          "name": "cost",
+          "node": "python:src.leyline.context.build.cost",
+          "path": "src/leyline/context.py",
+          "shape_hash": "978228092edbdc4e",
+          "written": "cost"
+        },
+        {
+          "body_hash": "3a89d44f14a3f254",
+          "decl": "def __init__(self, con)",
+          "decl_hash": "b5410d3e49b85eca",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "Index.__init__",
+          "name": "__init__",
+          "node": "python:src.leyline.explain.Index.__init__",
+          "path": "src/leyline/explain.py",
+          "shape_hash": "0a5c05145c5c462f",
+          "written": "explain.Index.__init__"
+        },
+        {
+          "body_hash": "7df24ca79e209029",
+          "decl": "def explain_path(con, frm: str, to: Optional[str] = None, through: Optional[str] = None, max_steps: int = 40) -> dict",
+          "decl_hash": "76b4a41788050c41",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "explain_path",
+          "name": "explain_path",
+          "node": "python:src.leyline.explain.explain_path",
+          "path": "src/leyline/explain.py",
+          "shape_hash": "d70984a1fe481ce6",
+          "written": "explain.explain_path"
+        },
+        {
+          "body_hash": "155582262028680c",
+          "decl": "def find_flows(con, description: str, limit: int = 10) -> dict",
+          "decl_hash": "b8f71f77963aa8d5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "find_flows",
+          "name": "find_flows",
+          "node": "python:src.leyline.explain.find_flows",
+          "path": "src/leyline/explain.py",
+          "shape_hash": "736dd4c637de9f90",
+          "written": "explain.find_flows"
+        },
+        {
+          "body_hash": "f2cd3e0872996228",
+          "decl": "def walk_text(r: dict) -> str",
+          "decl_hash": "0a1b7130b9dcd27d",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "walk_text",
+          "name": "walk_text",
+          "node": "python:src.leyline.explain.walk_text",
+          "path": "src/leyline/explain.py",
+          "shape_hash": "c12d0b55d70cc826",
+          "written": "explain.walk_text"
+        },
+        {
+          "body_hash": "d48b40a02f6159ab",
+          "decl": "def _parse_file(job)",
+          "decl_hash": "443865e7a304b8ba",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_parse_file",
+          "name": "_parse_file",
+          "node": "python:src.leyline.indexer._parse_file",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "e44d996c38cffc11",
+          "written": "indexer._parse_file"
+        },
+        {
+          "body_hash": "27e334ecd0910aff",
+          "decl": "def text_lines(data: bytes) -> list[str]",
+          "decl_hash": "34bf4b297561dac7",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "text_lines",
+          "name": "text_lines",
+          "node": "python:src.leyline.indexer.text_lines",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "19fd5b2389c1c57e",
+          "written": "indexer.text_lines"
+        },
+        {
+          "body_hash": "c46a1b8d04fb6d83",
+          "decl": "def module_outline(module: Annotated[Optional[str], Field(description=\"A module's path (such as `editor/core`) or id, or\" \" a part id from an earlier outline. Leave out to\" \" list the modules.\")] = None, depth: Annotated[int, Field(ge=1, le=3, description=\"1: the parts; 2: and the parts inside each; 3:\" \" one more level of names.\")] = 2, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "a1520a753a934dee",
+          "from": [
+            "specs/understanding/spec.md"
+          ],
+          "kind": "callable",
+          "label": "module_outline",
+          "name": "module_outline",
+          "node": "python:src.leyline.server.module_outline",
+          "path": "src/leyline/server.py",
+          "shape_hash": "2eb178ba0ff2ecbe",
+          "written": "module_outline"
+        },
+        {
+          "body_hash": "0ab498741d7e045c",
+          "decl": "def outline(con, part_id: Optional[str] = None, depth: int = 2) -> dict",
+          "decl_hash": "559a96729192e212",
+          "from": [
+            "specs/understanding/spec.md"
+          ],
+          "kind": "callable",
+          "label": "outline",
+          "name": "outline",
+          "node": "python:src.leyline.outline.outline",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "eff08c5a99513e36",
+          "written": "outline"
+        },
+        {
+          "body_hash": "24d251b5803418d4",
+          "decl": "def _part_lines(p: dict, n: Optional[int], pad: str = \" \") -> list",
+          "decl_hash": "37bdeb5b1db29697",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_part_lines",
+          "name": "_part_lines",
+          "node": "python:src.leyline.outline._part_lines",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "008e3c6801710519",
+          "written": "outline._part_lines"
+        },
+        {
+          "body_hash": "4ee3449079dea302",
+          "decl": "def _summarize_items(con, out: dict) -> None",
+          "decl_hash": "c1127fbca6f0418b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_summarize_items",
+          "name": "_summarize_items",
+          "node": "python:src.leyline.outline._summarize_items",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "e064538b05c87dd0",
+          "written": "outline._summarize_items"
+        },
+        {
+          "body_hash": "0ab498741d7e045c",
+          "decl": "def outline(con, part_id: Optional[str] = None, depth: int = 2) -> dict",
+          "decl_hash": "559a96729192e212",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "outline",
+          "name": "outline",
+          "node": "python:src.leyline.outline.outline",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "eff08c5a99513e36",
+          "written": "outline.outline"
+        },
+        {
+          "body_hash": "127e5af0ac7c09bf",
+          "decl": "def text(r: dict) -> str",
+          "decl_hash": "ebb476fc3427abe1",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "text",
+          "name": "text",
+          "node": "python:src.leyline.outline.text",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "c032fa209bb13b73",
+          "written": "outline.text"
+        },
+        {
+          "body_hash": "faac18e6a43a29f8",
+          "decl": "def _brief(row) -> dict",
+          "decl_hash": "9edd4eccb9856c53",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_brief",
+          "name": "_brief",
+          "node": "python:src.leyline.query._brief",
+          "path": "src/leyline/query.py",
+          "shape_hash": "2d341bd45c4bebd8",
+          "written": "query._brief"
+        },
+        {
+          "body_hash": "7764214ce1b6075d",
+          "decl": "def expand(con, node_id: str, limit: int = 50) -> dict",
+          "decl_hash": "3e65f4aaa636fecd",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "expand",
+          "name": "expand",
+          "node": "python:src.leyline.query.expand",
+          "path": "src/leyline/query.py",
+          "shape_hash": "fc6522eb3612c562",
+          "written": "query.expand"
+        },
+        {
+          "body_hash": "2ec8fcecbb5ad89b",
+          "decl": "def search(con, query: str, kind: Optional[str] = None, limit: int = 20) -> dict",
+          "decl_hash": "1ce72ac95b104db1",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "search",
+          "name": "search",
+          "node": "python:src.leyline.query.search",
+          "path": "src/leyline/query.py",
+          "shape_hash": "6b4f56b3f73a64ef",
+          "written": "query.search"
+        },
+        {
+          "body_hash": "26d6cc6c2d05466a6458987c8cbe129e5fa85d0f",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/context.py",
+          "name": "context.py",
+          "node": "file:src/leyline/context.py",
+          "path": "src/leyline/context.py",
+          "written": "src/leyline/context.py"
+        },
+        {
+          "body_hash": "8f9d173391ce46668003cc10811caf8ecf4acc74",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/explain.py",
+          "name": "explain.py",
+          "node": "file:src/leyline/explain.py",
+          "path": "src/leyline/explain.py",
+          "written": "src/leyline/explain.py"
+        },
+        {
+          "body_hash": "7acd0c72f8fc4d4bfdf243773773a8bfceb934ec",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/incremental.py",
+          "name": "incremental.py",
+          "node": "file:src/leyline/incremental.py",
+          "path": "src/leyline/incremental.py",
+          "written": "src/leyline/incremental.py"
+        },
+        {
+          "body_hash": "800971480da15a28d3a7f4fda6636025eb83bfcc",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/outline.py",
+          "name": "outline.py",
+          "node": "file:src/leyline/outline.py",
+          "path": "src/leyline/outline.py",
+          "written": "src/leyline/outline.py"
+        },
+        {
+          "body_hash": "982b14c887102e7115ad87f4799a3a6d742c2d90",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/summaries.py",
+          "name": "summaries.py",
+          "node": "file:src/leyline/summaries.py",
+          "path": "src/leyline/summaries.py",
+          "written": "src/leyline/summaries.py"
+        },
+        {
+          "body_hash": "4989c9267c134c3f",
+          "decl": "def annotation_text(con) -> dict[str, str]",
+          "decl_hash": "0b632b356cdd49a2",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "annotation_text",
+          "name": "annotation_text",
+          "node": "python:src.leyline.summaries.annotation_text",
+          "path": "src/leyline/summaries.py",
+          "shape_hash": "d7eaba648a3f12ed",
+          "written": "summaries.annotation_text"
+        },
+        {
+          "body_hash": "c72b3b55cd6aad0a",
+          "decl": "def declared_doc(lines: list[str], start: int) -> str",
+          "decl_hash": "ca2275a7af62de00",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "declared_doc",
+          "name": "declared_doc",
+          "node": "python:src.leyline.summaries.declared_doc",
+          "path": "src/leyline/summaries.py",
+          "shape_hash": "99dbd08453f5b39f",
+          "written": "summaries.declared_doc"
+        },
+        {
+          "body_hash": "cc197d50b1864dec",
+          "decl": "def first_sentence(text: str, width: int = WIDTH) -> str",
+          "decl_hash": "00505f4434470138",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "first_sentence",
+          "name": "first_sentence",
+          "node": "python:src.leyline.summaries.first_sentence",
+          "path": "src/leyline/summaries.py",
+          "shape_hash": "e5cca81a0bea8e76",
+          "written": "summaries.first_sentence"
+        },
+        {
+          "body_hash": "5b5feb50cd8f7000",
+          "decl": "def for_nodes(con, ids: Iterable[str], width: int = WIDTH) -> dict[str, str]",
+          "decl_hash": "4424207a9c03866b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "for_nodes",
+          "name": "for_nodes",
+          "node": "python:src.leyline.summaries.for_nodes",
+          "path": "src/leyline/summaries.py",
+          "shape_hash": "3ebd0b52bd7e9c4d",
+          "written": "summaries.for_nodes"
+        },
+        {
+          "body_hash": "082a1ca5744c6bc7",
+          "decl": "def test_a_comment_above_and_a_docstring_below_are_read()",
+          "decl_hash": "f23e3e4ac4e3ad15",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "test_a_comment_above_and_a_docstring_below_are_read",
+          "name": "test_a_comment_above_and_a_docstring_below_are_read",
+          "node": "python:tests.test_flows_explain.test_a_comment_above_and_a_docstring_below_are_read",
+          "path": "tests/test_flows_explain.py",
+          "shape_hash": "07ddb765b2835c1d",
+          "written": "test_a_comment_above_and_a_docstring_below_are_read"
+        }
+      ],
+      "recorded": "2026-10-14"
+    },
+    "orientation-from-named-parts": {
+      "anchors": [
+        {
+          "body_hash": "d11443f8d35a97f2",
+          "decl": "def _main(argv=None) -> int",
+          "decl_hash": "6cb85531bf8f3a40",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_main",
+          "name": "_main",
+          "node": "python:src.leyline.cli._main",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "d4424fca9d8c77fd",
+          "written": "cli._main"
+        },
+        {
+          "body_hash": "fbb15b4ab5af9f8f",
+          "decl": "def import_file(con, path: str | Path, run: str = \"default\", test: Optional[str] = None) -> dict",
+          "decl_hash": "6570989b55bad376",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "import_file",
+          "name": "import_file",
+          "node": "python:src.leyline.coverage.import_file",
+          "path": "src/leyline/coverage.py",
+          "shape_hash": "1ef45a5a7c1479e9",
+          "written": "coverage.import_file"
+        },
+        {
+          "body_hash": "39476683f477083e",
+          "decl": "def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None, found: Optional[list] = None) -> str",
+          "decl_hash": "34b55d7383ab4357",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "fragment",
+          "name": "fragment",
+          "node": "python:src.leyline.export.fragment",
+          "path": "src/leyline/export.py",
+          "shape_hash": "455cc1062e714968",
+          "written": "export.fragment"
+        },
+        {
+          "body_hash": "6f1b2655cfd90753",
+          "decl": "def graph(con, with_sources: bool = True, memory: Optional[Path] = None, found: Optional[list] = None) -> dict",
+          "decl_hash": "fc9e1ca9141622f8",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "graph",
+          "name": "graph",
+          "node": "python:src.leyline.export.graph",
+          "path": "src/leyline/export.py",
+          "shape_hash": "7d43bf83c52a69bb",
+          "written": "export.graph"
+        },
+        {
+          "body_hash": "c7449912bfbfaa82",
+          "decl": "def page(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None, found: Optional[list] = None) -> str",
+          "decl_hash": "e7531bd137a23a3f",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "page",
+          "name": "page",
+          "node": "python:src.leyline.export.page",
+          "path": "src/leyline/export.py",
+          "shape_hash": "8ced3ade5d3860c8",
+          "written": "export.page"
+        },
+        {
+          "body_hash": "8aafb4624f42dce3",
+          "decl": "def parts(con, index: dict, nodes: list, found: Optional[list] = None) -> list",
+          "decl_hash": "bddcb74ba08e00cc",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "parts",
+          "name": "parts",
+          "node": "python:src.leyline.export.parts",
+          "path": "src/leyline/export.py",
+          "shape_hash": "92abbea4af9415df",
+          "written": "export.parts"
+        },
+        {
+          "body_hash": "1b914965723c09d7",
+          "decl": "def _parts(con) -> Optional[list]",
+          "decl_hash": "3557444bff54fca7",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_parts",
+          "name": "_parts",
+          "node": "python:src.leyline.indexer._parts",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "b7b89b71ee79256e",
+          "written": "indexer._parts"
+        },
+        {
+          "body_hash": "3dea636a4442283c",
+          "decl": "def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] = None, exact: str = \"off\", scip: Optional[list[str]] = None, full: bool = False, _verify: bool = True, listed: Optional[dict] = None) -> dict",
+          "decl_hash": "105fda192ad816f5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "index",
+          "name": "index",
+          "node": "python:src.leyline.indexer.index",
+          "path": "src/leyline/indexer.py",
+          "shape_hash": "b1f9127369431351",
+          "written": "indexer.index"
+        },
+        {
+          "body_hash": "3bc858f54d65e073",
+          "decl": "def counts(con, parts: Optional[list] = None) -> dict",
+          "decl_hash": "973bb4ec0c9aad34",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "counts",
+          "name": "counts",
+          "node": "python:src.leyline.loop.counts",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "55964104186355a4",
+          "written": "loop.counts"
+        },
+        {
+          "body_hash": "8f2ea9063268b08d",
+          "decl": "def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str] = None, exact: str = \"auto\", scip: Optional[list[str]] = None, page: bool = True, full: bool = False) -> dict",
+          "decl_hash": "70a0dcb674bc86bc",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "map_repos",
+          "name": "map_repos",
+          "node": "python:src.leyline.loop.map_repos",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "ebb446fd1230889f",
+          "written": "loop.map_repos"
+        },
+        {
+          "body_hash": "e8f5b53640928407",
+          "decl": "def map_text(m: dict) -> str",
+          "decl_hash": "f91436604444f540",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "map_text",
+          "name": "map_text",
+          "node": "python:src.leyline.loop.map_text",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "6760f40b3607936f",
+          "written": "loop.map_text"
+        },
+        {
+          "body_hash": "5458de758b457c03",
+          "decl": "def unnamed_parts(con, parts: Optional[list]) -> Optional[dict]",
+          "decl_hash": "29d5bf5b9a2dae15",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "unnamed_parts",
+          "name": "unnamed_parts",
+          "node": "python:src.leyline.loop.unnamed_parts",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "d984b83f6c73f187",
+          "written": "loop.unnamed_parts"
+        },
+        {
+          "body_hash": "8ad7193fec4ce5e6",
+          "decl": "def write_page(con, db: str | Path, open_change: Optional[str] = None, always: bool = False, parts: Optional[list] = None) -> Optional[Path]",
+          "decl_hash": "04cef1aee316de0a",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "write_page",
+          "name": "write_page",
+          "node": "python:src.leyline.loop.write_page",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "3671178ffc28ea12",
+          "written": "loop.write_page"
+        },
+        {
+          "body_hash": "c46a1b8d04fb6d83",
+          "decl": "def module_outline(module: Annotated[Optional[str], Field(description=\"A module's path (such as `editor/core`) or id, or\" \" a part id from an earlier outline. Leave out to\" \" list the modules.\")] = None, depth: Annotated[int, Field(ge=1, le=3, description=\"1: the parts; 2: and the parts inside each; 3:\" \" one more level of names.\")] = 2, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "a1520a753a934dee",
+          "from": [
+            "specs/orientation/spec.md"
+          ],
+          "kind": "callable",
+          "label": "module_outline",
+          "name": "module_outline",
+          "node": "python:src.leyline.server.module_outline",
+          "path": "src/leyline/server.py",
+          "shape_hash": "2eb178ba0ff2ecbe",
+          "written": "module_outline"
+        },
+        {
+          "body_hash": "49eeec17eca08ab0",
+          "decl": "def map_parts(con) -> list[dict]",
+          "decl_hash": "c1599887a8533120",
+          "from": [
+            "specs/orientation/spec.md"
+          ],
+          "kind": "callable",
+          "label": "map_parts",
+          "name": "map_parts",
+          "node": "python:src.leyline.outline.map_parts",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "3a2cf8d3d58b04c5",
+          "written": "outline.map_parts"
+        },
+        {
+          "body_hash": "e3c5a07403852cc5",
+          "decl": "def name_part(con, part_id: str, name: str, summary: str = \"\", evidence: Optional[list] = None, layer: str = \"inferred\", source: str = \"mcp\") -> dict",
+          "decl_hash": "7750ad806b042c02",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "name_part",
+          "name": "name_part",
+          "node": "python:src.leyline.outline.name_part",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "797b580cfceee0e9",
+          "written": "outline.name_part"
+        },
+        {
+          "body_hash": "8aafb4624f42dce3",
+          "decl": "def parts(con, index: dict, nodes: list, found: Optional[list] = None) -> list",
+          "decl_hash": "bddcb74ba08e00cc",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "parts",
+          "name": "parts",
+          "node": "python:src.leyline.export.parts",
+          "path": "src/leyline/export.py",
+          "shape_hash": "92abbea4af9415df",
+          "written": "parts"
+        },
+        {
+          "body_hash": "295b9dc00b0521c9",
+          "decl": "def map_code(paths: Annotated[Optional[list[str]], Field(description=\"Repository directories, absolute or relative to the\" \" server's directory. Several are mapped together as one\" \" workspace. Leave out to map again what the store holds.\")] = None) -> dict",
+          "decl_hash": "bad8d37aa367cf6d",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "map_code",
+          "name": "map_code",
+          "node": "python:src.leyline.server.map_code",
+          "path": "src/leyline/server.py",
+          "shape_hash": "96eb1086d1f81445",
+          "written": "server.map_code"
+        },
+        {
+          "body_hash": "9937487f48584053",
+          "decl": "def _parts_sentence(kids: list) -> str",
+          "decl_hash": "be652b04631cf67d",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_parts_sentence",
+          "name": "_parts_sentence",
+          "node": "python:src.leyline.tours._parts_sentence",
+          "path": "src/leyline/tours.py",
+          "shape_hash": "adbb71016208ebaf",
+          "written": "tours._parts_sentence"
+        },
+        {
+          "body_hash": "5dcc9d386b8a1ca1",
+          "decl": "def generate(con, repo_id: str, parts: Optional[list] = None) -> dict",
+          "decl_hash": "fb6f9d60394ec2b8",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "generate",
+          "name": "generate",
+          "node": "python:src.leyline.tours.generate",
+          "path": "src/leyline/tours.py",
+          "shape_hash": "bf73e9215bbf3ada",
+          "written": "tours.generate"
+        }
+      ],
+      "recorded": "2026-10-14"
+    },
+    "outline-splits-large-group": {
+      "anchors": [
+        {
+          "body_hash": "4e2397994042a639",
+          "decl": "def _group_label(m, fs: list, own: set, anchor: str) -> str",
+          "decl_hash": "59b54af5c8ef6e1d",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_group_label",
+          "name": "_group_label",
+          "node": "python:src.leyline.outline._group_label",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "6ad5fdd6fff811ec",
+          "written": "outline._group_label"
+        },
+        {
+          "body_hash": "556e94b9db6c8783",
+          "decl": "def _groups(m: Model, part: Part, base: str, loose: list) -> list",
+          "decl_hash": "a2eb28a14a209d52",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_groups",
+          "name": "_groups",
+          "node": "python:src.leyline.outline._groups",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "450596d0af8cf2e4",
+          "written": "outline._groups"
+        },
+        {
+          "body_hash": "99902fd8e274f86f",
+          "decl": "def _resplit(m: Model, g: Part, folder: str, used: Counter) -> list",
+          "decl_hash": "b55b68a70c5b589c",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_resplit",
+          "name": "_resplit",
+          "node": "python:src.leyline.outline._resplit",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "17af8994592ae2a3",
+          "written": "outline._resplit"
+        },
+        {
+          "body_hash": "56dc1b860d916d67",
+          "decl": "def names(con, parts: list) -> dict",
+          "decl_hash": "6a8849d8500ecf01",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "names",
+          "name": "names",
+          "node": "python:src.leyline.outline.names",
+          "path": "src/leyline/outline.py",
+          "shape_hash": "0fc0b716c02f75fd",
+          "written": "outline.names"
+        },
+        {
+          "body_hash": "85282230fc3b83b7b962a8e57e892999c6b129f4",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/outline.py",
+          "name": "outline.py",
+          "node": "file:src/leyline/outline.py",
+          "path": "src/leyline/outline.py",
+          "written": "src/leyline/outline.py"
+        }
+      ],
+      "recorded": "2026-10-14"
+    },
+    "read-tool-budgets": {
+      "anchors": [
+        {
+          "body_hash": "bf2662ac6ac33469",
+          "decl": "def run(*args, **kwargs)",
+          "decl_hash": "56f2f79d63e65085",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "run",
+          "name": "run",
+          "node": "python:src.leyline.server._tool.run",
+          "path": "src/leyline/server.py",
+          "shape_hash": "6ccc586cd74fbf06",
+          "written": "_tool.run"
+        },
+        {
+          "body_hash": "7beab972cc15051a",
+          "decl": "def _main(argv=None) -> int",
+          "decl_hash": "6cb85531bf8f3a40",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_main",
+          "name": "_main",
+          "node": "python:src.leyline.cli._main",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "df6df98494e13455",
+          "written": "cli._main"
+        },
+        {
+          "body_hash": "14e9cc5b82955f9f",
+          "decl": "def _with_store(args, con) -> int",
+          "decl_hash": "e2ecb01e181e56f0",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_with_store",
+          "name": "_with_store",
+          "node": "python:src.leyline.cli._with_store",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "0b17593295d54176",
+          "written": "cli._with_store"
+        },
+        {
+          "body_hash": "2f077e14dd715bd2",
+          "decl": "def cut(name: str, n: int) -> str",
+          "decl_hash": "1418f2ec61491e4a",
+          "from": [
+            "specs/mcp/spec.md"
+          ],
+          "kind": "callable",
+          "label": "cut",
+          "name": "cut",
+          "node": "python:src.leyline.diagrams.cut",
+          "path": "src/leyline/diagrams.py",
+          "shape_hash": "7db28223871b2cfc",
+          "written": "cut"
+        },
+        {
+          "body_hash": "c46a1b8d04fb6d83",
+          "decl": "def module_outline(module: Annotated[Optional[str], Field(description=\"A module's path (such as `editor/core`) or id, or\" \" a part id from an earlier outline. Leave out to\" \" list the modules.\")] = None, depth: Annotated[int, Field(ge=1, le=3, description=\"1: the parts; 2: and the parts inside each; 3:\" \" one more level of names.\")] = 2, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "a1520a753a934dee",
+          "from": [
+            "specs/mcp/spec.md"
+          ],
+          "kind": "callable",
+          "label": "module_outline",
+          "name": "module_outline",
+          "node": "python:src.leyline.server.module_outline",
+          "path": "src/leyline/server.py",
+          "shape_hash": "2eb178ba0ff2ecbe",
+          "written": "module_outline"
+        },
+        {
+          "body_hash": "5f97254718f0c816",
+          "decl": "def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE, floors: tuple = FLOORS) -> str",
+          "decl_hash": "a7c32e24448c3fd6",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_fit",
+          "name": "_fit",
+          "node": "python:src.leyline.server._fit",
+          "path": "src/leyline/server.py",
+          "shape_hash": "d4768d7b72bdc58d",
+          "written": "server._fit"
+        },
+        {
+          "body_hash": "536e3a74333f4b59",
+          "decl": "def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, items: int = 0, keep: tuple = (), more: str = MORE, limit: int = LIMIT, budgeted: bool = False)",
+          "decl_hash": "f8bcf535a130135e",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_tool",
+          "name": "_tool",
+          "node": "python:src.leyline.server._tool",
+          "path": "src/leyline/server.py",
+          "shape_hash": "1bcb1f93cb35c25d",
+          "written": "server._tool"
+        },
+        {
+          "body_hash": "7dbd94732b96f1c8",
+          "decl": "def expand(node_id: NodeId, limit: Limit = 20, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "23ae624838572e59",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "expand",
+          "name": "expand",
+          "node": "python:src.leyline.server.expand",
+          "path": "src/leyline/server.py",
+          "shape_hash": "e171edbb7533a368",
+          "written": "server.expand"
+        },
+        {
+          "body_hash": "42f6c36980fffe22",
+          "decl": "def explain_path(start: Annotated[str, Field(min_length=1, description=\"Where to start: a node id, a name\" \" (`Owner.method`), a route (`PUT /api/x`) or a\" \" flow id, such as a candidate from find_flows.\")], to: Annotated[Optional[str], Field(description=\"Where to end: the shortest path from start to it.\")] = None, through: Annotated[Optional[str], Field(description=\"A node the path must pass: the path to it, then on\" \" from it.\")] = None, max_steps: Annotated[int, Field(ge=2, le=200, description=\"Most steps to show.\")] = 40, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "5bb01906da01488b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "explain_path",
+          "name": "explain_path",
+          "node": "python:src.leyline.server.explain_path",
+          "path": "src/leyline/server.py",
+          "shape_hash": "02dd502237410170",
+          "written": "server.explain_path"
+        },
+        {
+          "body_hash": "996670e5c6cb8c5b",
+          "decl": "def find_flows(description: Annotated[str, Field(min_length=1, description=\"What happens, in plain words, such as\" \" \\\"what happens when a writer saves a dialogue\\\"\" \" or \\\"how a vehicle is spawned\\\".\")], limit: Annotated[int, Field(ge=1, le=30, description=\"Most candidates to return.\")] = 10, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "1e086ff2c7e6aa17",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "find_flows",
+          "name": "find_flows",
+          "node": "python:src.leyline.server.find_flows",
+          "path": "src/leyline/server.py",
+          "shape_hash": "650232ce83637318",
+          "written": "server.find_flows"
+        },
+        {
+          "body_hash": "a68f3ddfc274ce95",
+          "decl": "def impact(node_id: NodeId, max_depth: Annotated[int, Field(ge=1, le=20, description=\"How many calls back to follow.\")] = 6, limit: Limit = 15, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "71ea293692e28254",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "impact",
+          "name": "impact",
+          "node": "python:src.leyline.server.impact",
+          "path": "src/leyline/server.py",
+          "shape_hash": "a5600dc9c1c969be",
+          "written": "server.impact"
+        },
+        {
+          "body_hash": "c46a1b8d04fb6d83",
+          "decl": "def module_outline(module: Annotated[Optional[str], Field(description=\"A module's path (such as `editor/core`) or id, or\" \" a part id from an earlier outline. Leave out to\" \" list the modules.\")] = None, depth: Annotated[int, Field(ge=1, le=3, description=\"1: the parts; 2: and the parts inside each; 3:\" \" one more level of names.\")] = 2, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "a1520a753a934dee",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "module_outline",
+          "name": "module_outline",
+          "node": "python:src.leyline.server.module_outline",
+          "path": "src/leyline/server.py",
+          "shape_hash": "2eb178ba0ff2ecbe",
+          "written": "server.module_outline"
+        },
+        {
+          "body_hash": "5d6a0d6d2448bb51",
+          "decl": "def neighbors(node_id: NodeId, direction: Annotated[Literal[\"out\", \"in\", \"both\"], Field(description=\"out: edges from the node; in: edges\" \" to it.\")] = \"both\", kinds: Annotated[Optional[list[EdgeKind]], Field(description=\"Only these edge kinds. reads and writes run\" \" from a function to a field.\")] = None, limit: Limit = 25, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "65d964849c5d4c71",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "neighbors",
+          "name": "neighbors",
+          "node": "python:src.leyline.server.neighbors",
+          "path": "src/leyline/server.py",
+          "shape_hash": "bf47b673b97f219b",
+          "written": "server.neighbors"
+        },
+        {
+          "body_hash": "79ea5a13d10ded64",
+          "decl": "def overview(scope: Annotated[Optional[str], Field(description=\"A module path prefix (such as `src/core`) to see one part\" \" of a large repository.\")] = None, limit: Limit = 20, budget_tokens: Budget = None) -> dict",
+          "decl_hash": "6cc31da11d0c1bd0",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "overview",
+          "name": "overview",
+          "node": "python:src.leyline.server.overview",
+          "path": "src/leyline/server.py",
+          "shape_hash": "8988a22c323c07ab",
+          "written": "server.overview"
+        },
+        {
+          "body_hash": "dda4fd6f402f24f1a556ddb14c68b63721fe12ed",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/server.py",
+          "name": "server.py",
+          "node": "file:src/leyline/server.py",
+          "path": "src/leyline/server.py",
+          "written": "src/leyline/server.py"
+        },
+        {
+          "body_hash": "d3fd5fc40010512c",
+          "decl": "def get(con, tour_id: str) -> dict",
+          "decl_hash": "d695840401ab01ec",
+          "from": [
+            "specs/mcp/spec.md"
+          ],
+          "kind": "callable",
+          "label": "get",
+          "name": "get",
+          "node": "python:src.leyline.tours.get",
+          "path": "src/leyline/tours.py",
+          "shape_hash": "0c4ab7c9a9178e20",
+          "written": "tours.get"
+        }
+      ],
+      "recorded": "2026-10-14"
+    },
+    "server-in-another-checkout": {
+      "anchors": [
+        {
+          "body_hash": "f1e1a4eacb6372e8",
+          "decl": "def drift(path: Annotated[Optional[str], Field(description=\"The repository or its openspec/ folder. Default: the\" \" first mapped repository and every mapped repository.\")] = None, accept: Annotated[bool, Field(description=\"Record the code as it is now as what the specs mean. Only when the\" \" person says the specs and the code agree.\")] = False) -> dict",
+          "decl_hash": "5e1d860adbb7d031",
+          "from": [
+            "specs/mcp/spec.md"
+          ],
+          "kind": "callable",
+          "label": "drift",
+          "name": "drift",
+          "node": "python:src.leyline.server.drift",
+          "path": "src/leyline/server.py",
+          "shape_hash": "a715b1856ddf6b4f",
+          "written": "drift"
+        },
+        {
+          "body_hash": "624e643375937f80",
+          "decl": "def find_change(target: str | Path, db: Optional[str | Path] = None) -> Optional[Path]",
+          "decl_hash": "6392f829fb2d0f98",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "find_change",
+          "name": "find_change",
+          "node": "python:src.leyline.loop.find_change",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "794e291c4dbe3b7d",
+          "written": "loop.find_change"
+        },
+        {
+          "body_hash": "8f2ea9063268b08d",
+          "decl": "def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str] = None, exact: str = \"auto\", scip: Optional[list[str]] = None, page: bool = True, full: bool = False) -> dict",
+          "decl_hash": "70a0dcb674bc86bc",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "map_repos",
+          "name": "map_repos",
+          "node": "python:src.leyline.loop.map_repos",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "ebb446fd1230889f",
+          "written": "loop.map_repos"
+        },
+        {
+          "body_hash": "1800f7dd028b6487",
+          "decl": "def worktrees_of(top: Path) -> list[Path]",
+          "decl_hash": "3e69b476c64c9f36",
+          "from": [
+            "specs/mcp/spec.md",
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "worktrees_of",
+          "name": "worktrees_of",
+          "node": "python:src.leyline.loop.worktrees_of",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "afbf7139f7d972f7",
+          "written": "loop.worktrees_of"
+        },
+        {
+          "body_hash": "3ac1c8d87db60106",
+          "decl": "def review_pr(base: Annotated[Optional[str], Field(description=\"The branch the change will merge into, or a commit.\" \" Default: origin's default branch, else main, else master.\")] = None, about: Annotated[Optional[str], Field(description=\"What the change says it does: its title and\" \" description. Default: its commit messages.\")] = None, github: Annotated[Optional[str], Field(description=\"A GitHub pull request number: base, title and\" \" description come from it (needs gh, and the pull\" \" request checked out).\")] = None, review_id: Annotated[Optional[str], Field(description=\"Name it pr-<review_id>. Default: the pull request\" \" number, else the branch name.\")] = None, path: Annotated[Optional[str], Field(description=\"The checkout, absolute or relative to the server's\" \" directory. Default: the first repository the store\" \" maps.\")] = None) -> dict",
+          "decl_hash": "a909f83ba24ba9bf",
+          "from": [
+            "specs/mcp/spec.md"
+          ],
+          "kind": "callable",
+          "label": "review_pr",
+          "name": "review_pr",
+          "node": "python:src.leyline.server.review_pr",
+          "path": "src/leyline/server.py",
+          "shape_hash": "c58ed9d7c5fcb22b",
+          "written": "review_pr"
+        },
+        {
+          "body_hash": "c611928f5c687f91",
+          "decl": "def _home() -> Path",
+          "decl_hash": "feccc274640fbd99",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_home",
+          "name": "_home",
+          "node": "python:src.leyline.server._home",
+          "path": "src/leyline/server.py",
+          "shape_hash": "6b6a57becfa84c3e",
+          "written": "server._home"
+        },
+        {
+          "body_hash": "d16ade26158268f2",
+          "decl": "def _home_store() -> str",
+          "decl_hash": "5f287e6f343d9e98",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_home_store",
+          "name": "_home_store",
+          "node": "python:src.leyline.server._home_store",
+          "path": "src/leyline/server.py",
+          "shape_hash": "87330b569f1bafd5",
+          "written": "server._home_store"
+        },
+        {
+          "body_hash": "9d402442d922c70a",
+          "decl": "def _linked(refresh: bool = False) -> list[Path]",
+          "decl_hash": "ce39bc296eaed7c2",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_linked",
+          "name": "_linked",
+          "node": "python:src.leyline.server._linked",
+          "path": "src/leyline/server.py",
+          "shape_hash": "93fde701bc4bde8a",
+          "written": "server._linked"
+        },
+        {
+          "body_hash": "f69c27247ae10560",
+          "decl": "def _missing() -> Optional[str]",
+          "decl_hash": "22c5948471cfb4eb",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_missing",
+          "name": "_missing",
+          "node": "python:src.leyline.server._missing",
+          "path": "src/leyline/server.py",
+          "shape_hash": "1d9e3b02252450c0",
+          "written": "server._missing"
+        },
+        {
+          "body_hash": "207d300f8e3a96e9",
+          "decl": "def _outside(path, what: str) -> Optional[str]",
+          "decl_hash": "394e77174f9e7a73",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_outside",
+          "name": "_outside",
+          "node": "python:src.leyline.server._outside",
+          "path": "src/leyline/server.py",
+          "shape_hash": "18b18daa1a7b868a",
+          "written": "server._outside"
+        },
+        {
+          "body_hash": "487016655cbfa7c8",
+          "decl": "def _path() -> str",
+          "decl_hash": "e6013d94b2facaae",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_path",
+          "name": "_path",
+          "node": "python:src.leyline.server._path",
+          "path": "src/leyline/server.py",
+          "shape_hash": "adb8e92baf329bc2",
+          "written": "server._path"
+        },
+        {
+          "body_hash": "d570331c7167910c",
+          "decl": "def _start_repo() -> Optional[Path]",
+          "decl_hash": "1bfa603ab1962e2c",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_start_repo",
+          "name": "_start_repo",
+          "node": "python:src.leyline.server._start_repo",
+          "path": "src/leyline/server.py",
+          "shape_hash": "4b3ed8a3c072617b",
+          "written": "server._start_repo"
+        },
+        {
+          "body_hash": "f1e1a4eacb6372e8",
+          "decl": "def drift(path: Annotated[Optional[str], Field(description=\"The repository or its openspec/ folder. Default: the\" \" first mapped repository and every mapped repository.\")] = None, accept: Annotated[bool, Field(description=\"Record the code as it is now as what the specs mean. Only when the\" \" person says the specs and the code agree.\")] = False) -> dict",
+          "decl_hash": "5e1d860adbb7d031",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "drift",
+          "name": "drift",
+          "node": "python:src.leyline.server.drift",
+          "path": "src/leyline/server.py",
+          "shape_hash": "a715b1856ddf6b4f",
+          "written": "server.drift"
+        },
+        {
+          "body_hash": "fd44e40f05ae40b4",
+          "decl": "def map_code(paths: Annotated[Optional[list[str]], Field(description=\"Repository directories, absolute or relative to the\" \" server's directory. Several are mapped together as one\" \" workspace. Leave out to map again what the store holds.\")] = None) -> dict",
+          "decl_hash": "bad8d37aa367cf6d",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "map_code",
+          "name": "map_code",
+          "node": "python:src.leyline.server.map_code",
+          "path": "src/leyline/server.py",
+          "shape_hash": "5754d32832e45e21",
+          "written": "server.map_code"
+        },
+        {
+          "body_hash": "3ac1c8d87db60106",
+          "decl": "def review_pr(base: Annotated[Optional[str], Field(description=\"The branch the change will merge into, or a commit.\" \" Default: origin's default branch, else main, else master.\")] = None, about: Annotated[Optional[str], Field(description=\"What the change says it does: its title and\" \" description. Default: its commit messages.\")] = None, github: Annotated[Optional[str], Field(description=\"A GitHub pull request number: base, title and\" \" description come from it (needs gh, and the pull\" \" request checked out).\")] = None, review_id: Annotated[Optional[str], Field(description=\"Name it pr-<review_id>. Default: the pull request\" \" number, else the branch name.\")] = None, path: Annotated[Optional[str], Field(description=\"The checkout, absolute or relative to the server's\" \" directory. Default: the first repository the store\" \" maps.\")] = None) -> dict",
+          "decl_hash": "a909f83ba24ba9bf",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "review_pr",
+          "name": "review_pr",
+          "node": "python:src.leyline.server.review_pr",
+          "path": "src/leyline/server.py",
+          "shape_hash": "c58ed9d7c5fcb22b",
+          "written": "server.review_pr"
+        },
+        {
+          "body_hash": "345b98b4c2c6fa2c0256bf9a4b02d8788a959435",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/server.py",
+          "name": "server.py",
+          "node": "file:src/leyline/server.py",
+          "path": "src/leyline/server.py",
+          "written": "src/leyline/server.py"
+        }
+      ],
+      "recorded": "2026-10-14"
+    },
+    "show-tests-reaching": {
+      "anchors": [
+        {
+          "body_hash": "1c5580856667aa84",
+          "decl": "def _show(con, args) -> int",
+          "decl_hash": "c61ccbf99977b810",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_show",
+          "name": "_show",
+          "node": "python:src.leyline.cli._show",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "925011d45b20057b",
+          "written": "cli._show"
+        },
+        {
+          "body_hash": "90178afea4e0cad9",
+          "decl": "def tests_for(con, node_id: str, limit: int = 50) -> list[dict]",
+          "decl_hash": "390b4227d9db69c5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "tests_for",
+          "name": "tests_for",
+          "node": "python:src.leyline.coverage.tests_for",
+          "path": "src/leyline/coverage.py",
+          "shape_hash": "9bd49011b1e532cd",
+          "written": "coverage.tests_for"
+        },
+        {
+          "body_hash": "d6a649e15c1a2fc4",
+          "decl": "def _adjacency(con, reverse: bool = False) -> dict",
+          "decl_hash": "2079bf8b0eb6e7cc",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_adjacency",
+          "name": "_adjacency",
+          "node": "python:src.leyline.query._adjacency",
+          "path": "src/leyline/query.py",
+          "shape_hash": "27ade3cf152495ce",
+          "written": "query._adjacency"
+        },
+        {
+          "body_hash": "b209a9cebf951951",
+          "decl": "def expand(con, node_id: str, limit: int = 50) -> dict",
+          "decl_hash": "3e65f4aaa636fecd",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "expand",
+          "name": "expand",
+          "node": "python:src.leyline.query.expand",
+          "path": "src/leyline/query.py",
+          "shape_hash": "ffda0ee1cef185a9",
+          "written": "query.expand"
+        },
+        {
+          "body_hash": "0d518bc815d09378",
+          "decl": "def reaching(con, node_id: str, limit: int = 20) -> dict",
+          "decl_hash": "d1bb6537a197d689",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "reaching",
+          "name": "reaching",
+          "node": "python:src.leyline.query.reaching",
+          "path": "src/leyline/query.py",
+          "shape_hash": "e0c2974803e336fe",
+          "written": "query.reaching"
+        },
+        {
+          "body_hash": "bc0bbdce711cf3d9",
+          "decl": "def expand(node_id: NodeId, limit: Limit = 20) -> dict",
+          "decl_hash": "8c1628de21e127b8",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "expand",
+          "name": "expand",
+          "node": "python:src.leyline.server.expand",
+          "path": "src/leyline/server.py",
+          "shape_hash": "06683124a42eec84",
+          "written": "server.expand"
+        },
+        {
+          "body_hash": "0d518bc815d09378",
+          "decl": "def reaching(con, node_id: str, limit: int = 20) -> dict",
+          "decl_hash": "d1bb6537a197d689",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "reaching",
+          "name": "reaching",
+          "node": "python:src.leyline.query.reaching",
+          "path": "src/leyline/query.py",
+          "shape_hash": "e0c2974803e336fe",
+          "written": "src/leyline/query.py: reaching"
+        }
+      ],
+      "recorded": "2026-10-13"
+    },
+    "unasserted-changes": {
+      "anchors": [
+        {
+          "body_hash": "56a1a68fa70e4873",
+          "decl": "def _loop(args) -> int",
+          "decl_hash": "f4827321b298f5d3",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_loop",
+          "name": "_loop",
+          "node": "python:src.leyline.cli._loop",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "5ee4e84d465ac0a7",
+          "written": "cli._loop"
+        },
+        {
+          "body_hash": "7f5c3ad214e1244d",
+          "decl": "def _main(argv=None) -> int",
+          "decl_hash": "6cb85531bf8f3a40",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_main",
+          "name": "_main",
+          "node": "python:src.leyline.cli._main",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "9ab8b2b4dff0ae47",
+          "written": "cli._main"
+        },
+        {
+          "body_hash": "e69653c401b3f387",
+          "decl": "def own_changes(before: sqlite3.Connection, after: sqlite3.Connection, ids: list[str]) -> Optional[dict]",
+          "decl_hash": "5271846b645e2721",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "own_changes",
+          "name": "own_changes",
+          "node": "python:src.leyline.diff.own_changes",
+          "path": "src/leyline/diff.py",
+          "shape_hash": "2d55a4d339587930",
+          "written": "diff.own_changes"
+        },
+        {
+          "body_hash": "d03c8ea90c09f906",
+          "decl": "def _unasserted_note(v: dict, name: str, for_agent: bool) -> str",
+          "decl_hash": "f9505fa777f774b5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_unasserted_note",
+          "name": "_unasserted_note",
+          "node": "python:src.leyline.loop._unasserted_note",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "dd057e0b36202b48",
+          "written": "loop._unasserted_note"
+        },
+        {
+          "body_hash": "b7b05bfb394b4455",
+          "decl": "def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None, coverage_file: Optional[str | Path] = None, mutants_file: Optional[str | Path] = None) -> dict",
+          "decl_hash": "9224853604fa376c",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "check",
+          "name": "check",
+          "node": "python:src.leyline.loop.check",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "db4c1f65088852fe",
+          "written": "loop.check"
+        },
+        {
+          "body_hash": "e212e2939a8e49fc",
+          "decl": "def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]",
+          "decl_hash": "e49c6a3597f4ad20",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "next_after_check",
+          "name": "next_after_check",
+          "node": "python:src.leyline.loop.next_after_check",
+          "path": "src/leyline/loop.py",
+          "shape_hash": "2342e77dbe122575",
+          "written": "loop.next_after_check"
+        },
+        {
+          "body_hash": "959839a49a78394f",
+          "decl": "def mutants(change: ChangeArg, max_mutants: Annotated[int, Field(ge=1, le=100, description=\"The most mutants in the plan.\")] = 30) -> dict",
+          "decl_hash": "a0508416971f6fba",
+          "from": [
+            "specs/verdicts/spec.md",
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "mutants",
+          "name": "mutants",
+          "node": "python:src.leyline.server.mutants",
+          "path": "src/leyline/server.py",
+          "shape_hash": "11ab40f9d6978f23",
+          "written": "mutants"
+        },
+        {
+          "body_hash": "188e695c29fc7cbd",
+          "decl": "def mark_scenarios(con, scenarios: list[dict], res: dict) -> None",
+          "decl_hash": "87c9413b3eeebbe5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "mark_scenarios",
+          "name": "mark_scenarios",
+          "node": "python:src.leyline.mutants.mark_scenarios",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "123e6187ab60e67c",
+          "written": "mutants.mark_scenarios"
+        },
+        {
+          "body_hash": "de6c2e73b4970d6f78c954bf65a3df695d5eec4d",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "specs/verdicts/spec.md"
+          ],
+          "kind": "file",
+          "label": "tests/fixture/scripts/run.py",
+          "name": "run.py",
+          "node": "file:tests/fixture/scripts/run.py",
+          "path": "tests/fixture/scripts/run.py",
+          "written": "run.py"
+        },
+        {
+          "body_hash": "d8b8849acd0909e7",
+          "decl": "def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestResults = None, coverage_path: Annotated[Optional[str], Field(description=\"Coverage measured on the same test run (pytest\" \" --cov=<package> --cov-context=test writes .coverage):\" \" each scenario then says whether its test ran the\" \" changed code (`ran_changed_code`).\")] = None, mutants_path: Annotated[Optional[str], Field(description=\"The results.jsonl a run of the change's mutation plan\" \" wrote (see the `mutants` tool): each scenario then\" \" says whether its own tests failed a mutant of the\" \" changed code, and one that did not is `unasserted`.\" )] = None) -> dict",
+          "decl_hash": "af5e55bee4298344",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "check",
+          "name": "check",
+          "node": "python:src.leyline.server.check",
+          "path": "src/leyline/server.py",
+          "shape_hash": "c5bdb74b5e607eb2",
+          "written": "server.check"
+        },
+        {
+          "body_hash": "17b08a7ddc97b4f6",
+          "decl": "def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True, old_run: Optional[str] = None, mutants: Optional[dict] = None) -> dict",
+          "decl_hash": "6fa55300f3d59533",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "verify",
+          "name": "verify",
+          "node": "python:src.leyline.spec.verify",
+          "path": "src/leyline/spec.py",
+          "shape_hash": "e19ec748e9054063",
+          "written": "spec.verify"
+        },
+        {
+          "body_hash": "c47483aacc1ac5c5",
+          "decl": "def verify_text(v: dict) -> str",
+          "decl_hash": "c7859d9aab811329",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "verify_text",
+          "name": "verify_text",
+          "node": "python:src.leyline.spec.verify_text",
+          "path": "src/leyline/spec.py",
+          "shape_hash": "fbceef19f0f6deac",
+          "written": "spec.verify_text"
+        },
+        {
+          "body_hash": "6550533e342b59e7",
+          "decl": "def _mutants(args) -> int",
+          "decl_hash": "383928bf2a43e242",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_mutants",
+          "name": "_mutants",
+          "node": "python:src.leyline.cli._mutants",
+          "path": "src/leyline/cli.py",
+          "shape_hash": "d285e1652c440a94",
+          "written": "src/leyline/cli.py: _mutants"
+        },
+        {
+          "body_hash": "a9ec6c05e1dec55b90fe1bea866f3601a0b3b68e",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/mutants.py",
+          "name": "mutants.py",
+          "node": "file:src/leyline/mutants.py",
+          "path": "src/leyline/mutants.py",
+          "written": "src/leyline/mutants.py"
+        },
+        {
+          "body_hash": "a466b68b3a25925c",
+          "decl": "def _choose(per_function: dict, limit: int) -> tuple[list[dict], list[str]]",
+          "decl_hash": "fb0b24ec7af6b182",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_choose",
+          "name": "_choose",
+          "node": "python:src.leyline.mutants._choose",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "cf9527a22da5c184",
+          "written": "src/leyline/mutants.py: _choose"
+        },
+        {
+          "body_hash": "3a7f245cdfdf1e21",
+          "decl": "def _edited_lines(con, cid: str) -> tuple[dict, Optional[str]]",
+          "decl_hash": "1710dc729b477201",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_edited_lines",
+          "name": "_edited_lines",
+          "node": "python:src.leyline.mutants._edited_lines",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "4aca4c3b587e43cb",
+          "written": "src/leyline/mutants.py: _edited_lines"
+        },
+        {
+          "body_hash": "2c371f8d321a634d",
+          "decl": "def _patch(rel: str, old: list[str], line: int, new_line: str) -> bytes",
+          "decl_hash": "66b51bd8a489c911",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_patch",
+          "name": "_patch",
+          "node": "python:src.leyline.mutants._patch",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "b668147aa4c664fc",
+          "written": "src/leyline/mutants.py: _patch"
+        },
+        {
+          "body_hash": "12d3c1183f444572",
+          "decl": "def _removed_lines(before, after) -> set",
+          "decl_hash": "94037bd1d8d6f8e2",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_removed_lines",
+          "name": "_removed_lines",
+          "node": "python:src.leyline.mutants._removed_lines",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "7c6338257f25fabe",
+          "written": "src/leyline/mutants.py: _removed_lines"
+        },
+        {
+          "body_hash": "a76262a799aa8ad6",
+          "decl": "def _sites(text: str, lines: list[str], wanted: set) -> list[dict]",
+          "decl_hash": "c04865d9d6881e5b",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_sites",
+          "name": "_sites",
+          "node": "python:src.leyline.mutants._sites",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "2e749149b2d12b64",
+          "written": "src/leyline/mutants.py: _sites"
+        },
+        {
+          "body_hash": "df4bf833671ed946",
+          "decl": "def _tests_for(con, function: str, scenario_tests: set, cache: dict) -> tuple[list[str], list[str], int, int]",
+          "decl_hash": "e841185796862cab",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_tests_for",
+          "name": "_tests_for",
+          "node": "python:src.leyline.mutants._tests_for",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "a6bbac38e4972658",
+          "written": "src/leyline/mutants.py: _tests_for"
+        },
+        {
+          "body_hash": "188e695c29fc7cbd",
+          "decl": "def mark_scenarios(con, scenarios: list[dict], res: dict) -> None",
+          "decl_hash": "87c9413b3eeebbe5",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "mark_scenarios",
+          "name": "mark_scenarios",
+          "node": "python:src.leyline.mutants.mark_scenarios",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "123e6187ab60e67c",
+          "written": "src/leyline/mutants.py: mark_scenarios"
+        },
+        {
+          "body_hash": "392a77fb3def8064",
+          "decl": "def page_data(res: dict) -> dict",
+          "decl_hash": "ecb35cc37cd76dc7",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "page_data",
+          "name": "page_data",
+          "node": "python:src.leyline.mutants.page_data",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "e7d0518206669c0f",
+          "written": "src/leyline/mutants.py: page_data"
+        },
+        {
+          "body_hash": "e1497b275626a7f6",
+          "decl": "def page_lines(d: Optional[dict]) -> list[str]",
+          "decl_hash": "5fe913876e874533",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "page_lines",
+          "name": "page_lines",
+          "node": "python:src.leyline.mutants.page_lines",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "78cf6db610a5d6fd",
+          "written": "src/leyline/mutants.py: page_lines"
+        },
+        {
+          "body_hash": "8d26c6d2960f8324",
+          "decl": "def plan_text(r: dict) -> str",
+          "decl_hash": "96010c8f03563a77",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "plan_text",
+          "name": "plan_text",
+          "node": "python:src.leyline.mutants.plan_text",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "fb04cb807835008b",
+          "written": "src/leyline/mutants.py: plan_text"
+        },
+        {
+          "body_hash": "5c85e1051aacc0cc",
+          "decl": "def read_results(con, change_id: str, path) -> dict",
+          "decl_hash": "be8ba249c54422d9",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "read_results",
+          "name": "read_results",
+          "node": "python:src.leyline.mutants.read_results",
+          "path": "src/leyline/mutants.py",
+          "shape_hash": "973dd456d36e6332",
+          "written": "src/leyline/mutants.py: read_results"
+        },
+        {
+          "body_hash": "959839a49a78394f",
+          "decl": "def mutants(change: ChangeArg, max_mutants: Annotated[int, Field(ge=1, le=100, description=\"The most mutants in the plan.\")] = 30) -> dict",
+          "decl_hash": "a0508416971f6fba",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "mutants",
+          "name": "mutants",
+          "node": "python:src.leyline.server.mutants",
+          "path": "src/leyline/server.py",
+          "shape_hash": "11ab40f9d6978f23",
+          "written": "src/leyline/server.py: mutants"
+        },
+        {
+          "body_hash": "70004eae0ebe5568",
+          "decl": "def _named_in_spec(change_dir) -> set",
+          "decl_hash": "23fa14abf396dceb",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_named_in_spec",
+          "name": "_named_in_spec",
+          "node": "python:src.leyline.spec._named_in_spec",
+          "path": "src/leyline/spec.py",
+          "shape_hash": "510aea724c85e3c9",
+          "written": "src/leyline/spec.py: _named_in_spec"
+        },
+        {
+          "body_hash": "e13cb1573898afa0485dc42e45111afdbdc70c3d",
+          "decl": null,
+          "decl_hash": null,
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "file",
+          "label": "src/leyline/verdicts.py",
+          "name": "verdicts.py",
+          "node": "file:src/leyline/verdicts.py",
+          "path": "src/leyline/verdicts.py",
+          "written": "src/leyline/verdicts.py"
+        },
+        {
+          "body_hash": "fe3bdc24b141e38e",
+          "decl": "def test_config_default_override_and_mistakes(tmp_path)",
+          "decl_hash": "749299ff664fc63a",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "test_config_default_override_and_mistakes",
+          "name": "test_config_default_override_and_mistakes",
+          "node": "python:tests.test_verdicts.test_config_default_override_and_mistakes",
+          "path": "tests/test_verdicts.py",
+          "shape_hash": "fb5fb095c107dd61",
+          "written": "test_config_default_override_and_mistakes"
+        },
+        {
+          "body_hash": "ab41166ad37c9055",
+          "decl": "def _scenario_verdict(s: dict, after: list, before: Optional[list]) -> tuple[str, str]",
+          "decl_hash": "eb987bcf8ee1b959",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "_scenario_verdict",
+          "name": "_scenario_verdict",
+          "node": "python:src.leyline.verdicts._scenario_verdict",
+          "path": "src/leyline/verdicts.py",
+          "shape_hash": "0d726bdd7a4f3bc2",
+          "written": "verdicts._scenario_verdict"
+        },
+        {
+          "body_hash": "092341a2cadc641e",
+          "decl": "def blocking_line(info: dict) -> str",
+          "decl_hash": "8939e81379d2bd47",
+          "from": [
+            "tasks.md"
+          ],
+          "kind": "callable",
+          "label": "blocking_line",
+          "name": "blocking_line",
+          "node": "python:src.leyline.verdicts.blocking_line",
+          "path": "src/leyline/verdicts.py",
+          "shape_hash": "9d03ed12f541597c",
+          "written": "verdicts.blocking_line"
+        }
+      ],
+      "recorded": "2026-10-15"
+    }
+  },
+  "version": 1
+}

@@ -72,8 +72,27 @@ def _sure_name(con, name: str, node_id: str) -> str:
     return name if r.get("id") in ok else node_id
 
 
-def generate(con, repo_id: str) -> dict:
-    """Write the orientation tour for a repo, replacing the previous one."""
+def _parts_sentence(kids: list) -> str:
+    """What a large module's parts are, from `outline.map_parts`: the named ones with their summaries in the outline's
+    order, and how many have no name yet."""
+    named = [k for k in kids if k.get("named")]
+    unnamed = len(kids) - len(named)
+    shown = "; ".join(f"{k['name']}" + (f" ({k['summary']})" if k.get("summary") else "")
+                      + (" [its name may be stale]" if k.get("stale") else "") for k in named[:6])
+    how = "the leyline-explore-module skill reads each part's code and names it, and this tour then says what each is for."
+    if not named:
+        return f"It splits into {len(kids)} parts and none has a name yet: {how}"
+    said = f"Its {len(kids)} parts, largest first, include {shown}" + (f" and {len(named) - 6} more" if len(named) > 6 else "") + "."
+    if unnamed:
+        said += f" {unnamed} of its {len(kids)} parts {'has' if unnamed == 1 else 'have'} no name: {how}"
+    return said
+
+
+def generate(con, repo_id: str, parts: Optional[list] = None) -> dict:
+    """Write the orientation tour for a repo, replacing the previous one. `parts` is what `outline.map_parts` gave for
+    the map: a module that is split into parts is described by them (named ones with what they do, and how many are
+    still to name); any other module, and every module when the parts could not be worked out, by the groups the map
+    proposed."""
     q = lambda sql, *a: con.execute(sql, a).fetchall()
     repo = q("SELECT id, name FROM nodes WHERE id = ? AND kind = 'repo'", repo_id)
     if not repo:
@@ -185,6 +204,7 @@ def generate(con, repo_id: str) -> dict:
         "SELECT n.name, COUNT(*) AS c FROM edges e JOIN nodes n ON n.id = e.dst_id JOIN ancestry a ON a.node_id = n.id"
         " WHERE a.module_id = ? AND n.kind = 'type' AND e.kind IN ('uses_type','instantiates','extends','implements')"
         " GROUP BY n.id ORDER BY c DESC, n.name LIMIT 8", m)))[:4]
+    by_module = {mp["module"]: mp["parts"] for mp in (parts or ()) if len(mp["parts"]) >= 2}
     systems = defaultdict(list)
     for r in q("SELECT n.id, n.parent_id, n.name, (SELECT value FROM annotations a WHERE a.node_id = n.id AND a.key = 'name'"
                " ORDER BY layer = 'intent' DESC LIMIT 1) AS given FROM nodes n WHERE n.kind = 'system'"):
@@ -198,13 +218,15 @@ def generate(con, repo_id: str) -> dict:
                 "Nothing depends on it, so it is an end point: an application, a tool or a host for the code below it." if d and not u else
                 "It stands alone: no other module uses it and it uses none." if not d and not u else "")
         tt = top_types(m)
+        kids = by_module.get(m)
         stop(("The foundation: " if k == 0 and u else "Module: ") + mods[m]["name"], "node", m,
              f"{mods[m]['name']} has {_plural(files, 'file')} and about {loc:,} lines. "
              + (f"It is used by {_names(un)}. " if un else "It is used only by tests and samples. " if u else "")
              + (f"It depends on {_names(dn)}. " if dn else "")
              + role + " "
              + (f"Its most used types are {_names(tt)}. " if tt else "")
-             + (f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5, '; ')}." if systems.get(m) else ""))
+             + (_parts_sentence(kids) if kids else
+                f"Clustering splits it into {len(systems[m])} groups: {_names(sorted(systems[m]), 5, '; ')}." if systems.get(m) else ""))
     if len(order) > 5:
         stops[-1]["narrative"] += f" {len(order) - 5} smaller modules are left out of this tour."
 

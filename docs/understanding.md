@@ -4,6 +4,27 @@ What the map finds and how to ask it: exact references from a compiler, measured
 
 Part of Leyline's documentation: the [README](../README.md) is the start, and [quick-reference.md](quick-reference.md) is one page of what to ask.
 
+### What a function or type is for
+
+Every function and type carries one line saying what it is for, so an answer does not stop at who calls it. Two
+sources, the one written by a reader first:
+
+- **A `responsibility` annotation** (`annotate`, or `name_part` for a part's type), the intent layer before the
+  inferred one. One marked stale, because the code behind its evidence changed, is passed over.
+- **The author's own words**: the comment above a declaration, or a Python docstring inside it, read when the file is
+  mapped and kept in the node's attributes as `doc`. A comment edit re-reads its own file and nothing else.
+
+The summary is the first sentence of whichever applies, cut to 200 characters (120 under a step of a walk, a busiest
+function or a neighbour in a context outline). `search` and `expand` rows carry it as `summary` (and the `search` and
+`show` commands print it), `context` prints it as a `--` line under the focus and the code linked directly to it,
+`module_outline` carries it on busiest functions, key types and key functions, and each step of `explain_path` says
+what it does. `find_flows` ranks by it: the comment is one of the fields a word is looked for in, an annotation is read
+on each call (so one written after the map is found at once, under "its note"), and a function whose own words answer
+two or more words of the question counts for more than one that matches a single word of its name.
+
+An agent that has read some code should leave a sentence for the next one: `annotate(node, "responsibility", "...",
+evidence)` on the function, or `name_part` on a part.
+
 ### Exact references
 
 The syntax resolvers below work without a compiler and are sometimes wrong. Where a compiler's view
@@ -119,7 +140,11 @@ flow, a pattern, a saved view) with a few sentences on what to notice. `leyline 
 orientation tour from the graph alone: what the repository is, where it starts, the modules from the
 most depended-on outward, the main abstractions and boundaries, one test path worth tracing, how it
 is tested, and what the map cannot see. Every sentence in it is a count or a name the store can
-back. An agent can write further tours with `save_tour`; `skills/leyline-tour/SKILL.md` says how.
+back. A module of 30 files or more (the size the map page splits) is described by its parts, as `leyline outline`
+splits it: the ones an agent named with `name_part`, with what each does, in the outline's order and marked when a name
+may be stale, and how many are still to name. A smaller module, and a module whose parts could not be worked out, is
+described by the groups the map proposed. `leyline map` says the same at the end of its `Next:` line when the largest
+product module has parts with no name, and the `map` tool lists the orientation steps in its `next`. An agent can write further tours with `save_tour`; `skills/leyline-tour/SKILL.md` says how.
 
 ### Change coupling
 
@@ -191,7 +216,16 @@ marked) or words to search for. Every function, type, field and test is ranked b
 over calls, channel links, type use and containment, each way, with a small boost for code a test reaches and code an
 entry point runs first. The outline shows declaration lines, not bodies, file by file, most related file first: the focus
 marked `>`, each channel end in words ("answers GET /api/x", "writes table t"), and what calls the focus or what it calls
-said so. The last lines say how much was left out and name the nearest of it. The ranking visits only code near the focus,
+said so. The last lines say how much was left out and name the nearest of it. With `bodies` (`leyline context <focus> --bodies`, or the tool's `bodies` argument) the code itself follows the outline,
+which then takes a third of the budget (the budget is raised to 600 tokens if it is smaller, and the answer says so).
+It holds, in this order: the whole body of each focus function, at most three and cut after 80 lines; each type the focus
+takes as a parameter or returns, as its declaration and at most 12 field lines, never its methods; and, for each direct
+caller (those that are not test code first, nearest in the rank first), the 40 lines around the call, or 16 for a call made
+from the top level of a file. A caller found by a guess says so, and so does one of a method the focus overrides. A text is
+shown once, a function defined twice shows each definition, and no sibling method comes with any of them. What fits is
+decided from the lengths the map holds before a file is read, and packing stops after ten bodies are too long for what is
+left; those and the rest are named under "Bodies left out". A file that has become a link out of the repository is not
+read, and a function edited since the map is not shown (it is named as changed since the map). The ranking visits only code near the focus,
 and the graph is read once per map run: on Parlance (160,000 lines) the first call takes 0.3 s and later ones 0.05 s.
 
 ### Asking how something works

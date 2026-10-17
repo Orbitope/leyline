@@ -20,8 +20,10 @@ It works with the Leyline MCP server or with the `leyline` command alone:
 | `save_tour(title, stops)` | none: the server only |
 | `map` | `leyline map <repo>` |
 
-Add `--json` to a command for the same fields the tool returns. If neither the server nor the command is there, say so
-and stop. If a tool says nothing is mapped, run `map` first.
+Add `--json` to `find-flows`, `explain-path` or `diagram` for the same fields the tool returns (`source` and
+`map` have none). If neither the server nor the command is there, say so
+and stop. If a tool says nothing is mapped, run `map` first, with the absolute path of the repository you work in
+(a git worktree is its own checkout, and the server then reads its store).
 
 ## Steps
 

@@ -1,0 +1,10 @@
+- [ ] 1.1 Add `src/leyline/query.py: reaching`: the tests and entry points that reach a callable over the reverse call graph `query._adjacency` gives, with totals, the nearest first by stored flow depth then by distance, each with its node id and its flow id when one exists, reading the flow steps once
+- [ ] 1.2 Change `query.expand` to add, for every callable, `tests_reaching` and `entries_reaching` read with `query.reaching`, and `tests_measured` read with the coverage reader `coverage.tests_for` when a run was imported
+- [ ] 1.3 Change `cli._show` to print "tests that reach it on the map (N): …", "reached from (N): …" and "tests measured running it (N): …"
+- [ ] 1.4 Change `server.expand` to name `tests_reaching`, `entries_reaching` and `tests_measured` in its description
+- [ ] 1.5 Change skills/leyline-ask/SKILL.md to say that the expand tool answers which tests reach a function
+- [ ] 2.1 Add the test "Expand says which tests reach a function"
+- [ ] 2.2 Add the test "A function no tests reach says so"
+- [ ] 2.3 Add the test "Measured tests are shown apart from static ones"
+- [ ] 2.4 Add the test "Show prints the tests that reach a function"
+- [ ] 2.5 Add the test "Expand reads the flow steps once"

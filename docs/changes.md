@@ -61,7 +61,9 @@ After implementation and a re-index, `verify` (inside `check`) marks each task f
 from its test's recorded result, lists edits outside the spec, new links between modules and rules
 newly broken, and appends the result to `leyline.md`. It exits 0 only when the change was done as
 agreed. A new function that only code named in the spec calls is listed as a helper, not as an edit
-outside the spec.
+outside the spec. A new link between modules whose target the change names in backticks (in its proposal, design, tasks
+or specs, such as the standard library module a task says it will use) was planned: it is listed, and does not hold
+the verdict up. One it does not name does.
 
 Each task and scenario gets one verdict, shown in the tables, counted under them ("7 proven, 1 needs
 you, 1 inconclusive"), and given as `verdict` and `verdict_why` in the MCP `check` answer:
@@ -332,6 +334,39 @@ when every one of its arrows is a link the baseline holds (`diagrams.unbacked(ba
 checks a diagram of the code as it is). A baseline taken by an older Leyline kept which pairs were linked but not in
 what order: it still compares, and the code as it was is listed, not drawn. Keeping the order made a baseline of
 Parlance about 22% larger (8.2 MB to 10.0 MB).
+
+### Covered, but not asserted: a mutation plan
+
+A test can run every changed line and assert nothing about them; coverage cannot see it. A mutation can: break a changed
+line on purpose and see whether the scenario's own tests fail.
+
+```
+leyline mutants <change>                         # after the change is written: the plan, under .leyline/mutants/<change>/
+python .leyline/mutants/<change>/run.py          # runs the project's tests with each mutant applied; may be stopped and resumed
+<run the tests> | leyline check <change> --tests - --mutants .leyline/mutants/<change>/results.jsonl
+```
+
+The plan is for a spec change only. It holds at most 30 small breaks (a comparison flipped, `and` turned into `or`, a
+`not` dropped, a returned value replaced with None, an integer one more, `+` turned into `-`), at most 3 to a line, one to
+each edited function first so no function is left out while another has three. They are made only on the lines whose text
+is new in the functions the change edited, in Python product code: a function that only moved has none, tests have none,
+and other languages are named in the plan as having no operators yet. Each is a patch (in the file's own line endings,
+for `git apply` from the repository's top), with the tests that reach its function in two stages: the tests of the
+scenarios first, then up to 40 others.
+
+Leyline writes the plan and reads the results; it never runs the code. `run.py` (standard library only) is what runs
+it: the tests unmutated first (what fails there is never counted), then for each mutant its patch, the scenarios' own
+tests in full and, if none failed, the others until one does, under a timeout of twice the unmutated run (at least 30
+seconds; `LEYLINE_MUTANT_TIMEOUT` sets it). It always puts the file back, also after an error, a timeout or Ctrl-C, and a
+run that was killed puts it back the next time. One line per mutant goes to `results.jsonl`: `killed`, `survived`,
+`timeout` or `error`, and which tests failed.
+
+`check --mutants` refuses results made for another plan or for code that has changed since (which also catches a patch left
+applied). Then, for each passing scenario, it looks at the changed functions its tests reach: if every mutant of them ran
+and none failed the scenario's own tests (another test failing it does not count), the scenario is `unasserted`, which
+does not block unless the project lists it under `[check] blocking`. A mutant that was not run leaves the scenario unjudged. A
+person may append `{"plan": "<id>", "id": "m-3", "status": "equivalent", "why": "..."}` for a mutant that cannot change
+behavior, and it counts for nothing. The page lists the survivors under "Covered, but not asserted".
 
 ### Reviewing a change after it is made
 

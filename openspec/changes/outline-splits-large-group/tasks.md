@@ -1,0 +1,8 @@
+- [ ] 1.1 Add `outline._resplit` in `src/leyline/outline.py`: the pieces of one group by the two-step community detection `outline._groups` uses, once, with files no community took kept under the group's own id and label; fewer than two pieces gives the group back
+- [ ] 1.2 Change `outline._groups` to replace, with `outline._resplit`, a group holding more than 40% of the loose files' lines and at least 6 files
+- [ ] 1.3 Change `outline.names` to match an old row to a new part by shared files when their parents differ
+- [ ] 1.4 Change `outline._group_label` to say how many files the group holds beyond the three it names, keeping the "group" ending
+- [ ] 2.1 Add the test "A group holding most of a flat module is split again", with a fixture whose large group separates with the code it uses
+- [ ] 2.2 Add the test "A group that does not separate stays whole"
+- [ ] 2.3 Add the test "A name given to a split group is marked stale, not lost"
+- [ ] 2.4 Add the test "The label of a group counts the files it does not name"
