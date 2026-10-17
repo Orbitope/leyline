@@ -28,6 +28,7 @@ command for each tool this skill names:
 | `spec_findings`, `spec_resolve` | `leyline spec findings <id>`, `leyline spec resolve <finding id> accepted\|rejected\|deferred "why"` |
 | `check` (with `coverage_path`) | `... \| leyline check <id> --tests - --coverage .coverage` (per-test coverage: `pytest --cov --cov-context=test`) |
 | `affected_tests` | `leyline affected-tests <id>`: the tests to run for the change, as a command |
+| `mutants` | `leyline mutants <id>`: a plan of small breaks of the code the change edited; run `python .leyline/mutants/<id>/run.py`, then `check` with `mutants_path` (`--mutants`) |
 | `drift` (`accept`) | `leyline drift` (`--accept`) |
 
 Where this skill says a result field (`next`, `status.blocking`, `page`), the command prints the same
@@ -120,7 +121,13 @@ why not.
    the task, or the undo, as in "Proposing a missing task".
    Each task and scenario carries a `verdict` (proven, partial, contradicted, inconclusive, needs a
    person) and `verdict_why`; quote them as they are, and name every item that needs a person.
-3. Pass on `next`.
+3. When the person wants to know whether the scenarios' tests assert what the change did (or a test looks too easy), call
+   `mutants` for the change, run `python .leyline/mutants/<id>/run.py` (it runs the project's tests with each mutant
+   applied, and always puts the files back), and call `check` again with the same test output and `mutants_path`. A
+   scenario whose verdict is `unasserted` passes, but none of its own tests failed a mutant of the changed code: say
+   which mutants survived (the page lists them), propose the assertion that would fail them, and do not call it a failure
+   of the change: it does not block unless the project says so, and a mutant that changes nothing looks the same.
+4. Pass on `next`.
 
 A check that finds the change done as agreed records what each code name in it means now, in
 `openspec/leyline-anchors.json`. Commit that file with the spec. Later, `drift` says which names in the

@@ -29,6 +29,7 @@ without reading it again.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -36,7 +37,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
-from . import diff, query, store
+from . import diff, query, store, summaries
 from .diagrams import cut as diagrams_cut
 
 WEIGHTS = {"calls": 1.0, "overrides": 1.0, "communicates": 1.0, "extends": 0.8, "implements": 0.8,
@@ -50,6 +51,18 @@ TESTED_BOOST, ENTRY_BOOST = 1.15, 1.3
 SHOWN = ("callable", "type", "field", "test")
 LINE_MAX = 160                   # a declaration longer than this is cut
 MIN_TOKENS, MAX_TOKENS = 200, 8000
+SUMMARY_WIDTH = 120              # characters of the summary under the focus and the code linked directly to it
+# With `bodies`: what is shown of the code itself.
+BODY_LINES = 80                  # a focus function's body is cut after this many lines
+CALLER_LINES = 40                # lines of a caller shown around the call
+TOP_LEVEL_LINES = 16             # lines shown around a call made from the top level of a file
+FOCUS_BODIES = 3                 # focus functions that get a body, the highest ranked
+FIELD_LINES = 12                 # field lines of a type
+BODY_MISSES = 10                 # bodies refused for size before packing stops
+BODIES_MIN_TOKENS = 600          # the least budget bodies work with
+AVG_LINE_CHARS = 40              # what a line of code is taken to cost before it is read
+LEFT_OUT_LISTED = 10             # bodies named under "Bodies left out"; the rest are counted
+BLANKS = " \t\r\n\x0b\x0c"        # what bytes.strip takes off a line, as the index hashed it
 
 # What a channel end does, from the sender's side and the receiver's; the address follows. A DI link names the other end.
 CHANNEL_WORDS = {
@@ -75,8 +88,10 @@ class Graph:
         self.parent: list[int] = []
         self.path: list[Optional[str]] = []
         self.line: list[int] = []
+        self.end: list[int] = []
+        self.hash: list[Optional[str]] = []
         self.raw: list[Optional[str]] = []
-        for r in con.execute("SELECT id, kind, name, parent_id, path, span_start, attrs FROM nodes"
+        for r in con.execute("SELECT id, kind, name, parent_id, path, span_start, attrs, span_end, content_hash FROM nodes"
                              " WHERE kind IN ('file', 'type', 'callable', 'field', 'test', 'entry_point')"):
             self.index[r[0]] = len(self.ids)
             self.ids.append(r[0])
@@ -86,6 +101,8 @@ class Graph:
             self.path.append(r[4])
             self.line.append(r[5] or 0)
             self.raw.append(r[6])
+            self.end.append(r[7] or 0)
+            self.hash.append(r[8])
         ix = self.index
         self.parent = [ix.get(p, -1) if p else -1 for p in self.parent]
         pair: dict[tuple, dict] = defaultdict(dict)
@@ -347,20 +364,35 @@ class _Sources:
     def __init__(self, con):
         self.roots = store.roots(con)
         self.files: dict = {}
+        self.refused: dict = {}
 
-    def line(self, node_id: str, path: str, line: int) -> Optional[str]:
+    def file(self, node_id: str, path: Optional[str]) -> Optional[list]:
+        """The lines of a mapped file, read from the working tree; None when it cannot be (`why` says why). A file that
+        has become a link to one outside the repository is not read, as `source` does not read it."""
         repo = node_id.split(":", 1)[0]
         root = self.roots.get(repo)
-        if root is None or not path or not line:
+        if root is None or not path:
             return None
         key = (repo, path)
         if key not in self.files:
             from .indexer import source_lines
-            try:
-                self.files[key] = source_lines(Path(root) / path)
-            except OSError:
-                self.files[key] = []
-        lines = self.files[key]
+            full = Path(root) / path
+            if not store.inside(full, root):
+                self.files[key], self.refused[key] = None, "a link out of the repository: not read"
+            else:
+                try:
+                    self.files[key] = source_lines(full)
+                except OSError:
+                    self.files[key], self.refused[key] = None, "the file cannot be read"
+        return self.files[key]
+
+    def why(self, node_id: str, path: Optional[str]) -> str:
+        return self.refused.get((node_id.split(":", 1)[0], path or ""), "the file is not on disk")
+
+    def line(self, node_id: str, path: str, line: int) -> Optional[str]:
+        if not line:
+            return None
+        lines = self.file(node_id, path) or []
         return lines[line - 1].strip() if 0 < line <= len(lines) else None
 
 
@@ -412,12 +444,249 @@ def _notes(g: Graph, u: int, focus: set, names: dict) -> str:
     return "; ".join(notes + other)
 
 
-def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
-    """The outline for a focus within a token budget: {"text", "tokens", "focus", "shown", "left_out", ...}."""
+# -- the code itself, when asked for (`bodies`) ----------------------------------------------------
+def _span(g: Graph, u: int) -> list[tuple[int, int]]:
+    """The line ranges of a node: one for each definition, since a function defined in both branches of an if is one
+    node over both, and what sits between them is not its code."""
+    try:
+        a = json.loads(g.raw[u]) if g.raw[u] else {}
+    except ValueError:
+        a = {}
+    defs = a.get("definitions")
+    if defs:
+        return [(int(s), int(e or s)) for s, e in defs]
+    start = g.line[u]
+    return [(start, max(g.end[u], start))] if start else []
+
+
+def _hash_of(lines: list[str], spans: list[tuple[int, int]]) -> str:
+    """The content hash the index made of a node, from its lines as they are now (see Indexer._parse_file and _add)."""
+    h = None
+    for a, b in spans:
+        one = hashlib.sha1(b"\n".join(ln.strip(BLANKS).encode("utf-8") for ln in lines[a - 1:b])).hexdigest()[:16]
+        h = one if h is None else hashlib.sha1(f"{h}|{one}".encode()).hexdigest()[:16]
+    return h or ""
+
+
+def _body(g: Graph, u: int, sources: "_Sources", around: Optional[int] = None, limit: int = BODY_LINES) -> dict:
+    """The lines of a node, read from the working tree: {"text": [lines], "ranges": [(first, last)], "cut": how it was
+    cut or None}, or {"why": ...} when they cannot be shown. A file that is a link out of the repository is not read; one
+    edited since the map (its lines no longer hash to what the index saw) is not shown, since the map's line numbers
+    would pick the wrong lines. A definition longer than `limit` is cut around the line `around` (a call), or after its
+    first `limit` lines."""
+    spans = _span(g, u)
+    if not spans:
+        return {"why": "it has no source span on the map"}
+    lines = sources.file(g.ids[u], g.path[u])
+    if lines is None:
+        return {"why": sources.why(g.ids[u], g.path[u])}
+    if g.hash[u] and g.end[u] and _hash_of(lines, spans) != g.hash[u]:
+        return {"why": "changed since the map: map again"}
+    room, ranges, text, cut = limit, [], [], None
+    for k, (a, b) in enumerate(spans):
+        if room <= 0:
+            cut = cut or f"the other {len(spans) - k} definition(s) are not shown"
+            break
+        n = b - a + 1
+        if n <= room:
+            s, e = a, b
+        elif around is not None and a <= around <= b:
+            s = max(a, min(around - room // 2, b - room + 1))
+            e = s + room - 1
+            cut = f"lines {s}-{e} of {a}-{b}, around the call at line {around}"
+        else:
+            s, e = a, a + room - 1
+            cut = f"cut after line {e} of {a}-{b}"
+        if text:
+            text.append("...")
+        text += [ln.rstrip() for ln in lines[s - 1:e]]
+        ranges.append((s, e))
+        room -= e - s + 1
+    return {"text": text, "ranges": ranges, "cut": cut}
+
+
+def _type_lines(con, g: Graph, u: int, sources: "_Sources") -> list[str]:
+    """A type as a declaration: its first line and at most FIELD_LINES lines declaring its fields, and how many more
+    there are. Its methods are not shown."""
+    fields = [g.index[r[0]] for r in con.execute(
+        "SELECT id FROM nodes WHERE parent_id = ? AND kind = 'field' ORDER BY span_start, id", (g.ids[u],)) if r[0] in g.index]
+    out = [_declaration(g, u, sources)] + ["    " + _declaration(g, k, sources) for k in fields[:FIELD_LINES]]
+    if len(fields) > FIELD_LINES:
+        out.append(f"    and {len(fields) - FIELD_LINES} more fields")
+    return out
+
+
+def _is_test_code(g: Graph, u: int) -> bool:
+    return g.kind[u] == "test" or bool(re.search(r"(^|/)(tests?|spec)/|(^|/)test_[^/]*$|_test\.\w+$|\.test\.\w+$", g.path[u] or ""))
+
+
+def _callers_of(con, g: Graph, funcs: list[int], weight) -> list[dict]:
+    """The direct callers of some functions, with the line of the first call: those that are not test code first, then
+    the nearest in the rank. A caller found by a guess says so, and so does one of the method a focus function overrides
+    (it calls that method, which this one answers)."""
+    found: dict[int, dict] = {}
+
+    def add(rows, through):
+        for src, line, precision in rows:
+            u = g.index.get(src)
+            if u is not None and u not in funcs and u not in found:
+                found[u] = {"u": u, "line": line or 0, "guessed": precision == "guess", "through": through}
+    for f in funcs:
+        add(con.execute("SELECT src_id, site_start, precision FROM calls WHERE dst_id = ? ORDER BY site_start", (g.ids[f],)), None)
+        for (base,) in con.execute("SELECT dst_id FROM edges WHERE kind = 'overrides' AND src_id = ?", (g.ids[f],)):
+            add(con.execute("SELECT src_id, site_start, precision FROM calls WHERE dst_id = ? ORDER BY site_start", (base,)),
+                _short(g, g.index[base]) if base in g.index else base)
+    return sorted(found.values(), key=lambda c: (_is_test_code(g, c["u"]), -weight(c["u"]), g.ids[c["u"]]))
+
+
+def _focus_types(con, g: Graph, funcs: list[int], own: list[int]) -> list[int]:
+    """The types the focus is about: those given as the focus, and those its functions take as a parameter or return, by
+    the role the map keeps on each type link."""
+    out, seen = [], set()
+    for u in own:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    for f in funcs:
+        for dst, attrs in con.execute("SELECT dst_id, attrs FROM edges WHERE kind = 'uses_type' AND src_id = ?", (g.ids[f],)):
+            try:
+                role = (json.loads(attrs) if attrs else {}).get("role")
+            except ValueError:
+                role = None
+            u = g.index.get(dst)
+            if role in ("param", "return") and u is not None and g.kind[u] == "type" and u not in seen:
+                seen.add(u)
+                out.append(u)
+    return sorted(out, key=lambda u: (g.name[u], g.ids[u]))
+
+
+def _bodies(con, g: Graph, sources: "_Sources", fset: set, seeds: dict, weight, room: int) -> tuple[list[str], list[dict], int]:
+    """The code to read, packed into `room` characters: the focus functions (at most FOCUS_BODIES, the highest ranked),
+    the types the focus takes or returns, as declarations, and the lines around each call in their direct callers. What
+    fits is decided from the lengths the map holds before any file is read, packing stops after BODY_MISSES bodies
+    refused for size, and a text that is already shown is not shown again. Returns (the lines of the text, what each
+    body is: id, name, role, path, lines, shown whole, cut or left out, and why, with at most LEFT_OUT_LISTED of those
+    left out, and how many more were left out)."""
+    funcs = sorted((u for u in fset if g.kind[u] in ("callable", "test")), key=lambda u: (-seeds.get(u, 0.0), g.ids[u]))
+    shown_funcs, more_funcs = funcs[:FOCUS_BODIES], funcs[FOCUS_BODIES:]
+    cands = [{"role": "focus", "u": u, "limit": BODY_LINES} for u in shown_funcs]
+    # The types come before the callers: they are short, a function cannot be read without them, and a hub's many
+    # callers would otherwise use the room up first.
+    for u in _focus_types(con, g, shown_funcs, [u for u in fset if g.kind[u] == "type"]):
+        cands.append({"role": "type", "u": u})
+    for c in _callers_of(con, g, shown_funcs, weight):
+        top = g.name[c["u"]].startswith("<")
+        cands.append({"role": "caller", "u": c["u"], "limit": TOP_LEVEL_LINES if top else CALLER_LINES,
+                      "around": c["line"] or None, "note": ("guessed" if c["guessed"] else "")
+                      + (f"through {c['through']}" if c["through"] else "")})
+    reserve = min(1200, room // 3)             # what the lines naming what was left out may take
+    room -= reserve
+    blocks: list[list[str]] = []
+    meta: list[dict] = []
+    left: list[dict] = []
+    covered: dict[str, list] = defaultdict(list)   # path -> line ranges already shown
+    misses, first = 0, True
+
+    def refuse(c, why, count=True):
+        u = c["u"]
+        spans = _span(g, u)
+        left.append({"id": g.ids[u], "name": _short(g, u), "role": c["role"], "path": g.path[u] or "",
+                     **({"lines": [spans[0][0], spans[-1][1]]} if spans else {}), "shown": "left out", "why": why})
+
+    for k, c in enumerate(cands):
+        u, role = c["u"], c["role"]
+        path = g.path[u] or ""
+        head = f"{'>' if role == 'focus' else ' '} {path}:"
+        if role == "type":
+            text = _type_lines(con, g, u, sources)
+            size = sum(len(x) + 5 for x in text) + len(head) + 40
+            if size > room:
+                refuse(c, "too long for what is left")
+                misses += 1
+            else:
+                spans = _span(g, u)
+                room -= size
+                blocks.append([f"{head}{spans[0][0] if spans else ''}  {_short(g, u)}  [a type the focus takes or returns]"]
+                              + ["    " + x for x in text])
+                meta.append({"id": g.ids[u], "name": _short(g, u), "role": role, "path": path, "shown": "whole",
+                             **({"lines": [spans[0][0], spans[-1][1]]} if spans else {})})
+        else:
+            spans = _span(g, u)
+            wanted = sum(min(b - a + 1, c["limit"]) for a, b in spans)
+            est = wanted * AVG_LINE_CHARS + 120
+            if est > room and not (role == "focus" and first):
+                refuse(c, f"too long for what is left ({sum(b - a + 1 for a, b in spans)} lines)")
+                misses += 1
+            else:
+                limit = c["limit"]
+                if est > room:        # the first focus function is always shown, cut to what there is
+                    limit = max(6, (room - 120) // AVG_LINE_CHARS)
+                got = _body(g, u, sources, c.get("around"), limit)
+                if "why" in got:
+                    refuse(c, got["why"])
+                elif any(not (e < a or s > b) for s, e in got["ranges"] for a, b in covered[path]):
+                    pass              # it is, or contains, text already shown
+                else:
+                    text, cut = got["text"], got["cut"]
+                    while text and sum(len(x) + 5 for x in text) + 160 > room and len(text) > 3:
+                        text = text[:-1]
+                        cut = cut or "cut to fit"
+                    if sum(len(x) + 5 for x in text) + 160 > room:
+                        refuse(c, "too long for what is left")
+                        misses += 1
+                    else:
+                        if len(text) < len(got["text"]):
+                            cut = f"cut after line {got['ranges'][0][0] + len(text) - 1}"
+                        room -= sum(len(x) + 5 for x in text) + 160
+                        covered[path] += got["ranges"]
+                        a0, b0 = got["ranges"][0][0], got["ranges"][-1][1]
+                        why = {"focus": "the focus", "caller": "calls the focus"
+                               + (f" at line {c['around']}" if c.get("around") else "")}[role]
+                        if c.get("note"):
+                            why += f" ({c['note']})"
+                        blocks.append([f"{head}{a0}-{b0}  {_short(g, u)}  [{why}" + (f"; {cut}" if cut else "") + "]"]
+                                      + ["    " + x for x in text])
+                        meta.append({"id": g.ids[u], "name": _short(g, u), "role": role, "path": path,
+                                     "lines": [a0, b0], "shown": "cut" if cut else "whole", **({"why": cut} if cut else {}),
+                                     **({"call_line": c["around"]} if c.get("around") else {}),
+                                     **({"note": c["note"]} if c.get("note") else {})})
+        first = False
+        if misses >= BODY_MISSES:
+            for rest in cands[k + 1:]:
+                refuse(rest, "packing stopped: ten bodies were already too long for what is left")
+            break
+    for u in more_funcs:
+        refuse({"role": "focus", "u": u}, f"only the {FOCUS_BODIES} highest ranked focus functions get a body")
+    out = ["Bodies (the focus, the types it takes, then what calls it):", ""]
+    for b in blocks:
+        out += b + [""]
+    if not blocks:
+        out += ["Nothing to show: the focus holds no function, and no type it takes is on the map.", ""]
+    if left:
+        text, used = "Bodies left out: ", len("Bodies left out: ")
+        names = []
+        for x in left[:LEFT_OUT_LISTED]:
+            piece = f"{x['name']} ({x['path']}" + (f", {x['lines'][1] - x['lines'][0] + 1} lines" if x.get("lines") else "") + f"): {x['why']}"
+            if used + len(piece) + 2 > reserve and names:
+                break
+            names.append(piece)
+            used += len(piece) + 2
+        rest = len(left) - len(names)
+        out.append(text + "; ".join(names) + (f"; and {rest} more." if rest else "."))
+    return out, meta + left[:LEFT_OUT_LISTED], max(0, len(left) - LEFT_OUT_LISTED)
+
+
+def build(con, focus: list[str] | str, budget_tokens: int = 2000, bodies: bool = False) -> dict:
+    """The outline for a focus within a token budget: {"text", "tokens", "focus", "shown", "left_out", ...}. With
+    `bodies`, the code itself follows the outline (see `_bodies`), the outline taking a third of the budget, which is
+    at least BODIES_MIN_TOKENS; the answer then also has `bodies`, what each is."""
     import time
     t0 = time.perf_counter()
     focus = [focus] if isinstance(focus, str) else list(focus or [])
     budget = max(MIN_TOKENS, min(int(budget_tokens or 2000), MAX_TOKENS))
+    raised = bool(bodies and budget < BODIES_MIN_TOKENS)
+    if raised:
+        budget = BODIES_MIN_TOKENS
     g = graph(con)
     t_load = time.perf_counter() - t0
     seeds, found = resolve_focus(con, g, focus)
@@ -440,7 +709,8 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     t_rank = time.perf_counter() - t0 - t_load
 
     sources = _Sources(con)
-    budget_chars = budget * 4
+    total_chars = budget * 4
+    budget_chars = total_chars // 3 if bodies else total_chars   # the outline's share
     head_names = [f["focus"] for f in found if "ids" in f]
     header = f"Code around {', '.join(head_names)[:200]}: declarations, the most related files first; > marks the focus."
     # What the focus named that is not on the map is said at the end, and counts against the budget too.
@@ -452,11 +722,17 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
     used, misses, left = reserve, 0, []
     shown_path: dict[str, str] = {}      # a path shortened to fit the focus into a small budget
 
+    # What the focus, and the code linked directly to it, is for: one lookup for those, not for every ranked candidate.
+    near_ids = [u for u in (fset | near) if _shown(g, u)]
+    got = summaries.for_nodes(con, [g.ids[u] for u in near_ids], width=SUMMARY_WIDTH)
+    said = {u: got[g.ids[u]] for u in near_ids if g.ids[u] in got}
+
     def cost(u):
         decl, note = lines_of.get(u) or (_declaration(g, u, sources), _notes(g, u, fset, names))
         lines_of[u] = (decl, note)
         depth = len(_ancestors(g, u))
-        return 2 + 2 * depth + len(decl) + 1 + ((6 + 2 * depth + len(note) + 1) if note else 0)
+        return (2 + 2 * depth + len(decl) + 1 + ((6 + 2 * depth + len(note) + 1) if note else 0)
+                + ((6 + 2 * depth + len(said[u]) + 1) if u in said else 0))
 
     for pos, u in enumerate(order):
         need = [a for a in _ancestors(g, u) if a not in chosen] + [u]
@@ -464,6 +740,8 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
         if used + c > budget_chars and u in fset and not chosen:
             # The focus is always shown: when it does not fit, shorten its file's path (keeping the end, which names
             # the file) and its lines to what the budget has left.
+            for x in need:   # a budget this small shows the focus's own lines only
+                said.pop(x, None)
             room = budget_chars - used - sum(cost(x) - len(lines_of[x][0]) - len(lines_of[x][1]) for x in need) - 2
             plen = min(len(g.path[u]), max(24, room // 3))
             shown_path[g.path[u]] = g.path[u] if plen >= len(g.path[u]) else "..." + g.path[u][-(plen - 3):]
@@ -491,6 +769,8 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
             depth = len(_ancestors(g, u))
             decl, note = lines_of.get(u) or (_declaration(g, u, sources), _notes(g, u, fset, names))
             out.append(("> " if u in fset else "  ") + "  " * depth + decl)
+            if u in said:
+                out.append("  " + "  " * depth + "    -- " + said[u])
             if note:
                 out.append("  " + "  " * depth + "    -- " + note)
         out.append("")
@@ -508,10 +788,20 @@ def build(con, focus: list[str] | str, budget_tokens: int = 2000) -> dict:
         out.append("Left out: nothing within two links of the focus.")
     out += missing
     text = "\n".join(out).rstrip() + "\n"
+    described, unlisted = None, 0
+    if bodies:
+        lines, described, unlisted = _bodies(con, g, sources, fset, seeds, weight, max(0, total_chars - len(text) - 60))
+        if raised:
+            lines.insert(0, f"The budget was raised to {BODIES_MIN_TOKENS} tokens, the least that bodies work with.")
+        text += "\n" + "\n".join(lines).rstrip() + "\n"
     return {"focus": found, "budget_tokens": budget, "tokens": len(text) // 4, "text": text,
             "shown": {"symbols": len(chosen), "files": len(files)},
             "left_out": {"direct": direct, "two_links_away": len(related) - direct, "files": len(left_files),
                          "nearest": [{"id": g.ids[u], "name": _short(g, u), "path": g.path[u]} for u in related[:10]]},
+            **({"bodies": described} if described is not None else {}),
+            **({"bodies_left_out_not_listed": unlisted} if unlisted else {}),
+            **({"note": f"The budget was raised to {BODIES_MIN_TOKENS} tokens, the least that bodies work with."}
+               if raised else {}),
             "seconds": {"load": round(t_load, 3), "rank": round(t_rank, 3),
                         "total": round(time.perf_counter() - t0, 3)}}
 

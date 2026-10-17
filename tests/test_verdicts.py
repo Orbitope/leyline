@@ -43,7 +43,7 @@ def test_config_default_override_and_mistakes(tmp_path):
     c = verdicts.load_config(_openspec(tmp_path / "b", '[check]\nblocking = ["contradicted", "needs-you", "maybe", "proven"]\n'))
     assert c["blocking"] == ["contradicted", "needs a person"] and c["file"] == "openspec/leyline.toml"
     assert c["notes"] == ['openspec/leyline.toml names "maybe", which is not a verdict; it was left out.'
-                          " The verdicts are proven, partial, contradicted, inconclusive, needs a person."]
+                          " The verdicts are proven, partial, contradicted, inconclusive, needs a person, unasserted."]
     c = verdicts.load_config(_openspec(tmp_path / "c", "[check\nblocking = 3\n"))
     assert c["blocking"] == list(verdicts.DEFAULT_BLOCKING) and "could not be read" in c["notes"][0]
     c = verdicts.load_config(_openspec(tmp_path / "d", "[check]\nblocking = 3\n"))

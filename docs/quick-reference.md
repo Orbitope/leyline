@@ -97,6 +97,7 @@ Only you resolve a finding. A rejection with a reason becomes a learning.
 | contradicted | the named code didn't change, but other code did | its test fails | yes |
 | inconclusive | the map can't place the code, or nothing changed | no result recorded | yes |
 | needs a person | it names no code | it passes, but doesn't reach the changed code | no |
+| unasserted | | it passes, but none of its own tests failed a mutant of the changed code it reaches (only with `--mutants`) | no |
 
 A tick in `tasks.md` never counts. Change which verdicts block in `openspec/leyline.toml`:
 
@@ -104,6 +105,9 @@ A tick in `tasks.md` never counts. Change which verdicts block in `openspec/leyl
 [check]
 blocking = ["contradicted", "inconclusive", "partial", "needs a person"]
 ```
+
+`unasserted` is the one a project may add (`"unasserted"`) once it trusts its mutation results: a mutant that changes
+nothing (an equivalent one) looks the same as a test that asserts nothing, so it does not block by default.
 
 ## Writing a spec Leyline can read
 

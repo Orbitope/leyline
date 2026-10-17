@@ -42,7 +42,7 @@ def remote_url(url: Optional[str]) -> Optional[str]:
     return url if ok else None
 
 
-def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict:
+def graph(con, with_sources: bool = True, memory: Optional[Path] = None, found: Optional[list] = None) -> dict:
     """The whole store in the compact shape the viewer loads. `memory` is the file that remembers where boxes
     were drawn last time (see `layout`); without it the layout is worked out afresh, the same way each time."""
     rows = con.execute("SELECT * FROM nodes ORDER BY kind = 'repo' DESC, id").fetchall()
@@ -197,11 +197,12 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
         if not remote_url(r.get("url")):
             r.pop("url", None)
     if with_sources:
+        from .adapters import ASSET_LANGUAGES
         from .indexer import source_lines
         # Keyed by path; in a workspace by repo/path, since two repositories can hold the same path.
         several = len(repos) > 1
         for r in rows:
-            if r["kind"] == "file" and r["repo_id"] in roots:
+            if r["kind"] == "file" and r["repo_id"] in roots and r["language"] not in ASSET_LANGUAGES:   # an engine asset: names and links only
                 p = Path(roots[r["repo_id"]]) / r["path"]
                 try:
                     # numbered as the parsers number lines, so a span points at the same text in the page
@@ -213,18 +214,20 @@ def graph(con, with_sources: bool = True, memory: Optional[Path] = None) -> dict
     out = {"version": 3, "repos": repos, "nodes": nodes, "edges": edges, "calls": calls, "flows": flows, "notes": notes, "views": views, "patterns": pattern_list, "tours": tour_list, "access": access, "state": state, "measured": measured,
            "coverage": coverage, "changes": changes(con, index, roots), "sources": sources}
     out["layout"] = layout(out, memory)
-    out["parts"] = parts(con, index, nodes)
+    out["parts"] = parts(con, index, nodes, found)
     return out
 
 
-def parts(con, index: dict, nodes: list) -> list:
+def parts(con, index: dict, nodes: list, found: Optional[list] = None) -> list:
     """Large modules drawn as their parts, as `leyline outline` splits them (two levels): each part is added to `nodes`
-    as a node of kind "part" (after the layout, which does not draw them), and listed with the files it holds."""
+    as a node of kind "part" (after the layout, which does not draw them), and listed with the files it holds. `found`
+    is what `outline.map_parts` gave when the map was made; without it they are worked out here."""
     from . import outline
-    try:
-        found = outline.map_parts(con)
-    except Exception:   # the page is still worth having without them
-        return []
+    if found is None:
+        try:
+            found = outline.map_parts(con)
+        except Exception:   # the page is still worth having without them
+            return []
     out = []
 
     def add(x, parent):
@@ -647,11 +650,12 @@ def _free(x: float, w: float, row: list[tuple]) -> float:
     return min((c for c in spots if clear(c)), key=lambda c: (abs(c - x), c), default=x)
 
 
-def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None) -> str:
+def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None,
+             found: Optional[list] = None) -> str:
     """The viewer with data embedded, without an html/head/body wrapper. `open_change` names a change the page
     opens on; `memory` defaults to the layout file beside the store."""
     template = resources.files("leyline").joinpath("viewer/viewer.html").read_text(encoding="utf-8")
-    g = graph(con, with_sources, memory if memory is not None else memory_path(con))
+    g = graph(con, with_sources, memory if memory is not None else memory_path(con), found)
     if open_change:
         g["start"] = {"change": open_change}
     data = json.dumps(g, separators=(",", ":"))
@@ -672,5 +676,6 @@ def fragment(con, with_sources: bool = True, open_change: Optional[str] = None, 
 COMPRESS_OVER = 2_000_000   # characters of JSON; smaller pages stay readable as plain JSON
 
 
-def page(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None) -> str:
-    return PAGE.format(fragment=fragment(con, with_sources, open_change, memory))
+def page(con, with_sources: bool = True, open_change: Optional[str] = None, memory: Optional[Path] = None,
+         found: Optional[list] = None) -> str:
+    return PAGE.format(fragment=fragment(con, with_sources, open_change, memory, found))

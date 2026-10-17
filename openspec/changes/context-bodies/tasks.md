@@ -1,0 +1,31 @@
+- [ ] 1.1 Change `context.Graph.__init__` to keep the last line and the content hash of each node
+- [ ] 1.2 Add `Graph.end` and `Graph.hash` in `src/leyline/context.py`, the last line and the content hash of each node
+- [ ] 1.3 Change `context._Sources.line` to refuse a file that is a link leaving the repository, as `source` does
+- [ ] 1.4 Add `_Sources.refused` in `src/leyline/context.py`, why a file was not read
+- [ ] 1.5 Add `src/leyline/context.py: _body`, the lines of a node read from the working tree, guarded against a link out, compared with the node's hash so that an edited file is not shown, one definition at a time, and cut around a given line
+- [ ] 1.6 Add `src/leyline/context.py: _type_lines`, a type's declaration line and at most 12 of the declaration lines of its fields
+- [ ] 1.7 Add `src/leyline/context.py: _callers_of`, the direct callers of the focus with their call lines, non-test callers first, saying when a caller was guessed or calls what the focus overrides
+- [ ] 1.8 Add `src/leyline/context.py: _focus_types`, the types the focus takes as a parameter or returns, from the roles the map keeps on its type links
+- [ ] 1.9 Add `src/leyline/context.py: _bodies`, which picks the focus functions, the callers and the types, decides from the lengths what fits before reading any file, stops after ten refusals for size, shows each text once and names what was left out
+- [ ] 1.10 Change `context.build` to take `bodies`, to raise a budget under 600 tokens and say so, to give the declaration outline a third of the budget, and to put the bodies once into the text and their descriptions into the answer
+- [ ] 1.11 Change the top level of `src/leyline/context.py` to add the limits of a body, of a caller's lines, of a file's top level and of the focus functions, the refusals before packing stops, and the least budget with bodies
+- [ ] 1.12 Change `server.context` to take `bodies`, to return the descriptions of the bodies without cutting them, to allow 44,000 characters, and to say in its description that bodies are whole when asked
+- [ ] 1.13 Change `cli._main` to give the context command a `--bodies` flag
+- [ ] 1.14 Change `cli._with_store` to pass the flag to `context.build`
+- [ ] 1.15 Change the context row and the size sentence of docs/mcp-tools.md to list `bodies?` after `budget_tokens?` and 44,000 characters, and docs/understanding.md and skills/leyline-ask/SKILL.md to say what `bodies` gives
+- [ ] 2.1 Add the test "The context outline carries the bodies of the focus and its callers"
+- [ ] 2.2 Add the test "A body does not bring its sibling methods"
+- [ ] 2.3 Add the test "The types a focus takes or returns show their declaration and fields"
+- [ ] 2.4 Add the test "A body that does not fit is named"
+- [ ] 2.5 Add the test "A hub does not crowd out the types"
+- [ ] 2.6 Add the test "A long caller is cut around the call"
+- [ ] 2.7 Add the test "The top level of a file is a caller with a short window"
+- [ ] 2.8 Add the test "A file as the focus shows at most three bodies"
+- [ ] 2.9 Add the test "A body is shown once"
+- [ ] 2.10 Add the test "A function defined twice shows each definition"
+- [ ] 2.11 Add the test "A hub reads only the files of the bodies it shows"
+- [ ] 2.12 Add the test "A file that links outside the repository is not read"
+- [ ] 2.13 Add the test "A body changed since the map is not shown"
+- [ ] 2.14 Add the test "A large budget through the tool keeps the lines that say what was left out"
+- [ ] 2.15 Add the test "A small budget is raised and says so"
+- [ ] 2.16 Add the test "Without bodies the outline is as before"

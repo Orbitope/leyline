@@ -217,6 +217,34 @@ def _affected(args) -> int:
     return 0
 
 
+def _mutants(args) -> int:
+    """`leyline mutants <change>`: write the mutation plan of a spec change and say how to run it."""
+    import re as _re
+    from . import loop, mutants
+    if _re.match(r"(pr|quick)-", args.change):
+        print(f"leyline: a mutation plan is for a spec change (an OpenSpec folder); {args.change} is not one.", file=sys.stderr)
+        return 2
+    folder = loop.find_change(args.change, args.db or DEFAULT_DB)
+    if folder is None:
+        print(f"leyline: no change folder {args.change!r}: looked for it as a path and under openspec/changes/.", file=sys.stderr)
+        return 2
+    db = args.db or loop.find_store(folder) or DEFAULT_DB
+    if not Path(db).exists():
+        print("leyline: no map of this code yet. Run `leyline map <repo>` first.", file=sys.stderr)
+        return 2
+    loop.refresh(db)   # the code as it is now
+    con = store.connect(db)
+    try:
+        r = mutants.plan(con, folder, args.max)
+    finally:
+        con.close()
+    if "error" in r:
+        print(f"leyline: {r['error']}", file=sys.stderr)
+        return 1
+    _print(r) if args.json else print(mutants.plan_text(r))
+    return 0
+
+
 def _drift(args) -> int:
     from . import drift, loop
     db = args.db or loop.find_store(Path(args.path)) or DEFAULT_DB
@@ -298,7 +326,8 @@ def _search_text(con, r: dict) -> str:
                 " modules and `leyline outline` for what each holds.")
     L = []
     for h in hits:
-        L.append(f"{_short(con, h['id']):<34} {_kind(h):<12} {_where(h)}\n    {h['id']}")
+        L.append(f"{_short(con, h['id']):<34} {_kind(h):<12} {_where(h)}\n    {h['id']}"
+                 + (f"\n    {h['summary']}" if h.get("summary") else ""))
     L.append(f"\n{_n(len(hits), 'match', 'matches')}, best first. Next: `leyline show <name>` on one of them; give its"
              " id when the name could be several things.")
     return "\n".join(L)
@@ -331,6 +360,8 @@ def _expand_text(con, r: dict, most: int = 8) -> str:
     if r.get("signature") and r["signature"] != r["name"]:
         L.append(f"  {r['signature']}")
     L.append(f"  id: {r['id']}")
+    if r.get("summary"):
+        L.append(f"  {r['summary']}")
     if isinstance(r.get("parent"), dict):
         L.append(f"  in: {r['parent']['name']} ({_kind(r['parent'])})")
     if r.get("title"):
@@ -427,6 +458,14 @@ def _show(con, args) -> int:
             _print(r)
             return 0
         print(_expand_text(con, r))
+        for key, word in (("tests_reaching", "tests that reach it on the map"), ("entries_reaching", "reached from"),
+                          ("tests_measured", "tests measured running it")):
+            g = r.get(key)
+            if g is None:
+                continue
+            names = [x.get("name") or x.get("test") or x["id"] for x in g["items"]]
+            L = ", ".join(names[:8]) + (f" and {g['total'] - 8} more" if g["total"] > 8 else "")
+            print(f"  {word} ({g['total']})" + (f": {L}" if names else ""))
         if found.get("others"):
             others = found["others"]
             print("  also called this, in tests or samples: " + ", ".join(_where(o) or o["id"] for o in others[:4])
@@ -571,6 +610,7 @@ ADVANCED = """advanced commands (leyline <command> -h for each):
   coverage      import measured test coverage, or show it
   rules         check the architecture rules
   affected-tests  the tests to run for a change, as a command
+  mutants       a plan of small breaks of what a spec change edited, to find tests that assert nothing about it
   spec          the spec loop step by step: brief, facts, finding (or file), findings, resolve, verify
   drift         code the specs name that has moved, changed signature or gone since they were written
   learnings     past decisions on review findings, which later reviews read first; retire or confirm one
@@ -683,7 +723,7 @@ def _loop(args) -> int:
         print(loop.plan_text(r, name))
         from . import spec
         return 0 if spec.brief_status(r)["ready"] else 1
-    r = loop.check(db, change, results, args.coverage)
+    r = loop.check(db, change, results, args.coverage, args.mutants)
     if "error" in r:
         print(f"leyline: {r['error']}", file=sys.stderr)
         for line in r.get("next") or []:
@@ -804,6 +844,15 @@ def _main(argv=None) -> int:
     p.add_argument("--coverage", metavar="FILE", help="coverage measured on that same run (pytest --cov=<package>"
                                                      " --cov-context=test writes .coverage): says whether each scenario's"
                                                      " test ran the changed code")
+    p.add_argument("--mutants", metavar="FILE", help="the results.jsonl a run of `leyline mutants <change>` wrote: says whether"
+                                                    " each scenario's own tests failed a mutant of the changed code (a"
+                                                    " scenario whose did not is `unasserted`)")
+    p = sub.add_parser("mutants", description="A plan of small breaks of the code a spec change edited, to find scenarios whose"
+                                              " own tests would pass whatever the change did: patches, plan.json and a"
+                                              " run.py under .leyline/mutants/<change>/. Leyline never runs it.")
+    p.add_argument("change", help="the change folder, or its id under openspec/changes/ (a spec change)")
+    p.add_argument("--max", type=int, default=30, help="the most mutants (default 30)")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("affected-tests", description="The tests to run for a change, and a command that runs them: the"
                                                      " tests measured running the changed code when per-test coverage is"
                                                      " imported, else those whose path on the map passes through it.")
@@ -906,6 +955,9 @@ def _main(argv=None) -> int:
                                             " pr-<id>) or words to search for")
     p.add_argument("--tokens", type=int, default=2000, help="how long the outline may be, in tokens (characters / 4;"
                                                             " default 2000, from 200 to 8000)")
+    p.add_argument("--bodies", action="store_true", help="also give the code: the focus function's body, the lines around"
+                                                         " the call in each caller, and the types it takes (the outline"
+                                                         " then takes a third of the budget, which is at least 600 tokens)")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("outline", description="one level of a module split into at most 12 parts (folders, or groups of"
                                               " files where a folder is flat): size, entry points, links in and out,"
@@ -1003,6 +1055,7 @@ def _main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("tour", description="print a tour of the repository")
     p.add_argument("tour_id", nargs="?", help="a tour id; the orientation tour when left out")
+    p.add_argument("--json", action="store_true", help="the whole tour, as `tours.get` returns it")
     p = sub.add_parser("view", description="serve the map on localhost")
     p.add_argument("--port", type=int, default=8765)
     for name, sp in sub.choices.items():   # `leyline spec -h` starts "usage: leyline spec", not the top-level options
@@ -1031,6 +1084,8 @@ def _main(argv=None) -> int:
         return _quick(args)
     if args.cmd == "affected-tests":
         return _affected(args)
+    if args.cmd == "mutants":
+        return _mutants(args)
     if args.cmd == "drift":
         return _drift(args)
     if args.cmd == "skills":
@@ -1049,6 +1104,7 @@ def _main(argv=None) -> int:
         t = stats.get("timing", {})
         print(f"indexed into {db}: {_n(t.get('files', 0), 'file')}, {_n(t.get('lines', 0), 'line')} in {t.get('total_seconds', 0)} s"
               f" ({t.get('lines_per_second', 0):,} lines/s)")
+        stats.pop("parts", None)   # for the tour and the page; `leyline outline` shows them
         _print(stats)
         return 0
     if args.cmd == "serve":
@@ -1178,6 +1234,9 @@ def _with_store(args, con) -> int:
         if "error" in t:
             _print(t)
             return 1
+        if args.json:
+            _print(t)
+            return 0
         print(f"{t['title']}\n")
         for st in t["stops"]:
             print(f"{st['seq']}. {st['title']}  [{st['kind']}: {st['ref']}]\n   {st['narrative']}\n")
@@ -1272,7 +1331,7 @@ def _with_store(args, con) -> int:
         return 1 if "error" in r else 0
     elif args.cmd == "context":
         from . import context
-        r = context.build(con, args.focus, args.tokens)
+        r = context.build(con, args.focus, args.tokens, args.bodies)
         if args.json or "error" in r:
             _print(r)
         else:

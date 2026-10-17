@@ -67,11 +67,45 @@ _lock = threading.Lock()   # one re-index at a time
 _generation = [0]          # bumped on every re-index, so each thread opens the store afresh
 
 
-def _path() -> str:
+def _home_store() -> str:
+    """The store the server started with: LEYLINE_DB (`leyline serve` always sets it), or the default."""
     return os.environ.get("LEYLINE_DB") or ".leyline/leyline.db"
 
 
+_moved = [None]   # the store `map` moved this process to, when it mapped a checkout that is not the server's own
+
+
+def _path() -> str:
+    """The one store this process reads: the one `map` last moved it to, else the one it started with."""
+    return _moved[0] or _home_store()
+
+
 _START = Path.cwd().resolve()   # where the server was started: the place of the first map
+_start_repo_cache: list = []
+_worktrees: dict = {"list": None}
+
+
+def _start_repo() -> Optional[Path]:
+    """The git repository the server was started in, asked of git once."""
+    if not _start_repo_cache:
+        _start_repo_cache.append(_repository_of(_START))
+    return _start_repo_cache[0]
+
+
+def _linked(refresh: bool = False) -> list[Path]:
+    """The linked worktrees of the repository the server started in, listed once and again on each `map`, never on
+    each call: a git process per tool call is not worth it for a path inside the repository."""
+    if refresh or _worktrees["list"] is None:
+        top = _start_repo()
+        _worktrees["list"] = loop.worktrees_of(top) if top else []
+    return _worktrees["list"]
+
+
+def _home() -> Path:
+    """Where a tool given no path looks: the first repository the store maps (the checkout the agent mapped), else the
+    directory the server started in."""
+    roots = _roots()
+    return roots[0] if roots else Path.cwd()
 
 
 def _repository_of(folder: Path) -> Optional[Path]:
@@ -96,15 +130,17 @@ def _outside(path, what: str) -> Optional[str]:
     the directory the server started in, and the repository it is a folder of). The agent may have read untrusted
     text naming the path (map ~/, plan a folder elsewhere, import a file from anywhere); the person at the command
     line is not limited."""
-    allowed = _roots()
-    if not allowed:
-        allowed = [_START] + [top for top in [_repository_of(_START)] if top and top != _START]
+    allowed = [*_roots(), _START, *([top] if (top := _start_repo()) and top != _START else [])]
     try:
         p = Path(path).resolve()
     except (OSError, RuntimeError):
         return f"{what} {path!r} cannot be resolved."
     if any(p == r or r in p.parents for r in allowed):
         return None
+    linked = _linked()   # only for a path outside all of those, and listed once
+    if any(p == r or r in p.parents for r in linked):
+        return None
+    allowed += linked
     return (f"{what} {path!r} ({p}) is outside the repositories this server maps ({', '.join(map(str, allowed))}):"
             " a tool reads and writes only inside them. If the person wants it, they can run the `leyline` command"
             " themselves, or start the server in that repository.")
@@ -128,7 +164,8 @@ def _missing() -> Optional[str]:
     p = Path(_path())
     if not p.is_file():
         return (f"Nothing is mapped yet: there is no store at {p.resolve()}. Call `map` with the repository directory"
-                f" (paths=[\".\"] for {Path.cwd()}), then try again.")
+                f" (paths=[\".\"] for {_START}, where this server was started; an agent working in another checkout"
+                " passes that checkout's absolute path to `map`), then try again.")
     if _db().execute("SELECT 1 FROM nodes WHERE kind = 'repo' LIMIT 1").fetchone() is None:
         return (f"The store at {p.resolve()} is empty, or is being written by `leyline map` right now. If a map is"
                 " running, retry in a minute; otherwise call `map` with the repository directory.")
@@ -183,12 +220,16 @@ MORE = ("Lists were cut to keep this answer short; `cut` says which (shown of to
         " (a node id, `scope`, `kind` or `through`), raise `limit`, or page with `offset` where the tool has it.")
 
 
-def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE) -> str:
+FLOORS = ((3, 1000), (1, 200))
+BUDGET_FLOORS = FLOORS + ((0, 80),)   # under an agent's budget a list may go empty: `cut` still gives its total
+
+
+def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE, floors: tuple = FLOORS) -> str:
     """The answer as compact JSON of at most about `limit` characters: the longest lists and strings are
     shortened until it fits (to 3 items and 1,000 characters, then, when that is not enough, to 1 item and 200
-    characters), and `cut` says what was cut."""
+    characters; under a budget, then to no items and 80 characters), and `cut` says what was cut."""
     text = _dump(out)
-    for floor in ((3, 1000), (1, 200)):
+    for floor in floors:
         for _ in range(200):
             if len(text) <= limit:
                 break
@@ -214,12 +255,16 @@ def _fit(out: dict, cut: dict, limit: int = LIMIT, more: str = MORE) -> str:
 
 
 def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, items: int = 0, keep: tuple = (),
-          more: str = MORE, limit: int = LIMIT):
+          more: str = MORE, limit: int = LIMIT, budgeted: bool = False):
     """Register `fn` as a tool. Its answer is a dict; one with "error" is returned as a tool error. `items` caps
     every list in the answer (0 leaves them to the size limit alone); lists under keys in `keep` stay whole.
-    `more` tells the agent how to see what was cut; `limit` is the answer's size in characters."""
+    `more` tells the agent how to see what was cut; `limit` is the answer's size in characters. A `budgeted` tool
+    takes `budget_tokens`: its answer is cut to the smaller of that budget (four characters a token) and `limit`,
+    and `more` then names the budget. `context` is not budgeted here: it sizes its own text with its budget."""
     if fn is None:
-        return lambda f: _tool(f, name=name, needs_store=needs_store, items=items, keep=keep, more=more, limit=limit)
+        return lambda f: _tool(f, name=name, needs_store=needs_store, items=items, keep=keep, more=more, limit=limit,
+                               budgeted=budgeted)
+    sig = inspect.signature(fn)
 
     @functools.wraps(fn)
     def run(*args, **kwargs):
@@ -241,6 +286,10 @@ def _tool(fn=None, *, name: Optional[str] = None, needs_store: bool = True, item
             raise ToolError(_for_agent(str(out["error"])) + (" " + _fit(rest, _cap(rest, 10)) if rest else ""))
         cut = out.pop("cut") if isinstance(out.get("cut"), dict) else {}   # what the tool itself cut
         cut.update(_cap(out, items, keep) if items else {})
+        budget = sig.bind_partial(*args, **kwargs).arguments.get("budget_tokens") if budgeted else None
+        if budget:
+            return _fit(out, cut, limit=min(limit, budget * CHARS_PER_TOKEN), floors=BUDGET_FLOORS,
+                        more=more + " Or raise `budget_tokens` (the most this answer may take).")
         return _fit(out, cut, limit=limit, more=more)
 
     # No return annotation: the answer is text (compact JSON), not a structured result to validate.
@@ -272,6 +321,11 @@ EdgeKind = Literal["calls", "imports", "uses_type", "extends", "implements", "in
                    "depends_on", "reads", "writes", "communicates", "overrides", "groups"]
 Limit = Annotated[int, Field(ge=1, le=500, description="Items to show in each list (each list also gives its total).")]
 Offset = Annotated[int, Field(ge=0, description="Items to skip, to page through a long list.")]
+CHARS_PER_TOKEN = 4
+Budget = Annotated[Optional[int], Field(ge=600, le=6000, description="The most this answer may take, in tokens (four"
+                                                                     " characters each). Lists and long strings are cut"
+                                                                     " to fit, and `cut` says what was cut. Leave out for"
+                                                                     " the tool's usual size.")]
 
 
 class Target(TypedDict):
@@ -365,15 +419,18 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
         if (why := _outside(p, "The directory")):
             return {"error": why}
     if paths:   # a folder inside a mapped repository (where the server was started, say) means that repository
-        roots = _roots() or [top for top in [_repository_of(_START)] if top]
+        roots = _roots() or [top for top in [_start_repo()] if top]
         folded = []
         for p in paths:
             try:
                 r = Path(p).resolve()
             except (OSError, RuntimeError):
                 r = None
-            # only a directory that exists: a path that does not must not fold onto the repository it would sit in
-            inside = next((root for root in roots if r is not None and r.is_dir() and root in r.parents), None)
+            # only a directory that exists: a path that does not must not fold onto the repository it would sit in;
+            # nor one that is a git top level itself (a linked worktree under the main checkout): it is a checkout
+            # of its own, and folded it would map the main one
+            inside = next((root for root in roots if r is not None and r.is_dir() and root in r.parents
+                           and not (r / ".git").exists()), None)
             folded.append(str(inside) if inside is not None else p)
         paths = list(dict.fromkeys(folded))
     bad = [p for p in paths or [] if not Path(p).is_dir()]
@@ -382,12 +439,26 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
                          f" from {Path.cwd()})."}
     if not paths and not Path(_path()).is_file():
         return {"error": f"Nothing is mapped in {Path(_path()).resolve()} yet: pass the repository directory as paths"
-                         f" (for example [\".\"] for {Path.cwd()})."}
+                         f" (for example [\".\"] for {_START}, where this server was started; an agent working in"
+                         " another checkout passes that checkout's absolute path)."}
+    # One checkout that is not the one the server was started in has a store of its own, inside it, and the server
+    # reads that store from the map on (until it restarts, when `serve` finds the store from its own directory again).
+    # The old store stays the current one until this map has gone through: a checkout whose .leyline is tracked by git
+    # is refused, and the server keeps reading what it read.
+    target, other = _path(), None
+    if paths and len(paths) == 1:
+        here = Path(paths[0]).resolve()
+        own = {_START, *([top] if (top := _start_repo()) else [])}
+        other = None if here in own else str(here / loop.STORE)
+        target = other or _home_store()
     with _lock:
         try:
-            m = loop.map_repos(paths or [], _path())
+            m = loop.map_repos(paths or [], target)
+            if paths and len(paths) == 1:
+                _moved[0] = other
         finally:
             _generation[0] += 1
+            _linked(refresh=True)   # a worktree may have been added since the last map
     if "error" in m:
         return m
     m["db"] = str(Path(m["db"]).resolve())
@@ -395,9 +466,22 @@ def map_code(paths: Annotated[Optional[list[str]], Field(description="Repository
         m["page"] = str(Path(m["page"]).resolve())
     summary = loop.map_text(m).replace("Map page:", "Map page (for the person to open):").rsplit("\nNext:", 1)[0]
     m["map_page"] = m.pop("page", None)
-    return {**m, "summary": summary, "next": [
-        "Write the change as an OpenSpec folder, openspec/changes/<id>/ (proposal.md, specs/<area>/spec.md, tasks.md;"
-        " the leyline-spec skill says how), then call `plan` with it and the current test output."]}
+    nxt = ["Write the change as an OpenSpec folder, openspec/changes/<id>/ (proposal.md, specs/<area>/spec.md, tasks.md;"
+           " the leyline-spec skill says how), then call `plan` with it and the current test output.",
+           "To understand the code first: `tours` and `tour` give the orientation tour (what this is, where to start"
+           " reading), `find_flows` with a question in words then `explain_path` says how something runs, and"
+           " `module_outline` says what a module holds."]
+    u = m.get("unnamed_parts")
+    if u:
+        nxt.append(f"{u['unnamed']} of the {u['parts']} parts of {u['module']} have no name: follow the"
+                   " leyline-explore-module skill to read each and name it with `name_part`; the tour and the outline"
+                   " then say what each is for.")
+    out = {**m, "summary": summary, "next": nxt}
+    if paths and len(paths) == 1:
+        out["store_note"] = (f"This server now reads {m['db']} (the checkout it mapped) until it restarts; after a restart"
+                             f" `serve` finds the store from {_START}, where it was started."
+                             if other else f"This server reads {m['db']}, the store it started with.")
+    return out
 
 
 @_tool(items=15, keep=("blocking", "decide", "notes", "tasks", "scenarios", "findings", "gaps", "next"),
@@ -437,7 +521,12 @@ def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestR
           coverage_path: Annotated[Optional[str], Field(description="Coverage measured on the same test run (pytest"
                                                                     " --cov=<package> --cov-context=test writes .coverage):"
                                                                     " each scenario then says whether its test ran the"
-                                                                    " changed code (`ran_changed_code`).")] = None) -> dict:
+                                                                    " changed code (`ran_changed_code`).")] = None,
+          mutants_path: Annotated[Optional[str], Field(description="The results.jsonl a run of the change's mutation plan"
+                                                                   " wrote (see the `mutants` tool): each scenario then"
+                                                                   " says whether its own tests failed a mutant of the"
+                                                                   " changed code, and one that did not is `unasserted`."
+                                                      )] = None) -> dict:
     """Loop step 3, after the tasks are implemented. Re-maps the code, records the test run, and says whether the
     change was done as agreed: each task from what changed in the code, each scenario from its test's result,
     edits outside the spec, new links between modules, rules newly broken. Appends the verdict to `leyline.md`.
@@ -448,12 +537,14 @@ def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestR
         return {"error": err}
     if coverage_path and (why := _outside(coverage_path, "The coverage file")):
         return {"error": why}
+    if mutants_path and (why := _outside(mutants_path, "The mutants file")):
+        return {"error": why}
     results, err = _results(test_output, test_results)
     if err:
         return {"error": err}
     with _lock:
         try:
-            v = loop.check(_path(), folder, results, coverage_path)
+            v = loop.check(_path(), folder, results, coverage_path, mutants_path)
         finally:
             _generation[0] += 1
     if "error" in v:
@@ -463,11 +554,33 @@ def check(change: ChangeArg, test_output: TestOutput = None, test_results: TestR
             "next": loop.next_after_check(v, change, for_agent=True), "page": spec_loop.verify_text(v), **v}
 
 
+@_tool(items=40, keep=("next",))
+def mutants(change: ChangeArg, max_mutants: Annotated[int, Field(ge=1, le=100, description="The most mutants in the plan.")] = 30) -> dict:
+    """A plan of small breaks of the code a spec change edited, to find scenarios whose own tests would pass whatever the
+    change did. Writes, under `.leyline/mutants/<change>/`, a patch for each mutant, `plan.json` (each mutant with the
+    tests that reach its function, the scenarios' own first) and `run.py`, which someone runs (it runs the project's
+    tests with each mutant applied, always puts the file back, and may be stopped and resumed). Leyline never runs it.
+    Then pass its `results.jsonl` to `check` as `mutants_path`. For a spec change only (not pr-<id> or quick-<slug>);
+    Python files first, other languages are named as having no operators."""
+    if re.match(r"(pr|quick)-", change):
+        return {"error": f"A mutation plan is for a spec change (an OpenSpec folder); {change} is not one."}
+    folder, err = _change(change)
+    if err:
+        return {"error": err}
+    from . import mutants as mutants_mod
+    with _lock:
+        try:
+            loop.refresh(_path())     # the code as it is now
+        finally:
+            _generation[0] += 1
+    return mutants_mod.plan(_db(), folder, max_mutants)
+
+
 # -- looking around ---------------------------------------------------------------------------------
-@_tool
+@_tool(budgeted=True)
 def overview(scope: Annotated[Optional[str], Field(description="A module path prefix (such as `src/core`) to see one part"
                                                                " of a large repository.")] = None,
-             limit: Limit = 20) -> dict:
+             limit: Limit = 20, budget_tokens: Budget = None) -> dict:
     """The top-level map: repositories, modules with sizes, which modules depend on which (counts per edge kind),
     proposed systems (groups of types inside a module), external packages, and which extractors ran. Call it
     first to get oriented. Lists are largest first; `expand` a module or system id for its contents."""
@@ -537,11 +650,13 @@ def search(text: Annotated[str, Field(min_length=1, description="Words of a name
     return r
 
 
-@_tool(items=40)
-def expand(node_id: NodeId, limit: Limit = 20) -> dict:
+@_tool(budgeted=True, items=40)
+def expand(node_id: NodeId, limit: Limit = 20, budget_tokens: Budget = None) -> dict:
     """One node in detail. A module: its files, public types, entry points and module dependencies. A type: its
-    members, bases and the modules that use it. A function: its signature, callers and callees, and the fields
-    it reads and writes (`data`). Each list shows `limit` items and its total."""
+    members, bases and the modules that use it. A function: its signature, callers and callees, the fields it
+    reads and writes (`data`), the tests and entry points that reach it through calls (`tests_reaching`,
+    `entries_reaching`, nearest first, with their node ids), and, when coverage was imported, the tests measured
+    running it (`tests_measured`). Each list shows `limit` items and its total."""
     out = query.expand(_db(), node_id, limit)
     if "error" in out:
         return out
@@ -551,13 +666,13 @@ def expand(node_id: NodeId, limit: Limit = 20) -> dict:
     return out
 
 
-@_tool
+@_tool(budgeted=True)
 def neighbors(node_id: NodeId,
               direction: Annotated[Literal["out", "in", "both"], Field(description="out: edges from the node; in: edges"
                                                                                     " to it.")] = "both",
               kinds: Annotated[Optional[list[EdgeKind]], Field(description="Only these edge kinds. reads and writes run"
                                                                            " from a function to a field.")] = None,
-              limit: Limit = 25) -> dict:
+              limit: Limit = 25, budget_tokens: Budget = None) -> dict:
     """The raw edges around a node, grouped by edge kind, each group with its total. Use `expand` for a summary
     of a node; use this to list one kind of edge, such as everything that calls it (direction=in, kinds=[calls])."""
     return query.neighbors(_db(), node_id, direction, kinds, limit)
@@ -621,10 +736,10 @@ def trace(from_id: Annotated[str, Field(description="The function to start from:
     return query.trace(_db(), from_id, to_id)
 
 
-@_tool
+@_tool(budgeted=True)
 def impact(node_id: NodeId,
            max_depth: Annotated[int, Field(ge=1, le=20, description="How many calls back to follow.")] = 6,
-           limit: Limit = 15) -> dict:
+           limit: Limit = 15, budget_tokens: Budget = None) -> dict:
     """What can reach a node: its callers, near and far, grouped by module (largest first), and the flows that
     pass through it. Call it on what a change will touch before writing the spec. Read-only; `propose_change`
     gives a fuller assessment and saves it as a view."""
@@ -642,31 +757,40 @@ def impact(node_id: NodeId,
     return r
 
 
-@_tool(items=10, limit=36_000)
+@_tool(items=10, limit=44_000, keep=("bodies",))
 def context(focus: Annotated[list[str], Field(min_length=1, description="What you are working on: node ids, names"
                                                                        " (`Owner.method`), file paths, a change id"
                                                                        " (spec-<id>, pr-<id>) or words to search for.")],
             budget_tokens: Annotated[int, Field(ge=200, le=8000, description="How long the outline may be, in tokens"
-                                                                           " (characters / 4).")] = 2000) -> dict:
+                                                                           " (characters / 4).")] = 2000,
+            bodies: Annotated[bool, Field(description="Also give the code: the whole body of the focus function (at most"
+                                                      " three), the lines around the call in each function that calls"
+                                                      " it, and the declaration and fields of the types it takes or"
+                                                      " returns. The outline then takes a third of the budget, which is"
+                                                      " at least 600 tokens.")] = False) -> dict:
     """A short outline of the code around what you are working on, to read before editing it: the related
-    functions, types and tests file by file, as declaration lines (no bodies), most related first, cut to the
-    budget. The focus is marked `>`; channel ends are said in words ("answers GET /api/x"); the last lines say what
-    was left out. Ranked by personalized PageRank over calls, channels, type use and containment. Read a body
-    with `source`."""
+    functions, types and tests file by file, as declaration lines (no bodies unless `bodies` is set), most related first,
+    cut to the budget. The focus is marked `>`; channel ends are said in words ("answers GET /api/x"); the last lines say
+    what was left out. Ranked by personalized PageRank over calls, channels, type use and containment. With `bodies`,
+    the code follows in the same text: the focus's body, the lines around each call to it, and the types it takes; `bodies`
+    describes each (never cut), and "Bodies left out" names what did not fit. Otherwise read a body with `source`."""
     from . import context as ctx
-    r = ctx.build(_db(), focus, budget_tokens)
+    r = ctx.build(_db(), focus, budget_tokens, bodies)
     if "error" in r:
         return r
-    return {"text": r["text"], "tokens": r["tokens"], "focus": r["focus"], "shown": r["shown"], "left_out": r["left_out"]}
+    return {"text": r["text"], "tokens": r["tokens"], "focus": r["focus"], "shown": r["shown"], "left_out": r["left_out"],
+            **({"bodies": r["bodies"]} if "bodies" in r else {}), **({"note": r["note"]} if "note" in r else {}),
+            **({"bodies_left_out_not_listed": r["bodies_left_out_not_listed"]} if "bodies_left_out_not_listed" in r else {})}
 
 
-@_tool(limit=30_000, more="Lists were cut to keep this answer short; `cut` says which. Lower depth, or drill into one"
+@_tool(budgeted=True, limit=30_000, more="Lists were cut to keep this answer short; `cut` says which. Lower depth, or drill into one"
                           " part by its id, to see the rest.")
 def module_outline(module: Annotated[Optional[str], Field(description="A module's path (such as `editor/core`) or id, or"
                                                                      " a part id from an earlier outline. Leave out to"
                                                                      " list the modules.")] = None,
                    depth: Annotated[int, Field(ge=1, le=3, description="1: the parts; 2: and the parts inside each; 3:"
-                                                                       " one more level of names.")] = 2) -> dict:
+                                                                       " one more level of names.")] = 2,
+                   budget_tokens: Budget = None) -> dict:
     """A large module split into at most 12 parts: its folders, or groups of files (found from calls and type use)
     where a folder is flat, largest first. For each part: size (files, functions, lines), entry points (routes, UI
     handlers and components, programs, commands; tests), what it uses and what uses it (other parts and modules,
@@ -674,6 +798,8 @@ def module_outline(module: Annotated[Optional[str], Field(description="A module'
     it risky beside its siblings, and its name and summary if one was given. Drill in with a part's id; a file or a
     group of one file lists its key functions. Name parts with `name_part` after reading their code."""
     from . import outline
+    if budget_tokens and budget_tokens < 3000:   # a small budget reads one level: the parts inside each would be cut
+        depth = 1
     return outline.outline(_db(), module, depth)
 
 
@@ -694,11 +820,12 @@ def name_part(part_id: Annotated[str, Field(min_length=1, description="A part id
 
 
 # -- asking how something works -----------------------------------------------------------------------
-@_tool(keep=("words",))
+@_tool(budgeted=True, keep=("words",))
 def find_flows(description: Annotated[str, Field(min_length=1, description="What happens, in plain words, such as"
                                                                           " \"what happens when a writer saves a dialogue\""
                                                                           " or \"how a vehicle is spawned\".")],
-               limit: Annotated[int, Field(ge=1, le=30, description="Most candidates to return.")] = 10) -> dict:
+               limit: Annotated[int, Field(ge=1, le=30, description="Most candidates to return.")] = 10,
+               budget_tokens: Budget = None) -> dict:
     """Where a described behavior could start, best first: entry points, route handlers, UI event handlers, message
     handlers, commands, tests whose names state the behavior, and other functions, ranked by the words they share
     with the description (code names split, endings cut, a few synonyms such as save, write, persist). Each comes
@@ -709,7 +836,7 @@ def find_flows(description: Annotated[str, Field(min_length=1, description="What
     return explain.find_flows(_db(), description, limit)
 
 
-@_tool(limit=30_000, more="Lists were cut to keep this answer short; `cut` says which. Lower max_steps, or walk from a"
+@_tool(budgeted=True, limit=30_000, more="Lists were cut to keep this answer short; `cut` says which. Lower max_steps, or walk from a"
                           " later step, to see the rest.")
 def explain_path(start: Annotated[str, Field(min_length=1, description="Where to start: a node id, a name"
                                                                       " (`Owner.method`), a route (`PUT /api/x`) or a"
@@ -717,7 +844,8 @@ def explain_path(start: Annotated[str, Field(min_length=1, description="Where to
                  to: Annotated[Optional[str], Field(description="Where to end: the shortest path from start to it.")] = None,
                  through: Annotated[Optional[str], Field(description="A node the path must pass: the path to it, then on"
                                                                      " from it.")] = None,
-                 max_steps: Annotated[int, Field(ge=2, le=200, description="Most steps to show.")] = 40) -> dict:
+                 max_steps: Annotated[int, Field(ge=2, le=200, description="Most steps to show.")] = 40,
+                 budget_tokens: Budget = None) -> dict:
     """An ordered walk across calls and channels (http, messages, launched programs) from `start`: with nothing
     else, the main flow from it (its shallow steps first, helpers called from many places counted, not shown); with
     `to`, the shortest path; with `through`, the path through that node and on. Each step has its id, name,
@@ -726,6 +854,8 @@ def explain_path(start: Annotated[str, Field(min_length=1, description="Where to
     says what the map could not follow. `mermaid` draws the walk. Read the code of a step (`source`) before saying
     what it does."""
     from . import explain
+    if budget_tokens:   # a step takes about 150 tokens in this answer: walk no more than fit
+        max_steps = max(2, min(max_steps, budget_tokens // 150))
     r = explain.explain_path(_db(), start, to, through, max_steps)
     if "error" not in r:
         r.pop("text", None)   # the same walk as `steps`, as lines for the command line
@@ -1009,7 +1139,9 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
                                                                " request checked out).")] = None,
               review_id: Annotated[Optional[str], Field(description="Name it pr-<review_id>. Default: the pull request"
                                                                   " number, else the branch name.")] = None,
-              path: Annotated[str, Field(description="The checkout, absolute or relative to the server's directory.")] = ".") -> dict:
+              path: Annotated[Optional[str], Field(description="The checkout, absolute or relative to the server's"
+                                                               " directory. Default: the first repository the store"
+                                                               " maps.")] = None) -> dict:
     """Review a change someone else wrote, with no spec: a branch or a pull request, checked out here. Maps the commit
     it left its base at, compares it with the checkout, and returns a page saying what changed, what it reaches and
     did not change (callers of a changed signature, the other ends of channels its edits touch, removed code still
@@ -1019,6 +1151,7 @@ def review_pr(base: Annotated[Optional[str], Field(description="The branch the c
     nothing does. Then run the adversarial review on the returned `change_id` with `spec_review_facts` and
     `spec_finding`, as for a spec."""
     from . import pr
+    path = path or str(_home())
     if (why := _outside(path, "The checkout")):
         return {"error": why}
     try:
@@ -1159,8 +1292,8 @@ def spec_verify(change: ChangeArg,
 
 
 @_tool(items=30, keep=("next",), more="Lists were cut to keep this answer short; `page` says what drifted, spec by spec.")
-def drift(path: Annotated[Optional[str], Field(description="The repository or its openspec/ folder. Default: the server's"
-                                                           " directory and every mapped repository.")] = None,
+def drift(path: Annotated[Optional[str], Field(description="The repository or its openspec/ folder. Default: the"
+                                                           " first mapped repository and every mapped repository.")] = None,
           accept: Annotated[bool, Field(description="Record the code as it is now as what the specs mean. Only when the"
                                                     " person says the specs and the code agree.")] = False) -> dict:
     """Specs that no longer match the code: every backticked code name in the living specs (openspec/specs/) and in
@@ -1173,7 +1306,7 @@ def drift(path: Annotated[Optional[str], Field(description="The repository or it
         return {"error": why}
     with _lock:
         try:
-            r = drift_mod.run(_path(), path if path is not None else Path.cwd(), accept)
+            r = drift_mod.run(_path(), path if path is not None else _home(), accept)
         finally:
             _generation[0] += 1
     groups = [{**g, "items": [{k: v for k, v in it.items() if k not in ("ids", "was_ids")} for it in g["items"]

@@ -583,8 +583,45 @@ def test_skills_are_prompts_and_a_tool_with_nothing_mapped(tmp_path):
     assert not (empty / ".leyline").exists()
 
 
+def test_the_mutants_tool_writes_a_plan(repo):
+    """The mutation plan of a planned and implemented spec change, as an agent asks for it; and what it refuses."""
+    import subprocess as sp
+    sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    ch = change_folder(repo)
+    before = run_tests(repo)
+
+    async def script(a: Agent, tools, init):
+        await a.call("map", paths=["."])
+        await a.call("plan", change="loud-engine", test_output=before)
+        implement(repo, ch)
+        assert "spec change" in await a.fail("mutants", change="pr-12")
+        r = await a.call("mutants", change="loud-engine")
+        assert r["count"] >= 1 and Path(r["dir"], "run.py").is_file() and Path(r["dir"], "plan.json").is_file()
+        assert any(m["function"] == "shout" for m in r["mutants"]) and "run.py" in r["next"][0]
+    serve(repo, script)
+
+
 def test_every_tool_was_called():
     """Runs last in this file: each tool the server lists was called by some test above."""
     if not LISTED or len(CALLED) < 10:
         pytest.skip("run with the rest of this file")
     assert LISTED - CALLED == set()
+
+
+def test_the_next_of_the_map_tool_offers_to_look_around(repo):
+    async def script(a: Agent, tools, init):
+        m = await a.call("map", paths=["."])
+        assert "`plan`" in m["next"][0]                       # the spec step stays first
+        assert any("`tour`" in x and "`find_flows`" in x and "`module_outline`" in x for x in m["next"][1:])
+    serve(repo, script)
+
+
+def test_the_map_tool_names_the_parts_still_to_name(tmp_path):
+    pytest.importorskip("networkx")
+    from test_outline import make_repo
+    root = make_repo(tmp_path / "repo")
+
+    async def script(a: Agent, tools, init):
+        m = await a.call("map", paths=["."])
+        assert any("of the 5 parts of svc have no name" in x and "leyline-explore-module" in x for x in m["next"])
+    serve(root, script)

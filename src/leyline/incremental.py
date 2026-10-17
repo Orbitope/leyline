@@ -53,8 +53,9 @@ from typing import Optional
 
 from . import store
 
-CACHE_VERSION = "2"
-POSITIONS = ("loc", "body_line")   # node attributes that only say where it is, as its span does
+CACHE_VERSION = "3"
+POSITIONS = ("loc", "body_line", "doc")   # node attributes that do not change what the code does: where it is, as its
+# span says, and the comment above it (a comment edit re-reads its own file, and resolves no other)
 _TOKEN = re.compile(r"[A-Za-z_$][\w$]*")
 
 
@@ -136,8 +137,10 @@ class _Cache:
             self.con.executescript("""
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB);
                 CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, sha TEXT, module TEXT, loc INTEGER, blob BLOB,
-                                                  err TEXT, toks BLOB);
+                                                  err TEXT, toks BLOB, stat TEXT);
                 CREATE TABLE IF NOT EXISTS resolved (id TEXT PRIMARY KEY, outside BLOB, out BLOB);""")
+            if "stat" not in {r[1] for r in self.con.execute("PRAGMA table_info(files)")}:   # a cache of an older version
+                self.con.execute("ALTER TABLE files ADD COLUMN stat TEXT")
         except BaseException:
             self.con.close()
             raise
@@ -207,14 +210,38 @@ class _Hits(dict):
         return f, ext, mod_dir, mod_id, loc, sha, blob, err, toks
 
 
+def _stat_key(path: Path, settled: bool = True) -> Optional[str]:
+    """A file's size and modification time, to tell an asset that has not changed without reading it. Kept only for a
+    file old enough that an edit made while it was being read cannot share its timestamp (`settled`)."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    if settled and info.st_mtime_ns > time.time_ns() - 2_000_000_000:
+        return None
+    return f"{info.st_size}:{info.st_mtime_ns}"
+
+
 # -- a run ----------------------------------------------------------------------------------------------------
+def _fingerprint(obj) -> bytes:
+    """8 bytes standing for `obj`, a group's rows: blake2b when this Python has it, else the first 8 bytes of
+    sha256. Looked up at each call, not at import: a CPython built without its _blake2 module has no
+    hashlib.blake2b, and a test can take it away after the import. The two digests never meet: the cache key
+    holds sys.version (code_version), so a cache written by one build is not read by another."""
+    data = marshal.dumps(obj, 0)
+    b2 = getattr(hashlib, "blake2b", None)
+    if b2 is not None:
+        return b2(data, digest_size=8).digest()
+    return hashlib.sha256(data).digest()[:8]
+
+
 class Run:
     """Attach to an Indexer before Indexer.run: decides between a full and an incremental run, and supplies the
     hooks the indexer calls (parse_cache, _calls_pass, _flow_select, and _write for an incremental run)."""
 
     def __init__(self, con, db_path, ix, full: bool = False):
         self.ix, self.con = ix, con
-        from .indexer import max_file_bytes
+        from .indexer import max_asset_bytes, max_file_bytes
         self.cache = _Cache(cache_path(db_path))
         try:
             self._take(con, db_path)
@@ -222,7 +249,7 @@ class Run:
             self.cache.con.close()
             raise
         self.key = json.dumps([code_version(), sorted((r, str(p)) for r, p in ix.repos.items()),
-                               ix.exact_mode, sorted(ix.scip_paths), max_file_bytes()])
+                               ix.exact_mode, sorted(ix.scip_paths), max_file_bytes(), max_asset_bytes()])
         gen = con.execute("SELECT value FROM meta WHERE key = 'generation'").fetchone()
         self.prior = None
         if not full and gen is not None and self.cache.get("key") == self.key and self.cache.get("generation") == gen[0]:
@@ -240,7 +267,7 @@ class Run:
         # still takes it, when the same Leyline made it.
         if not self.full or (not full and self.cache.get("code") == code_version()):
             # Only what tells whether a file changed: its parse output is read when it is used (see _Hits).
-            for r in self.cache.con.execute("SELECT id, sha, module FROM files"):
+            for r in self.cache.con.execute("SELECT id, sha, module, stat FROM files"):
                 self.rows[r[0]] = r
         self.toks: dict[str, bytes] = {}
         self.seen: set = set()
@@ -316,6 +343,9 @@ class Run:
             row = self.rows.get(f"{repo}:file:{f}")
             if row is None:
                 continue
+            if row[3] and row[3] == _stat_key(root / f, False) and row[2] == _module_key(mod_dir, f in keep_ext):
+                out[f] = (f, ext, mod_dir, mod_id, row[0], row[1])   # an asset (can be tens of MB) as it was: not read again
+                continue
             try:
                 data = read_source(root / f)
             except OSError:   # gone since it was listed: parsed again, which reports it
@@ -331,8 +361,11 @@ class Run:
         self.toks[file_id] = toks
         if fresh:
             self.reparsed.add(file_id)
-            self.cache.con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?)",
-                                   (file_id, sha, _module_key(mod_dir, keep_ext), loc, blob, failed, toks))
+            from .adapters import BY_EXTENSION
+            repo, _, path = file_id.partition(":file:")
+            stat = _stat_key(self.ix.repos[repo] / path) if getattr(BY_EXTENSION[ext], "ASSET", False) else None
+            self.cache.con.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?)",
+                                   (file_id, sha, _module_key(mod_dir, keep_ext), loc, blob, failed, toks, stat))
 
     # -- what changed --------------------------------------------------------------------------------------
     def _markers(self) -> list:
@@ -650,10 +683,9 @@ class Run:
         for g, m in members.items():
             r = self._rows(m)
             edges_ = sorted(marshal.dumps(e, 0) for e in r[1])
-            hashes[g] = hashlib.blake2b(marshal.dumps((r[0], r[2], edges_), 0), digest_size=8).digest()
+            hashes[g] = _fingerprint((r[0], r[2], edges_))
             # what the pattern matchers read of the group besides its nodes: its edges and which functions call which
-            self.pattern_groups[g] = hashlib.blake2b(marshal.dumps((edges_, sorted({c[:2] for c in r[2]})), 0),
-                                                     digest_size=8).digest()
+            self.pattern_groups[g] = _fingerprint((edges_, sorted({c[:2] for c in r[2]})))
         return members, hashes, group
 
     def _rows(self, members: tuple) -> tuple[list, list, list]:

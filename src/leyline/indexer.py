@@ -18,8 +18,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
-from . import packing, store
-from .adapters import BY_EXTENSION, BY_LANGUAGE
+from . import packing, store, summaries
+from .adapters import ASSETS, BY_EXTENSION, BY_LANGUAGE
 from .adapters.python import module_path
 from .model import CallSite, Edge, Endpoint, FieldUse, FileResult, Node
 
@@ -39,6 +39,8 @@ DEPENDENCY_DIRS = {"node_modules", "bower_components", "site-packages", "__pycac
 # A vendor directory is only someone else's code when a package manager says so (Go modules, Composer).
 VENDOR_MARKERS = ("vendor/modules.txt", "vendor/autoload.php")
 MAX_FILE_MB = 5          # a source file larger than this is generated; parsing one costs seconds and hundreds of MB
+MAX_ASSET_MB = 64        # a scene or prefab is read in a stream and is legitimately large
+NAMED_UNLINKED = 5       # of what an asset names and the map cannot tie to code, the first few of each kind are named
 LONG_LINES = 2000        # average characters per line above which a file is minified or generated, not written
 
 
@@ -253,6 +255,28 @@ def _ignored(rules: list, path: str, is_dir: bool) -> bool:
     return hit
 
 
+def max_asset_bytes() -> int:
+    env = os.environ.get("LEYLINE_MAX_ASSET_MB", "")
+    try:
+        return int(float(env) * 2**20) if env else MAX_ASSET_MB * 2**20
+    except ValueError:
+        return MAX_ASSET_MB * 2**20
+
+
+def read_meta(path: Path) -> Optional[tuple]:
+    """(the GUID a Unity `.meta` file holds or None, a digest of what was read), or None for a file that is a link or
+    cannot be read. Only the head is read: the GUID is on its second line."""
+    try:
+        if os.path.islink(path):
+            return None
+        with open(path, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return None
+    m = re.search(rb"^guid:\s*([0-9a-f]{32})", head, re.M)
+    return (m.group(1).decode() if m else None), hashlib.sha1(head).hexdigest()[:16]
+
+
 def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, listed: set) -> Optional[str]:
     """Why a listed path cannot be indexed, or None. Only source files (those an adapter reads) are opened."""
     import errno
@@ -291,8 +315,11 @@ def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, li
     ext = "." + f.rsplit(".", 1)[-1] if "." in f.rsplit("/", 1)[-1] else ""
     if ext not in sources:
         return None
+    asset = getattr(sources[ext], "ASSET", False)
+    if asset:
+        limit = max_asset_bytes()
     if info.st_size > limit:
-        return f"larger than {limit / 2**20:g} MB (generated?)"
+        return f"larger than {limit / 2**20:g} MB" + ("" if asset else " (generated?)")
     if f.endswith((".min.js", ".min.mjs", ".min.cjs")):
         return "minified"
     try:
@@ -302,8 +329,9 @@ def _unusable(root: Path, real_root: Path, f: str, sources: dict, limit: int, li
         return f"cannot read: {e.strerror or e}"
     if _binary(head[:8192]):
         return "binary"
-    # a bundle of a few tens of KB on one line is as minified as a larger one; a short file is let through
-    if len(head) >= 4 * LONG_LINES and head.count(b"\n") < len(head) // LONG_LINES:
+    # a bundle of a few tens of KB on one line is as minified as a larger one; a short file is let through. An
+    # engine file has long lines (a packed array is one) and is not minified.
+    if not asset and len(head) >= 4 * LONG_LINES and head.count(b"\n") < len(head) // LONG_LINES:
         return "minified or generated (very long lines)"
     return None
 
@@ -466,6 +494,15 @@ def _module_for(path: str, module_dirs: set[str]) -> str:
     return d  # no marker: the file's own directory ("" is the repo root)
 
 
+def _asset_module(path: str, code_dirs: set[str]) -> str:
+    """The module directory of an engine asset: the nearest folder at or above it that holds code the map reads. A
+    folder of scenes and prefabs alone is not a module; with no code above it the asset belongs to the repository."""
+    cur = path.rpartition("/")[0]
+    while cur and cur not in code_dirs:
+        cur = cur.rpartition("/")[0]
+    return cur
+
+
 def _ext_clashes(work: list) -> set[str]:
     """The files whose ids keep their extension: files of one language in one directory that differ only in their
     extension (a.js beside a.ts, m.c beside m.h) would name their contents alike. The first by path keeps the usual
@@ -580,16 +617,22 @@ def _parse_file(job):
         return f, ext, mod_dir, mod_id, loc, sha, None, "nested too deeply to read", None
     except Exception as exc:
         return f, ext, mod_dir, mod_id, loc, sha, None, f"{type(exc).__name__}: {exc}"[:300], None
+    if getattr(adapter, "ASSET", False):   # no functions to hash, no docs to read: the file is not held as lines or text
+        return f, ext, mod_dir, mod_id, loc, sha, res, None, None
     lines = data.split(b"\n")
+    text = text_lines(data)   # decoded once, here in the worker: the docs below, and the generic adapters' declarations
     for n in res.nodes:
         if n.span_start and n.kind in ("type", "callable", "test", "field"):
             # A hash of the node's own text, so a later index can tell which nodes were edited.
             n.content_hash = hashlib.sha1(b"\n".join(ln.strip() for ln in lines[n.span_start - 1:n.span_end])).hexdigest()[:16]
+        if n.span_start and n.kind in ("type", "callable"):
+            doc = summaries.declared_doc(text, n.span_start)   # what its author said it is for, read from the file now
+            if doc:
+                n.attrs["doc"] = doc
     decls = None
     if getattr(adapter, "GENERIC", False):
         # The generic resolver reads variable types out of function and type text. Reading it here puts that
         # work in the parallel part; the text is read the way Indexer._file_text reads it, so the answer is the same.
-        text = text_lines(data)
         if text is not None:
             # Only where a call names a variable receiver is the type looked for; any other place falls back to
             # reading the text in the main process.
@@ -923,6 +966,8 @@ class Indexer:
         self.exact_stats: dict[str, dict] = {}
         self.keep_results = True         # False: run() lets go of the adapters' output and the resolvers' caches before writing
         self.parse_cache = None          # leyline.incremental: parse output kept from the last run, by content hash
+        self.meta_digests: dict[str, dict] = defaultdict(dict)   # repo -> `.meta` file -> digest, as read (see loop._changes)
+        self.asset_notes: dict[str, dict] = defaultdict(dict)   # adapter name -> reason -> {"count", "first"}: see _resolve_assets
 
     def _apply_exact(self) -> None:
         """Let a compiler overrule the syntax resolvers where one is available."""
@@ -1006,6 +1051,7 @@ class Indexer:
             from . import channels as more
             more.resolve(self)   # dependency injection, queues, databases, RPC
         self._timed("channels", channels)
+        self._timed("assets", self._resolve_assets)
         if not self.keep_results:
             # Flows and the write are left, which read nodes, edges, calls (with their columns) and flows. What the
             # parse and the resolvers held (GBs on a large repository) is let go first, so the flows' lists and the
@@ -1027,12 +1073,14 @@ class Indexer:
                        attrs={"url": _git(root, "remote", "get-url", "origin"),
                               "branch": _git(root, "rev-parse", "--abbrev-ref", "HEAD")}))
         work = []
-        for f in files:
-            ext = "." + f.rsplit(".", 1)[-1] if "." in f else ""
+        adapters = [(f, "." + f.rsplit(".", 1)[-1] if "." in f else "") for f in files]
+        code_dirs = {_module_for(f, module_dirs) for f, ext in adapters
+                     if ext in BY_EXTENSION and not getattr(BY_EXTENSION[ext], "ASSET", False)}
+        for f, ext in adapters:
             adapter = BY_EXTENSION.get(ext)
             if adapter is None:
                 continue
-            mod_dir = _module_for(f, module_dirs)
+            mod_dir = _asset_module(f, code_dirs) if getattr(adapter, "ASSET", False) else _module_for(f, module_dirs)
             mod_id = self._module(mod_dir, files, repo)
             work.append((f, ext, mod_dir, mod_id))
         # With a parse cache (leyline.incremental), a file whose content and module are as they were last time is
@@ -3376,6 +3424,147 @@ class Indexer:
         target = self.file_of.get(impl)
         return target is not None and self.nodes[target].parent_id in self._loose_reach[mod]
 
+    # -- engine assets (leyline.adapters.godot, unity) ----------------------------
+    def _unity_guids(self, repo: str, files: list[str]) -> tuple[dict, dict]:
+        """GUID -> the file ids that claim it, from the `.meta` file beside each file the map holds; and the counts of
+        what has none. Read only for a repository that holds a Unity asset."""
+        listed, root = set(files), self.repos[repo]
+        got: dict[str, list] = {}
+        none = Counter()
+        for f in files:
+            if "." + f.rsplit(".", 1)[-1] not in BY_EXTENSION:
+                continue
+            fid = f"{repo}:file:{f}"
+            meta = f + ".meta"
+            if meta not in listed:
+                if self.file_lang.get(fid) == "csharp":
+                    none["scripts_without_meta"] += 1
+                continue
+            read = read_meta(root / meta)
+            if read is None:
+                continue
+            self.meta_digests[repo][meta] = read[1]
+            if read[0] and fid in self.results:
+                got.setdefault(read[0], []).append(fid)
+        return got, none
+
+    def _note(self, adapter, reason: str, fid: str, ref) -> None:
+        """An asset's reference the map could not tie to code: counted by reason, the first few named."""
+        got = self.asset_notes[adapter.NAME].setdefault(reason, {"count": 0, "first": []})
+        got["count"] += 1
+        if len(got["first"]) < NAMED_UNLINKED:
+            got["first"].append(f"{self.nodes[fid].path}:{ref.line} {ref.what} {ref.target}")
+
+    def _script_methods(self, tid: str, name: str) -> list[Node]:
+        """The methods of a script file called `name`: of its class, or of a class it inherits on the map, in any file
+        of a partial class. A script with no class (GDScript) has its functions."""
+        nodes = self.results[tid].nodes
+        tops = [n for n in nodes if n.kind == "type" and self.nodes.get(n.parent_id, n).kind != "type"]
+        stem = self.nodes[tid].name.rpartition(".")[0]
+        out: list[Node] = []
+        for t in [n for n in tops if n.name == stem] or tops:
+            out += [m for m in self._methods(t.id, name, -1, enclosing=False) if m not in out]
+        if not tops:
+            out = [n for n in nodes if n.kind == "callable" and n.name == name and self.nodes.get(n.parent_id, n).kind != "type"]
+        return out
+
+    def _resolve_assets(self) -> None:
+        """Tie what each Godot or Unity asset names to code: an `imports` edge (exact) to the script, scene or prefab,
+        and one `communicates` edge on the channel `asset` (heuristic: found by name) to each method its signal
+        connections or persistent events call. What cannot be tied is counted by reason and the first few named, not
+        guessed. It runs over every asset's references on each map (small, and kept in the parse cache), so an
+        incremental map equals a full one."""
+        langs = {a.LANGUAGE for a in ASSETS}
+        by_repo: dict[str, list] = defaultdict(list)
+        for fid, lang in self.file_lang.items():
+            if lang in langs and fid in self.results:
+                by_repo[_repo_of(fid)].append(fid)
+        for repo, fids in by_repo.items():
+            files = self.files_of.get(repo, [])
+            listed = set(files)
+            unity = any(self.file_lang[f] == "unity-yaml" for f in fids)
+            guids, none = self._unity_guids(repo, files) if unity else ({}, Counter())
+            for k, v in none.items():
+                self.stats[BY_LANGUAGE["unity-yaml"].NAME][k] += v
+            godots = sorted((f.rpartition("/")[0] for f in files if f.rsplit("/", 1)[-1] == "project.godot"),
+                            key=len, reverse=True)
+            for fid in sorted(fids):
+                self._link_asset(repo, fid, listed, guids, godots)
+
+    def _asset_target(self, repo: str, fid: str, ref, listed: set, guids: dict, godots: list):
+        """(the file id a reference names, or None, why not)."""
+        if self.file_lang[fid] == "unity-yaml":
+            ids = guids.get(ref.target, [])
+            if len(ids) > 1:
+                return None, "GUID claimed by two .meta files"
+            if not ids:
+                return None, "outside the repository (no .meta file claims the GUID)"
+            return ids[0], ""
+        here = self.nodes[fid].path.rpartition("/")[0]
+        base = next((r for r in godots if here == r or here.startswith(r + "/")), "")
+        rel = "/".join(_normalize(((base,) if base else ()) + tuple(ref.target[len("res://"):].split("/"))))
+        tid = f"{repo}:file:{rel}"
+        if tid in self.results:
+            return tid, ""
+        if rel in listed:
+            read = "." + rel.rsplit(".", 1)[-1] in BY_EXTENSION
+            return None, "not mapped (skipped or failed)" if read else "script in a language that is not read"
+        return None, "outside the repository"
+
+    def _asset_scripts(self, repo: str, fid: str, listed: set, guids: dict, godots: list) -> list[str]:
+        """The script files an asset runs."""
+        got = (self._asset_target(repo, fid, r, listed, guids, godots)[0] for r in self.results[fid].assets if r.what == "script")
+        return [t for t in got if t]
+
+    def _link_asset(self, repo: str, fid: str, listed: set, guids: dict, godots: list) -> None:
+        adapter = BY_LANGUAGE[self.file_lang[fid]]
+        stats = self.stats[adapter.NAME]
+        res = self.results[fid]
+        scripts: dict[str, str] = {}   # what a script reference names -> the file it is
+        found: dict = {}
+
+        def target(ref):
+            if ref.target not in found:
+                found[ref.target] = self._asset_target(repo, fid, ref, listed, guids, godots)
+            return found[ref.target]
+        linked = set()
+        for ref in res.assets:
+            if ref.what == "method":
+                continue
+            tid, why = target(ref)
+            if tid is None:
+                self._note(adapter, why, fid, ref)
+                continue
+            if ref.what == "script":
+                scripts[ref.target] = tid
+            if tid != fid and (tid, ref.what) not in linked:
+                linked.add((tid, ref.what))
+                self.edges.append(Edge("imports", fid, tid, "exact", {"symbols": [], "found_by": "asset"}))
+                stats[f"{ref.what}s_linked"] += 1
+        for ref in res.assets:
+            if ref.what != "method":
+                continue
+            if ref.owner.startswith("in:"):   # a component of another file's prefab: a script that file runs
+                other = guids.get(ref.owner[3:], [None])[0] if len(guids.get(ref.owner[3:], ())) == 1 else None
+                owners = self._asset_scripts(repo, other, listed, guids, godots) if other in self.results else []
+            else:
+                owners = [scripts[ref.owner]] if ref.owner in scripts else []
+            if not owners:
+                if ref.owner and not ref.owner.startswith("in:"):
+                    continue   # its script was not linked, and that is already said
+                if ref.builtin:
+                    self._note(adapter, "call on a built-in component", fid, ref)
+                else:
+                    self._note(adapter, "method on a component whose script is not on the map", fid, ref)
+                continue
+            methods = [m for o in owners for m in self._script_methods(o, ref.target)]
+            if not methods:
+                self._note(adapter, "method the script does not have", fid, ref)
+                continue
+            for m in methods:
+                self.edges.append(Edge("communicates", fid, m.id, "heuristic", {"channel": "asset", "address": ref.target}))
+            stats["methods_linked"] += 1
+
     def _build_flows(self, max_depth: int = 8, max_steps: int = 300) -> None:
         """Walk the call graph from every entry point and test, in source order."""
         out: dict[str, list] = defaultdict(list)
@@ -3544,8 +3733,19 @@ class Indexer:
         ws = {"workspace": sorted(self.repos)} if multi else {}
         for repo in self.repos:
             commit = self.commits[repo]
+            # the `.meta` files the links were made from, for loop._changes: a change to one is a change to the map
+            key = f"asset_meta:{repo}"
+            if self.meta_digests.get(repo):
+                con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, json.dumps(self.meta_digests[repo], sort_keys=True)))
+            else:
+                con.execute("DELETE FROM meta WHERE key = ?", (key,))
             for a in ADAPTERS:
                 st = dict(self.stats.get(a.NAME, {}))
+                if getattr(a, "ASSET", False):
+                    if not st:
+                        continue   # no such assets here: nothing about them in the map
+                    if self.asset_notes.get(a.NAME):
+                        st["not_linked"] = self.asset_notes[a.NAME]
                 status = "ok" if st.get("files") else "no_files"
                 store.write_coverage(con, repo, a.NAME, a.VERSION, status, commit, {**st, **ws} if st else st)
             for channel in ("event", "process", "di", "http", "rpc", "queue", "db", "file", "format"):
@@ -3695,9 +3895,7 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         for other in list(repos)[1:]:
             with con:
                 store.write_coverage(con, other, "patterns:structural", "0.1", "ok", None, stats["patterns"])
-        tour = {r: tours.generate(con, r) for r in repos}
-        stats["tour"] = tour if multi else tour[repo]
-        timing["patterns_and_tour"] = round(time.perf_counter() - mark, 3)
+        timing["patterns"] = round(time.perf_counter() - mark, 3)
         stats["stale_annotations"] = store.refresh_stale(con)
         if multi:
             stats["workspace"] = {"repos": {r: str(p) for r, p in repos.items()}, "cross_repo": _cross_counts(con)}
@@ -3713,11 +3911,19 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
                 con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"timing:{r}", json.dumps(stats["timing"])))
                 con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
                             (r, "timing", "-", "ok", None, json.dumps(stats["timing"])))
-            # Which Leyline made this map, noted once the whole of it is written: a newer one, or a run that stopped
-            # part way (its systems, patterns or tour not yet redone), maps again even where no file changed
-            # (see loop.refresh).
-            con.execute("INSERT OR REPLACE INTO meta VALUES ('made_by', ?)", (incremental.code_version(),))
         inc.finish(con)
+        # The parts of the large modules are worked out once, here, after the generation stamp is written (so the model
+        # they come from is kept for the page and the questions that follow), and the tour and the page read that one
+        # result. Which Leyline made this map is noted last, once the whole of it is written: a newer one, or a run that
+        # stopped part way (its tour not yet redone), maps again even where no file changed (see loop.refresh).
+        mark = time.perf_counter()
+        parts = _parts(con)
+        tour = {r: tours.generate(con, r, parts) for r in repos}
+        stats["tour"] = tour if multi else tour[repo]
+        stats["parts"] = parts
+        stats["timing"]["tour_and_parts"] = round(time.perf_counter() - mark, 3)
+        with con:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('made_by', ?)", (incremental.code_version(),))
         if _verify and stats["incremental"]["mode"] == "incremental" and os.environ.get("LEYLINE_VERIFY"):
             stats["incremental"]["differs"] = incremental.verify(db_path, members, exact, scip, listed)
         inc = None
@@ -3726,6 +3932,16 @@ def index(root: str | Path | list, db_path: str | Path, repo_id: Optional[str] =
         if inc is not None:
             inc.abandon()
         con.close()
+
+
+def _parts(con) -> Optional[list]:
+    """The parts of the large modules (`outline.map_parts`), or None when they cannot be worked out: a map is still
+    worth having without them."""
+    from . import outline
+    try:
+        return outline.map_parts(con)
+    except Exception:
+        return None
 
 
 def _cross_counts(con) -> list[dict]:
