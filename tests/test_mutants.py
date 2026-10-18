@@ -269,6 +269,31 @@ def test_the_runner_restores_the_file_after_a_hang(tmp_path, monkeypatch):
     assert (p.root / "app" / "calc.py").read_bytes() == original and not (p.plan_dir() / "applied.json").exists()
 
 
+def test_a_mutant_is_not_run_from_the_compiled_file_of_the_original(tmp_path):
+    """Python keeps a compiled file while its source has the same size and the same modified time in whole seconds. A
+    mutant such as `-` to `+` is the same size, and a quick test run writes it within a second of the last compile, so
+    the mutant would run as the original and be counted as one that survived. Each run gets its own place for them."""
+    import importlib.util
+    p = Project(tmp_path / "pyc", {"app/__init__.py": "", "app/calc.py": CALC_BEFORE, "tests/test_calc.py": TESTS_BEFORE},
+                {"app/calc.py": CALC_AFTER, "tests/test_calc.py": TESTS_AFTER})
+    p.implement()
+    assert p.plan()["count"] > 0
+    spec = importlib.util.spec_from_file_location("leyline_mutant_run", p.plan_dir() / "run.py")
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+    calc = p.root / "app" / "calc.py"
+    original = calc.read_bytes()
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+    subprocess.run([sys.executable, "-c", "import app.calc"], cwd=p.root, env=env, check=True)   # the compiled original
+    stat = calc.stat()
+    mutant = original.replace(b"total - 20", b"total + 20")
+    assert mutant != original and len(mutant) == len(original)
+    calc.write_bytes(mutant)
+    os.utime(calc, ns=(stat.st_atime_ns, stat.st_mtime_ns))   # the second the compiled file recorded
+    failed, _ = run.tests(str(p.root), [STRONG], False, 120)
+    assert failed == [STRONG], failed                         # the mutant ran: the test that wants 230 sees 270
+
+
 def test_a_baseline_failure_kills_nothing(tmp_path):
     p = Project(tmp_path / "base", {"app/__init__.py": "", "app/calc.py": CALC_BEFORE, "tests/test_calc.py": TESTS_BEFORE},
                 {"app/calc.py": CALC_AFTER, "tests/test_calc.py": TESTS_AFTER + "\n\ndef test_always_fails():\n    discount(250)\n    assert False\n"})

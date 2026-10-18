@@ -365,8 +365,10 @@ A run is given twice the time of the unmutated run, at least 30 seconds (LEYLINE
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 import hashlib
@@ -385,10 +387,18 @@ def tests(root, ids, fail_fast, timeout):
     """(the names of the tests that failed, seconds) or (None, seconds) when the run went past its timeout."""
     cmd = [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider", "-rfE"] + (["-x"] if fail_fast else []) + list(ids)
     began = time.time()
+    # Python keeps a compiled file while its source has the same size and the same modified time in whole seconds. A
+    # mutant is often the same size as the code it replaces (`-` to `+`), and a quick run writes it within a second of the
+    # last compile, so it would run as the original and be counted as one that survived. Each run gets an empty place for
+    # its compiled files, and reads none the project holds.
+    pyc = tempfile.mkdtemp(prefix="leyline-pyc-")   # not TemporaryDirectory(ignore_cleanup_errors=...): that is 3.10 and this may not be
     try:
-        done = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        done = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                              env={**os.environ, "PYTHONPYCACHEPREFIX": pyc})
     except subprocess.TimeoutExpired:
         return None, time.time() - began
+    finally:
+        shutil.rmtree(pyc, ignore_errors=True)
     failed = [line.split(" ", 1)[1].split(" - ", 1)[0].strip() for line in done.stdout.splitlines()
               if line.startswith(("FAILED ", "ERROR ")) and " " in line]
     if done.returncode not in (0, 1) and not failed:
