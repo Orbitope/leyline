@@ -269,3 +269,74 @@ def test_the_map_page_opens_a_large_module_into_its_parts(mapped, browser, tmp_p
     assert len(boxes()) >= len(ORDERS) and pg.locator("#crumbs").inner_text().split("\n")[-1] == group
     assert not problems, problems
     pg.close()
+
+
+def _core(con):
+    """The flat folder's model, its part and the folder's id, and its two groups (the orders and the reports)."""
+    folder = "r:dir:svc/src/shop/core"
+    m = outline.model(con)
+    core = outline.find(m, folder)
+    kids, _how, _from = outline.split(m, core)
+    orders = next(k for k in kids if len(k.files) == len(ORDERS))
+    reports = next(k for k in kids if len(k.files) == len(REPORTS))
+    return m, core, folder, orders, reports
+
+
+def test_a_group_holding_most_of_a_flat_module_is_split_again(mapped, monkeypatch):
+    from collections import Counter
+    repo, db, con = mapped
+    m, core, folder, orders, reports = _core(con)
+    both = outline.Part(folder + "#system:Merged", "system", "merged group", sorted(orders.files + reports.files),
+                        core.path, core.module, core.repo, folder)
+    runs = []
+    real = outline._louvain
+    monkeypatch.setattr(outline, "_louvain", lambda *a, **k: runs.append(1) or real(*a, **k))
+    pieces = outline._resplit(m, both, folder, Counter())
+    assert sorted(len(p.files) for p in pieces) == [len(ORDERS), len(REPORTS)]
+    assert sorted(f for p in pieces for f in p.files) == both.files            # every file is in one piece
+    assert all(len(p.files) < len(both.files) and p.label.endswith(" group") for p in pieces)
+    assert len({p.id for p in pieces}) == 2 and both.id not in {p.id for p in pieces}
+    assert len(runs) <= 2                                                       # at most two more community runs
+
+
+def test_a_group_that_does_not_separate_stays_whole(mapped, monkeypatch):
+    from collections import Counter
+    repo, db, con = mapped
+    m, core, folder, orders, reports = _core(con)
+    assert outline._resplit(m, reports, folder, Counter()) == [reports]         # a clique has no communities
+    # `_groups` asks only for a group over the thresholds: here the reports (7 files, most of the level), not the orders
+    asked = []
+    real = outline._resplit
+    monkeypatch.setattr(outline, "_resplit", lambda m, g, f, used: asked.append(len(g.files)) or real(m, g, f, used))
+    monkeypatch.setattr(outline, "_cache", {})                                  # a model made with the spy in place
+    flat = outline.outline(con, folder)
+    assert asked == [len(REPORTS)]
+    assert sorted(p["size"]["files"] for p in flat["parts"]) == [len(ORDERS), len(REPORTS)]
+
+
+def test_a_name_given_to_a_split_group_is_marked_stale_not_lost(mapped):
+    repo, db, con = mapped
+    m, core, folder, orders, reports = _core(con)
+    chart = con.execute("SELECT id FROM nodes WHERE kind = 'type' AND name = 'Chart'").fetchone()[0]
+    outline.name_part(con, reports.id, "Reporting", "Draws reports.", [chart])
+    fs = sorted(reports.files)
+    mk = lambda k, files: outline.Part(f"{folder}#system:Piece{k}", "system", f"piece {k} group", files, core.path,
+                                       core.module, core.repo, folder)
+    pieces = [mk(1, fs[:3]), mk(2, fs[3:5]), mk(3, fs[5:])]                    # three pieces of the seven: 3, 2 and 2
+    got = outline.names(con, [orders] + pieces)
+    assert set(got) == {pieces[0].id}                                           # the piece sharing most files, only
+    assert got[pieces[0].id]["name"] == "Reporting" and got[pieces[0].id]["from"] == reports.id
+    assert got[pieces[0].id]["stale"].startswith("may be stale: it kept 43%")
+    # The files no piece took stay under the group's own id, and keep its name there
+    left = outline.Part(reports.id, "system", reports.label, fs[5:], core.path, core.module, core.repo, folder)
+    got = outline.names(con, [orders, mk(1, fs[:5]), left])
+    assert got[reports.id]["name"] == "Reporting" and "from" not in got[reports.id]
+    assert reports.id in got and mk(1, []).id not in got
+
+
+def test_the_label_of_a_group_counts_the_files_it_does_not_name(mapped):
+    repo, db, con = mapped
+    m, core, folder, orders, reports = _core(con)
+    assert orders.label.endswith(f" + {len(ORDERS) - 3} more group")
+    assert reports.label.endswith(f" + {len(REPORTS) - 3} more group")
+    assert orders.label.count(" + ") == 3                                       # three named, then how many more

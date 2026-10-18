@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from leyline import cli, diagrams, explain, store
+from leyline import cli, diagrams, explain, store, summaries
 from leyline.indexer import index
 
 NOTES = {
@@ -104,8 +104,8 @@ def test_words_are_split_stemmed_and_matched_loosely():
 
 def test_a_comment_above_and_a_docstring_below_are_read():
     lines = ["# Saves a note.", "@decorator", "def save(x):", '    """Writes it to disk."""', "    pass"]
-    assert explain.leading_doc(lines, 3) == "Saves a note. Writes it to disk."
-    assert explain.leading_doc(["/** Persists one note. */", "export function f() {"], 2) == "Persists one note."
+    assert summaries.declared_doc(lines, 3) == "Saves a note. Writes it to disk."
+    assert summaries.declared_doc(["/** Persists one note. */", "export function f() {"], 2) == "Persists one note."
 
 
 # -- find_flows ----------------------------------------------------------------------------------------------------
@@ -311,4 +311,4 @@ def test_the_skill_names_the_tools_and_their_commands():
                  "`leyline explain-path <start>", "`leyline diagram", "save_tour", "Every claim cites a node"):
         assert said in text, said
     docs = (root / "docs" / "understanding.md").read_text() + (root / "docs" / "mcp-tools.md").read_text()
-    assert "### Asking how something works" in docs and "| `find_flows(description, limit?)` |" in docs
+    assert "### Asking how something works" in docs and "| `find_flows(description, limit?, budget_tokens?)` |" in docs

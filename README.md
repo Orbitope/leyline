@@ -179,7 +179,9 @@ claude mcp add -s user leyline -- leyline serve         # or: every project you 
 
 and `leyline skills install` to give Claude Code the skills (see [Working through an agent](#working-through-an-agent)).
 
-Claude Code starts the server in the directory it was opened in, and the server reads the store there,
+Claude Code starts the server in the directory it was opened in, and the server reads the store there (an agent that
+works in another checkout of the same repository, a git worktree, passes that checkout's absolute path to `map`: it is mapped
+as itself, its store is the one inside it, and the server reads that store until it restarts),
 `.leyline/leyline.db`, or, from a folder inside the repository, the nearest such store above it. Nothing needs to be mapped first: the agent's first call is `map`. If `leyline` is
 installed in a virtual environment, give its full path (`-- /path/to/venv/bin/leyline serve`); for a
 store elsewhere, such as a workspace mapped from another directory, add `-e LEYLINE_DB=/full/path/leyline.db`
@@ -204,9 +206,15 @@ Every record belongs to one of three layers:
 - **inferred**: written by an LLM, with evidence and a confidence
 - **intent**: written by you, such as boundaries and rules
 
+Every function and type also carries one line saying what it is for: its author's comment or docstring, or the
+`responsibility` an agent wrote after reading it (see [understanding.md](docs/understanding.md#what-a-function-or-type-is-for)).
+
 This version builds the fact layer for C# and Python, proposes systems by clustering, labels design
 patterns by their shape, generates an orientation tour, assesses a described change before it is made,
 reviews it after, and checks architecture rules.
+
+Godot scenes and Unity prefabs are on the map too, linked to the scripts they run and the methods their signals and
+events name, so renaming a method shows the scene that wires it ([indexing.md](docs/indexing.md#game-engine-assets)).
 
 ## Use
 

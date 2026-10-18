@@ -1,0 +1,21 @@
+- [ ] 1.1 Change `indexer.index` to write the tour after `inc.finish`, from parts it works out once and returns under `parts`, and to note which Leyline made the map after the tour
+- [ ] 1.2 Add `indexer._parts`, the parts of the large modules from the outline module's map_parts, or None when they cannot be worked out
+- [ ] 1.3 Change `cli._main` to leave the parts out of what the index command prints
+- [ ] 1.4 Add `tours._parts_sentence`, what a large module's parts are, named ones first with their summaries and how many have no name
+- [ ] 1.5 Change `tours.generate` to take the parts, and to describe a module of 30 files or more by them
+- [ ] 1.6 Change `coverage.import_file` to pass the parts to `tours.generate`
+- [ ] 1.7 Change `export.graph`, `export.parts`, `export.fragment` and `export.page` to take the parts the map worked out
+- [ ] 1.8 Change `loop.map_repos` to take the parts from the index and hand them to `loop.counts` and `loop.write_page`
+- [ ] 1.9 Change `loop.write_page` and `loop.counts` to take the parts
+- [ ] 1.10 Add `loop.unnamed_parts`, the largest product module of 30 files or more with parts that have no name
+- [ ] 1.11 Change `loop.map_text` to append to its Next line, in both branches, how many parts are unnamed and how to name them
+- [ ] 1.12 Change `server.map_code` to add to `next`, after the spec step, the orientation steps and the parts to name
+- [ ] 1.13 Change `outline.name_part` to say in its `next` that the tour shows the name after the next map
+- [ ] 1.14 Add to skills/leyline-ask/SKILL.md a tool row for the tours and tour tools and the tour command, and a route for "What is this codebase? How is it organized?" to the overview tool, the orientation tour and the leyline-explore-module skill on the largest module
+- [ ] 2.1 Add the test "The orientation tour lists the named parts of a module"
+- [ ] 2.2 Add the test "The stop of an unnamed module says its parts are unnamed"
+- [ ] 2.3 Add the test "The stop of a small module is unchanged"
+- [ ] 2.4 Add the test "The parts are computed once per map"
+- [ ] 2.5 Add the test "Map says when the parts of the main module are unnamed"
+- [ ] 2.6 Add the test "The next of the map tool offers to look around"
+- [ ] 3.1 Document in docs/understanding.md that the orientation tour and map describe a large module by its named parts

@@ -125,6 +125,17 @@ class ImportRef:
 
 
 @dataclass(slots=True)
+class AssetRef:
+    """What an engine asset (a Godot scene, a Unity prefab) names, to be tied to code by the indexer."""
+
+    what: str  # script | include | method
+    target: str  # script: a res:// path or a GUID; include: the scene or prefab, the same way; method: its name
+    owner: str = ""  # method: the script reference (as in target) of the node or component it is called on
+    builtin: bool = False  # method: called on a component the engine provides
+    line: int = 0
+
+
+@dataclass(slots=True)
 class FileResult:
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
@@ -140,3 +151,4 @@ class FileResult:
     declares: list[str] = field(default_factory=list)
     # Module-level variables whose type the file states (Python: `g: Globals = ...`, `app = Flask()`).
     var_types: dict[str, str] = field(default_factory=dict)
+    assets: list[AssetRef] = field(default_factory=list)  # what an engine asset names (leyline.adapters.godot, unity)

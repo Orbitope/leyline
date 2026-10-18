@@ -1368,10 +1368,26 @@ def findings(con, change_id: str) -> dict:
 
 
 # -- verification --------------------------------------------------------------------------------
+def _named_in_spec(change_dir) -> set:
+    """Every name the change writes in backticks, in its proposal, design, tasks and specs: what it says it touches and
+    uses. A new link between modules whose target is named there was planned."""
+    out = set()
+    d = Path(change_dir)
+    for f in [d / "proposal.md", d / "design.md", d / "tasks.md", *sorted(d.glob("specs/**/spec.md"))]:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out |= {m.group(1).strip() for m in re.finditer(r"`([^`\n]+)`", text)}
+    return out
+
+
 def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_run: Optional[str] = None, write: bool = True,
-           old_run: Optional[str] = None) -> dict:
+           old_run: Optional[str] = None, mutants: Optional[dict] = None) -> dict:
     """After implementation and a re-index: was the change made as the spec says? `old_run` names results left out
-    because the code changed after they ran: a scenario they carry has a test, whose results are out of date."""
+    because the code changed after they ran: a scenario they carry has a test, whose results are out of date.
+    `mutants`, the results of a mutation plan (`mutants.read_results`), says whether each passing scenario's own tests
+    failed a mutant of the changed code it reaches (the verdict `unasserted`, which a project may make block)."""
     parsed = parse(change_dir)
     if "error" in parsed:
         return parsed
@@ -1384,6 +1400,11 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
                 "next": [f"Next: run `leyline plan {parsed['id']}` again" + (" (the baseline it took is kept)" if kept else
                          " on the code as it was before the change") + ", then check it again."]}
     review = diff.review(con, cid, before_run, after_run)
+    if "error" not in review:   # a new link to something the change names was planned: it is listed, and holds nothing up
+        named = _named_in_spec(parsed["dir"])
+        links = review["graph"]["structure"]["new_dependencies"]
+        review["graph"]["structure"]["new_dependencies"] = [d for d in links if d["to"] not in named]
+        review["graph"]["structure"]["declared_dependencies"] = [d for d in links if d["to"] in named]
     if "error" in review:
         if review["error"].startswith("No change"):   # never planned, or the plan stopped at an error
             return {"error": f"{parsed['id']} has not been planned, so there is nothing to compare the code with.",
@@ -1436,6 +1457,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
                           **({"counterexample": ex} if ex else {}),
                           "off_map": not tid and not gen and bool(rows), **({"script": script} if script else {}),
                           "results": len(rows), "reaches_the_change": static, "measured_running_the_change": ran_change,
+                          "result_names": [r["name"] for r in rows],
                           "message": (failed[0]["message"] or "") if failed else ""})
 
     tasks, declared, named = [], set(), set()
@@ -1534,6 +1556,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     from . import affected   # with per-test coverage: did each passing scenario's test run the code its tasks changed?
     affected.mark_scenarios(con, scenarios, ((in_spec | declared | {h["id"] for h in helpers}) & touched) or touched,
                             after_run, test_names, cid)
+    if mutants is not None:
+        from . import mutants as mutants_mod
+        mutants_mod.mark_scenarios(con, scenarios, mutants)
     # One verdict per task and scenario; which of them hold up "done as agreed" is the project's to set.
     judged = verdicts.judge(con, cid, parsed["dir"], tasks, scenarios, names, touched, removed, before_run, after_run)
     verdict = list(judged.pop("holds_up"))
@@ -1558,6 +1583,7 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
     out = {"change_id": cid, "title": parsed["title"], "tasks": tasks, "scenarios": scenarios, "drift": drift,
            "predicted_not_edited": [{**n, "name": _label(names, n["id"]) if n["id"] in names.by_id else n["name"]}
                                     for n in review["predicted_untouched"]], "new_dependencies": review["graph"]["structure"]["new_dependencies"],
+           "declared_dependencies": review["graph"]["structure"]["declared_dependencies"],
            "rules_newly_failing": review["rules"]["new_violations"], "tests": review["tests"], "open_high_findings": open_high,
            "tests_added_or_changed": [n["name"] for n in tests_touched], "helpers_added": helpers,
            "review": {"findings": len(all_findings), "open": sum(f["status"] == "open" for f in all_findings),
@@ -1568,6 +1594,9 @@ def verify(con, change_dir: str | Path, before_run: Optional[str] = None, after_
                            "skipped": sum(r["status"] == "skip" for r in results.values())} if results else None,
            "after_failing": [{"name": n} for n in after_fails],
            "done_as_agreed": not verdict, "why_not": verdict, "verdicts": judged, "view_id": review.get("view_id")}
+    if mutants is not None:
+        from . import mutants as mutants_mod
+        out["mutants"] = mutants_mod.page_data(mutants)
     from . import diagrams   # the changed code as it runs now, and the calls and channel links it gained and lost
     out["how_it_runs"] = diagrams.safe(diagrams.for_snapshot, diff.snapshot_path(con, cid), con,
                                        [n["id"] for k in ("edited", "resigned", "added") for n in g[k]]
@@ -1661,6 +1690,9 @@ def verify_text(v: dict) -> str:
         msg = " ".join((s["message"] or "").split()).replace("|", "/")
         L.append(f"| {s['name']} | {s['state']} | {s.get('verdict', '')} | {(msg[:200] + '...' if len(msg) > 200 else msg) or ev} |")
     L += verdicts.page_lines(v)
+    if v.get("mutants"):
+        from . import mutants as mutants_mod
+        L += mutants_mod.page_lines(v["mutants"])
     if v["drift"]:
         L += ["", "**Changed, but not in the spec:**"] + [_drift_line(n) for n in v["drift"][:25]]
     if v.get("helpers_added"):
@@ -1670,6 +1702,9 @@ def verify_text(v: dict) -> str:
         L += ["", "**Expected to change, and did not:**"] + [f"- {n['name']}" for n in v["predicted_not_edited"][:25]]
     if v["new_dependencies"]:
         L += ["", "**New links between modules:**"] + [f"- {d['from']} to {d['to']}" for d in v["new_dependencies"]]
+    if v.get("declared_dependencies"):
+        L += ["", "**New links between modules, named in the spec** (they do not hold up the verdict):"] + [
+            f"- {d['from']} to {d['to']}" for d in v["declared_dependencies"]]
     if v["rules_newly_failing"]:
         L += ["", "**Rules that held before and fail now:**"] + [f"- {r['kind']} {r['from']} {r['to']}" for r in v["rules_newly_failing"]]
     t = v["tests"]

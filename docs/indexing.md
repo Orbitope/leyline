@@ -13,7 +13,8 @@ instead, leaving out what git would: the patterns of your global excludes file (
 git reads them, so a file kept out of git such as `.env` stays off the map and its page. Some files are left out, and `map` names them with
 the reason: other people's code (`node_modules`, a Go or Composer `vendor`), submodules and nested
 repositories, symlinks to directories or out of the repository, files git lists that are gone, and source
-files that are binary, minified, unreadable or larger than 5 MB (`LEYLINE_MAX_FILE_MB` changes that). A
+files that are binary, minified, unreadable or larger than 5 MB (`LEYLINE_MAX_FILE_MB` changes that; engine assets
+have their own limit, below). A
 file that does not parse is kept on the map as a file, without its contents, and named too.
 
 Large repositories are parsed in worker processes (`LEYLINE_JOBS` sets how many). A worker that crashes
@@ -39,6 +40,29 @@ C#, Python and TypeScript also have **hand-written adapters** that see more: rec
 overloads, field reads and writes, events, routes. They are used for those languages unless
 `LEYLINE_GENERIC=1`. For other languages, a **SCIP index** (from the language's own indexer,
 `--scip FILE`) replaces the generic adapter's guesses with the compiler's links.
+
+#### Game engine assets
+
+Godot scenes and resources (`.tscn`, `.tres`) and Unity scenes, prefabs and assets (`.unity`, `.prefab`, `.asset`, in
+text serialization) are files on the map too, read whatever `LEYLINE_GENERIC` says. They hold no functions; what they
+name is what the map keeps. A scene or prefab links to the script a node or component runs, to the scene or prefab
+it includes (`imports`, exact), and to the methods its signal connections (Godot) or persistent events (Unity) call
+by name (`communicates` on the channel `asset`, heuristic: found by name, one edge to a method however many
+connections name it). A method counts as the script's when its class or a base class on the map has it.
+
+- A Godot script is found by its `res://` path, read from the folder of the `project.godot` above the scene, not from
+  the repository. Reading a `.gd` script's methods needs the GDScript grammar (`pip install 'leyline-code[languages]'`).
+- A Unity script, scene or prefab is found by its GUID, from the `.meta` file beside it, read only when the repository
+  holds a Unity asset. A `.meta` that is added, changed or gone counts as a change to `plan`, `check` and `map`.
+- `impact` of a script's class, method or field reaches the assets that run it, and `impact` of a scene or prefab
+  the assets that include it. An asset sits in the module of the nearest folder above it that holds code; a folder of
+  scenes alone is not a module.
+- What cannot be tied to code is not guessed. The extractor's coverage (`overview`) counts it by reason and names
+  the first few: a script or prefab outside the repository, a GUID two `.meta` files claim, a method the script does
+  not have, a script in a language that is not read, and calls on built-in components (counted apart, not missing).
+- An asset is read in a stream, never held as lines, up to 64 MB (`LEYLINE_MAX_ASSET_MB`; code keeps 5), binary ones
+  are left out and named, an unchanged one is not read again, and the map's page holds their names and links but not
+  their text.
 
 `leyline grade <repo> <index.scip | roslyn>` measures either adapter against a compiler. Precision
 counts only call sites the compiler resolved; recall counts the compiler's links between functions

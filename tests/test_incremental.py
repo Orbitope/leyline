@@ -386,3 +386,20 @@ def test_a_damaged_cache_makes_a_full_run_not_a_failed_one(tmp_path):
     stats = index(root, db, "f2")
     assert stats["incremental"]["mode"] == "full"
     assert index(root, db, "f2")["incremental"]["mode"] == "incremental"   # and the cache is good again
+
+
+def test_a_python_without_blake2b_still_maps(tmp_path, monkeypatch):
+    """A CPython built without _blake2 has no hashlib.blake2b; the group fingerprints fall back to sha256 and stay
+    stable from run to run, so the second run writes no group again and keeps its patterns."""
+    from leyline import incremental
+    monkeypatch.delattr("hashlib.blake2b", raising=False)
+    root = copy(tmp_path, "fixture4")
+    db = tmp_path / "s.db"
+    first = index(root, db, "f4")
+    assert first["incremental"]["mode"] == "full"
+    second = index(root, db, "f4")
+    assert second["incremental"]["mode"] == "incremental"
+    assert second["incremental"]["groups_written"] == 0
+    assert second["incremental"]["patterns"] == "kept"
+    obj = (["a"], [], [])
+    assert incremental._fingerprint(obj) == incremental.hashlib.sha256(incremental.marshal.dumps(obj, 0)).digest()[:8]

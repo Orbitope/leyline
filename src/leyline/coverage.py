@@ -297,9 +297,13 @@ def import_file(con, path: str | Path, run: str = "default", test: Optional[str]
             con.execute("INSERT OR REPLACE INTO extractor_coverage VALUES (?,?,?,?,?,?)",
                         (repo[0], "coverage", fmt, "ok", head_commit[0] if head_commit else None, json.dumps(stats)))
     try:  # the orientation tour quotes these numbers
-        from . import tours
+        from . import outline, tours
+        try:
+            parts = outline.map_parts(con)
+        except Exception:
+            parts = None
         for repo in con.execute("SELECT id FROM nodes WHERE kind = 'repo'").fetchall():
-            tours.generate(con, repo[0])
+            tours.generate(con, repo[0], parts)
     except Exception:
         pass
     return {"run": run, "format": fmt, **stats}

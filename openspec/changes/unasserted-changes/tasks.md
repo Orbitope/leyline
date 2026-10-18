@@ -1,0 +1,54 @@
+- [ ] 1.1 Add `src/leyline/mutants.py` with `plan`, which writes the mutation plan of a spec change under a mutants folder beside the store and returns a short description of it
+- [ ] 1.2 Add `src/leyline/mutants.py: _removed_lines`, the hashes of the lines of the functions the change removed from the baseline
+- [ ] 1.3 Add `src/leyline/mutants.py: _edited_lines`, the lines of the edited functions whose text is new, built on `diff.own_changes` and reading the snapshot rows of the edited files only
+- [ ] 1.4 Add `src/leyline/mutants.py: _sites`, the places in a Python function where a comparison, a boolean operator, a negation, a returned value, an integer or an arithmetic operator can be broken, found with the standard library's ast, placed by character, skipping the inside of f-strings, each mutated source required to parse
+- [ ] 1.5 Add `src/leyline/mutants.py: _patch`, a unified diff of one broken line in the file's own line endings, relative to its repository's root, that `git apply` accepts
+- [ ] 1.6 Add `src/leyline/mutants.py: _choose`, which takes at most 30 mutants and 3 to a line, one to each edited function first, numbers them in that order and names the functions left without one
+- [ ] 1.7 Add `src/leyline/mutants.py: _tests_for`, the tests of the scenarios that reach a function and at most 40 other tests that reach it, each function worked out once
+- [ ] 1.8 Add `src/leyline/mutants.py: plan_text`, the plan as a person reads it
+- [ ] 1.9 Add `src/leyline/mutants.py: read_results`, the results file of a run of the plan: refused for another plan or changed code, partial files read, equivalent marks and baseline failures kept, mutants not run named
+- [ ] 1.10 Add `src/leyline/mutants.py: mark_scenarios`, which says for each scenario whether its own tests failed a mutant of the changed functions they reach
+- [ ] 1.11 Add `src/leyline/mutants.py: page_data`, what the page says about the mutants
+- [ ] 1.12 Add `src/leyline/mutants.py: page_lines`, the section "Covered, but not asserted"
+- [ ] 1.13 Change the top level of `src/leyline/verdicts.py` to add the verdict unasserted, in the order of the verdicts and not in the default blocking
+- [ ] 1.14 Change `verdicts._scenario_verdict` to give a passing scenario whose own tests failed no mutant the verdict `unasserted`, after the verdict for a test that never ran the changed code and before the verdicts that prove a new test
+- [ ] 1.15 Change `verdicts.blocking_line` to name `unasserted` as not blocking only when an item has it or the project lists it
+- [ ] 1.16 Change `spec.verify` to take the results of the mutants, to carry the names of each scenario's results, to call `mutants.mark_scenarios`, and to carry what the page says
+- [ ] 1.17 Change `spec.verify_text` to print "Covered, but not asserted" with the survivors, the equivalent mutants and those not run, and the links named in the spec
+- [ ] 1.18 Add `src/leyline/spec.py: _named_in_spec`, the names a change writes in backticks in its proposal, design, tasks and specs
+- [ ] 1.19 Change `spec.verify` to list a new link between modules whose target the change names apart from those that hold the verdict up
+- [ ] 1.20 Change `loop.check` to take the path of a results file, read it, and pass its contents on
+- [ ] 1.21 Add `loop._unasserted_note`, what to do about a scenario whose own tests failed no mutant
+- [ ] 1.22 Change `loop.next_after_check` to say, for an unasserted scenario, to strengthen the test and run the plan again
+- [ ] 1.23 Change `server.check` to take `mutants_path` and to refuse a path outside the repositories
+- [ ] 1.24 Add `src/leyline/server.py: mutants`, the tool that writes the plan of a spec change and returns the counts, the folder and one short line per mutant
+- [ ] 1.25 Change `cli._main` to add the `mutants` command and `--mutants` to the check command
+- [ ] 1.26 Change `cli._loop` to pass `--mutants` to `loop.check`
+- [ ] 1.27 Add `src/leyline/cli.py: _mutants`, the `mutants` command
+- [ ] 1.28 Change docs/mcp-tools.md to list the `mutants` tool and `mutants_path?` on `check`, docs/changes.md and docs/quick-reference.md to describe the plan, the runner, the results and the verdict, and skills/leyline-spec/SKILL.md to say when to run it
+- [ ] 2.1 Add the test "The mutation plan covers only the lines the change edited"
+- [ ] 2.2 Add the test "A moved function gets no mutants"
+- [ ] 2.3 Add the test "Each mutant is a patch that applies"
+- [ ] 2.4 Add the test "A mutant is made at the operator"
+- [ ] 2.5 Add the test "Code of the tests gets no mutants"
+- [ ] 2.6 Add the test "The cap gives each edited function a mutant first"
+- [ ] 2.7 Add the test "A language with no mutation operators is named"
+- [ ] 2.8 Add the test "A plan is for spec changes only"
+- [ ] 2.9 Add the test "Planning reads the line hashes of the edited files only"
+- [ ] 2.10 Add the test "The runner restores the file after a hang"
+- [ ] 2.11 Add the test "A baseline failure kills nothing"
+- [ ] 2.12 Add the test "A mutant that survived is listed"
+- [ ] 2.13 Add the test "A scenario with no mutant caught by its own tests is unasserted"
+- [ ] 2.14 Add the test "A scenario with a mutant caught by its own tests keeps its verdict"
+- [ ] 2.15 Add the test "A scenario whose tests are new is judged too"
+- [ ] 2.16 Add the test "A mutant that was never run leaves the scenario unjudged"
+- [ ] 2.17 Add the test "An equivalent mutant counts for nothing"
+- [ ] 2.18 Add the test "A scenario with no mutants is not unasserted"
+- [ ] 2.19 Add the test "Results made for other code are refused"
+- [ ] 2.20 Add the test "Unasserted does not block by default"
+- [ ] 2.21 Add the test "A project can make unasserted block"
+- [ ] 2.22 Add the test "Without results check is as it was"
+- [ ] 2.23 Add the test "A link the spec names is not a hold-up"
+- [ ] 2.24 Add the test "A link the spec does not name holds the change up"
+- [ ] 2.25 Change `test_config_default_override_and_mistakes` to expect unasserted among the verdicts the message names
+- [ ] 2.26 Add the test "The mutants tool writes a plan"

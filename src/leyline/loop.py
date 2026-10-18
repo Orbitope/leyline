@@ -24,18 +24,20 @@ STORE = Path(".leyline") / "leyline.db"
 
 # -- finding things -------------------------------------------------------------------------------
 def find_change(target: str | Path, db: Optional[str | Path] = None) -> Optional[Path]:
-    """A change folder, or a change id looked up under openspec/changes/ here, above here, or in a mapped repo."""
+    """A change folder, or a change id looked up under openspec/changes/ in a mapped repo, then here and above here:
+    the repositories the store maps first, so a server that moved to another checkout reads that checkout's change."""
     p = Path(target)
     if p.is_dir():
         return p
     here = Path.cwd().resolve()
-    places = [here, *here.parents]
+    places = []
     if db and Path(db).exists():
         con = store.connect(db)
         try:
             places += list(store.roots(con).values())
         finally:
             con.close()
+    places += [here, *here.parents]
     for d in places:
         hit = d / "openspec" / "changes" / str(target)
         if hit.is_dir():
@@ -63,6 +65,30 @@ def repository_of(folder: Path) -> Optional[Path]:
     return Path(top).resolve() if run.returncode == 0 and top else None
 
 
+def worktrees_of(top: Path) -> list[Path]:
+    """The linked worktrees of a git repository (not its main checkout), as `git worktree list` gives them, resolved;
+    none without git, or when git cannot say."""
+    import subprocess
+    try:
+        run = subprocess.run(["git", "-C", str(top), "worktree", "list", "--porcelain"], capture_output=True,
+                             text=True, timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if run.returncode != 0:
+        return []
+    mine = Path(top).resolve()
+    out = []
+    for line in run.stdout.splitlines():
+        if line.startswith("worktree "):
+            try:
+                w = Path(line[len("worktree "):].strip()).resolve()
+            except (OSError, RuntimeError):
+                continue
+            if w != mine and w not in out:
+                out.append(w)
+    return out
+
+
 def _show(path: str | Path) -> str:
     """A path as a person would type it: relative when it is under the current directory."""
     p = Path(path).resolve()
@@ -84,11 +110,12 @@ def changed_files(db: str | Path) -> list[str]:
 def _changes(db: str | Path) -> tuple[list[str], dict]:
     """changed_files, and each repository's listing it read (an index run right after takes it, not listing again)."""
     from .adapters import BY_EXTENSION
-    from .indexer import read_source, scan
+    from .indexer import read_meta, read_source, scan
 
     con = store.connect(db)
     try:
         roots = _roots(con)
+        held = {r[0]: json.loads(r[1]) for r in con.execute("SELECT key, value FROM meta WHERE key LIKE 'asset_meta:%'")}
         known = {(r["repo_id"], r["path"]): r["content_hash"] for r in con.execute(
             "SELECT repo_id, path, content_hash FROM nodes WHERE kind = 'file' AND layer = 'fact'")}
     finally:
@@ -110,6 +137,14 @@ def _changes(db: str | Path) -> tuple[list[str], dict]:
             if data is None or known.get((repo, f)) != hashlib.sha1(data).hexdigest():
                 out.append(f)
         out += [p for (r, p) in known if r == repo and p not in now]
+        digests = held.get(f"asset_meta:{repo}")
+        if digests is not None:   # the map holds Unity assets: a `.meta` file that is new, changed or gone changes its links
+            listed = set(listing.files)
+            for f in now:
+                read = read_meta(root / (f + ".meta")) if f + ".meta" in listed else None
+                if (read[1] if read else None) != digests.get(f + ".meta"):
+                    out.append(f)
+            out += [m[:-5] for m in digests if m[:-5] not in now and m[:-5] not in out]
     return sorted(set(out)), listings
 
 
@@ -221,19 +256,21 @@ def map_repos(paths: Optional[list[str]], db: str | Path, repo_id: Optional[str]
         if paths:
             with con:   # so plan and check re-index the same way
                 con.execute("INSERT OR REPLACE INTO meta VALUES ('exact', ?)", (exact,))
-        out = {"db": str(db), "seconds": round(time.perf_counter() - began, 1), **counts(con),
+        parts = stats.pop("parts", None)   # worked out once by the index: the tour has them, and the page takes them
+        out = {"db": str(db), "seconds": round(time.perf_counter() - began, 1), **counts(con, parts),
                "timing": stats.get("timing", {}), "exact": {k: v for k, v in stats.items() if k.startswith("exact:")},
                "left_out": _left_out(stats.get("left_out") or {}),
                "changes": sum(1 for root in _roots(con).values() for c in (root / "openspec" / "changes").glob("*")
                               if c.is_dir() and c.name != "archive")}
         if page:
-            out["page"] = str(write_page(con, db, always=True))
+            out["page"] = str(write_page(con, db, always=True, parts=parts))
     finally:
         con.close()
     return out
 
 
-def write_page(con, db: str | Path, open_change: Optional[str] = None, always: bool = False) -> Optional[Path]:
+def write_page(con, db: str | Path, open_change: Optional[str] = None, always: bool = False,
+               parts: Optional[list] = None) -> Optional[Path]:
     """The map page beside the store. `map` writes it; `plan` and `check` rewrite it when it is there, opening
     on their change, so the page a person already has open shows the change after a reload."""
     from . import export
@@ -241,11 +278,28 @@ def write_page(con, db: str | Path, open_change: Optional[str] = None, always: b
     path = Path(db).parent / "map.html"
     if not always and not path.is_file():
         return None
-    store.write_file(path, export.page(con, open_change=open_change))
+    store.write_file(path, export.page(con, open_change=open_change, found=parts))
     return path
 
 
-def counts(con) -> dict:
+def unnamed_parts(con, parts: Optional[list]) -> Optional[dict]:
+    """The largest product module of 30 files or more with parts that have no name, from the parts the index worked
+    out: {"module", "parts", "unnamed"}; None when there is none, or when the parts were not worked out."""
+    if not parts:
+        return None
+    aside = store.aside_modules(con)
+    big = [(sum(len(x["files"]) for x in mp["parts"]), mp) for mp in parts if mp["module"] not in aside]
+    if not big:
+        return None
+    _size, mp = max(big, key=lambda t: (t[0], t[1]["module"]))
+    unnamed = sum(1 for x in mp["parts"] if not x.get("named"))
+    if not unnamed:
+        return None
+    row = con.execute("SELECT path, name FROM nodes WHERE id = ?", (mp["module"],)).fetchone()
+    return {"module": (row[0] or row[1]) if row else mp["module"], "parts": len(mp["parts"]), "unnamed": unnamed}
+
+
+def counts(con, parts: Optional[list] = None) -> dict:
     one = lambda sql: con.execute(sql).fetchone()[0]
     aside = store.aside_modules(con)
     modules = [{"name": r["path"] or r["name"], "repo": r["repo_id"], "files": r["n"],
@@ -255,6 +309,7 @@ def counts(con) -> dict:
     from . import patterns as found
     patterns = dict(sorted(found.listing(con, limit=1)["by_pattern"].items()))
     return {
+        "unnamed_parts": unnamed_parts(con, parts),
         "repos": [r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'repo' ORDER BY id")],
         "modules": modules,
         "files": one("SELECT COUNT(*) FROM nodes WHERE kind = 'file'"),
@@ -299,7 +354,7 @@ def map_text(m: dict) -> str:
         L.pop()
     if not m["files"]:
         from .adapters import ADAPTERS
-        langs = sorted({a.LANGUAGE for a in ADAPTERS})
+        langs = sorted({a.LANGUAGE for a in ADAPTERS if not getattr(a, "ASSET", False)})
         L.insert(1, "No source files were found in a language Leyline reads (" + ", ".join(langs) + ").")
     left = {k: v for k, v in m.get("left_out", {}).items() if k not in QUIET_LEFT_OUT}
     if left:
@@ -316,13 +371,18 @@ def map_text(m: dict) -> str:
     if m.get("page"):
         L.append(f"Map page: {Path(m['page']).as_posix()} (open it in a browser)")
     if m.get("changes"):
-        L.append("Next: `leyline plan <id>` on a change under openspec/changes/, or write a new one there (ask your agent;"
-                 " the leyline-spec skill says how). To look around first: `leyline tour`, or `leyline show <name>`.")
+        nxt = ("Next: `leyline plan <id>` on a change under openspec/changes/, or write a new one there (ask your agent;"
+               " the leyline-spec skill says how). To look around first: `leyline tour`, or `leyline show <name>`.")
     else:
-        L.append("Next: to look around, `leyline tour` says what this is and where to start reading, and `leyline show"
-                 " <name>` explains one thing; or ask your agent how something works. To change the code, write the"
-                 " change as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the leyline-spec skill says"
-                 " how), then run `leyline plan <id>`.")
+        nxt = ("Next: to look around, `leyline tour` says what this is and where to start reading, and `leyline show"
+               " <name>` explains one thing; or ask your agent how something works. To change the code, write the"
+               " change as an OpenSpec folder, openspec/changes/<id>/ (ask your agent; the leyline-spec skill says"
+               " how), then run `leyline plan <id>`.")
+    u = m.get("unnamed_parts")
+    if u:
+        nxt += (f" {u['unnamed']} of the {u['parts']} parts of {u['module']} have no name: ask your agent to name them"
+                " (the leyline-explore-module skill), and the tour and the outline say what each is for.")
+    L.append(nxt)
     return "\n".join(L)
 
 
@@ -462,9 +522,11 @@ def next_after_plan(b: dict, name: str, for_agent: bool = False) -> list[str]:
 
 # -- check ----------------------------------------------------------------------------------------
 def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] = None,
-          coverage_file: Optional[str | Path] = None) -> dict:
+          coverage_file: Optional[str | Path] = None, mutants_file: Optional[str | Path] = None) -> dict:
     """After the change: re-index if the code moved, record the test results, and verify against the plan.
-    `coverage_file`, measured on the same run, is imported after the re-index so its lines land on the new code."""
+    `coverage_file`, measured on the same run, is imported after the re-index so its lines land on the new code.
+    `mutants_file`, the results of the change's mutation plan (`leyline mutants`), says whether each scenario's own tests
+    failed a mutant of the changed code."""
     reindexed = refresh(db)
     con = store.connect(db)
     try:
@@ -480,6 +542,12 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
             imported = measured.import_file(con, coverage_file, run=after)
             if "error" in imported:
                 return {"error": f"cannot import the coverage file: {imported['error']}"}
+        mutated = None
+        if mutants_file is not None:
+            from . import mutants as mutants_mod
+            mutated = mutants_mod.read_results(con, parsed["id"], mutants_file)
+            if "error" in mutated:
+                return {"error": mutated["error"]}
         code = diff._fingerprint(con)
         recorded = _record(con, after, results) if results is not None else None
         if results is not None:
@@ -491,7 +559,7 @@ def check(db: str | Path, change_dir: str | Path, results: Optional[list[dict]] 
         tested = con.execute("SELECT value FROM meta WHERE key = ?", ("tested:" + after,)).fetchone()
         old = results is None and has(after) and (tested[0] != code if tested else bool(reindexed))
         v = spec.verify(con, change_dir, before if has(before) else None, after if has(after) and not old else None,
-                        old_run=after if old else None)
+                        old_run=after if old else None, mutants=mutated)
         if "error" in v:
             return v
         v["reindexed"] = bool(reindexed)
@@ -528,6 +596,19 @@ def check_text(v: dict, name: str) -> str:
     return "\n".join(L)
 
 
+def _unasserted_note(v: dict, name: str, for_agent: bool) -> str:
+    """For `Next:`: the scenarios whose own tests failed no mutant of the code they reach, and what to do."""
+    odd = [f"\"{s['name']}\"" for s in v["scenarios"] if s.get("verdict") == verdicts.UNASSERTED]
+    if not odd:
+        return ""
+    many = len(odd) > 1
+    return (f" Scenario{'s' if many else ''} {', '.join(odd[:3])}{' and more' if len(odd) > 3 else ''} pass{'' if many else 'es'}"
+            f" but {'their tests' if many else 'its test'} failed none of the mutants of the changed code it reaches, so"
+            f" {'they' if many else 'it'} would pass whatever the change did: strengthen {'them' if many else 'it'}, run the"
+            " mutation plan again" + ("" if for_agent else f" (`python .leyline/mutants/{name}/run.py`)")
+            + (" and call `check` with mutants_path." if for_agent else f" and check with `--mutants`."))
+
+
 def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
     """What to do after a check, named for what is left: commands to type, or (for_agent) the MCP tools to call."""
     if v["done_as_agreed"]:
@@ -535,6 +616,7 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
         yours = (f" Check task{'s' if len(mine) > 1 else ''} {', '.join(mine)} by hand: {'they name' if len(mine) > 1 else 'it names'}"
                  " no code.") if mine else ""
         yours += verdicts.next_note(v)   # scenarios whose tests pass but may not run the change
+        yours += _unasserted_note(v, name, for_agent)
         return [("Next: nothing left to check; the change was done as agreed. Show the person the verdict and the diff."
                  if for_agent else "Next: nothing left to check; the change was done as agreed. Review the diff and commit it.")
                 + yours + (" The baseline is kept, so `check` can run again after later edits." if for_agent else
@@ -592,6 +674,8 @@ def next_after_check(v: dict, name: str, for_agent: bool = False) -> list[str]:
         out.append(f"{spec._n(len(v['rules_newly_failing']), 'rule')} that held now {'fail' if len(v['rules_newly_failing']) > 1 else 'fails'}:"
                    " fix the code or change the rule.")
     out += verdicts.waiting_lines(v)   # when the project makes a person's check block
+    if (note := _unasserted_note(v, name, for_agent)):
+        out.append(note.strip())
     if not out:
         out.append(f"fix what the verdict lists, then {again}.")
     return ["Next: " + out[0], *("Also: " + x for x in out[1:])]

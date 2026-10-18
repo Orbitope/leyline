@@ -8,7 +8,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Optional
-from . import store
+from . import store, summaries
 
 ROLLUP_KINDS = ("imports", "uses_type", "extends", "implements", "instantiates")
 
@@ -292,6 +292,13 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
             out["calls"] = calls
         if callers["total"]:
             out["called_by"] = callers
+    if kind == "callable":
+        r = reaching(con, node_id, limit)
+        out["tests_reaching"], out["entries_reaching"] = r["tests"], r["entries"]
+        from . import coverage
+        if coverage.has(con):
+            measured = coverage.tests_for(con, node_id, 10_000)
+            out["tests_measured"] = {"total": len(measured), "items": measured[:limit]}
     if kind == "type":
         users: dict[str, int] = {}
         for r in con.execute(
@@ -323,7 +330,28 @@ def expand(con, node_id: str, limit: int = 50) -> dict:
     for side in ("out", "in"):
         if not out[side]:
             del out[side]
+    _summarize(con, out)
+    if out.get("doc") and out.get("doc") == out.get("summary"):
+        del out["doc"]   # the summary already says it
     return out
+
+
+def _summarize(con, out) -> None:
+    """Add `summary`, what each node in an answer is for, to every row of it that has one: one lookup however many
+    rows. A row is a dict with an `id` and a `name` (a node as `_brief` makes it), at any depth."""
+    rows, todo = [], [out]
+    while todo:
+        x = todo.pop()
+        if isinstance(x, dict):
+            if isinstance(x.get("id"), str) and "name" in x:
+                rows.append(x)
+            todo.extend(x.values())
+        elif isinstance(x, list):
+            todo.extend(x)
+    said = summaries.for_nodes(con, [r["id"] for r in rows])
+    for r in rows:
+        if r["id"] in said and "summary" not in r:
+            r["summary"] = said[r["id"]]
 
 
 def search(con, query: str, kind: Optional[str] = None, limit: int = 20) -> dict:
@@ -361,7 +389,9 @@ def search(con, query: str, kind: Optional[str] = None, limit: int = 20) -> dict
                                             (leaf, owner.rsplit(".", 1)[-1], *([kind] if kind else []), limit))]
     first = {r["id"] for r in exact}
     rows = (exact + [r for r in rows if r["id"] not in first])[:limit]
-    return {"query": query, "results": [_brief(r) for r in rows]}
+    results = [_brief(r) for r in rows]
+    _summarize(con, results)
+    return {"query": query, "results": results}
 
 
 def _owner_is(row, owner: str) -> bool:
@@ -499,7 +529,32 @@ def _adjacency(con, reverse: bool = False) -> dict:
                          f" SELECT {a}, {b}, 'communicates' FROM edges WHERE kind = 'communicates' UNION"
                          f" SELECT {b}, {a}, 'dispatch' FROM edges WHERE kind = 'overrides'"):
         adj.setdefault(r[0], []).append((r[1], r[2]))
+    if reverse:
+        _assets_run(con, adj)
     return adj
+
+
+def _assets_run(con, adj: dict) -> None:
+    """What reaches a script's contents also reaches the assets that run the script, and what reaches a scene or a
+    prefab reaches the assets that include it: the step from a class, a method or a field to the prefab that runs
+    it, which no call makes. Only for the reverse walk (impact), and only on a map that holds assets."""
+    from .adapters import ASSET_LANGUAGES
+    marks = ",".join("?" * len(ASSET_LANGUAGES))
+    rows = con.execute(
+        f"SELECT a.id, d.id, d.kind, d.language, d.repo_id, d.path FROM edges e JOIN nodes a ON a.id = e.src_id"
+        f" JOIN nodes d ON d.id = e.dst_id WHERE e.kind = 'imports' AND a.language IN ({marks})", sorted(ASSET_LANGUAGES)).fetchall()
+    if not rows:
+        return
+    runs: dict[tuple, list] = {}
+    for asset, dst, kind, lang, repo, path in rows:
+        if lang in ASSET_LANGUAGES:
+            adj.setdefault(dst, []).append((asset, "includes"))
+        else:
+            runs.setdefault((repo, path), []).append(asset)
+    for repo, path in runs:
+        for (nid,) in con.execute("SELECT id FROM nodes WHERE repo_id = ? AND path = ? AND kind IN ('type', 'callable', 'field')",
+                                  (repo, path)):
+            adj.setdefault(nid, []).extend((asset, "runs") for asset in runs[(repo, path)])
 
 
 def trace(con, from_id: str, to_id: str, max_depth: int = 12) -> dict:
@@ -528,6 +583,64 @@ def trace(con, from_id: str, to_id: str, max_depth: int = 12) -> dict:
         path.append({"id": cur, "name": row["name"], "path": row["path"], "via": via})
         cur = p
     return {"from": from_id, "to": to_id, "found": True, "hops": len(path) - 1, "path": path[::-1]}
+
+
+def reaching(con, node_id: str, limit: int = 20) -> dict:
+    """The tests and the entry points that reach a callable, from the reverse call graph as `impact` walks it, so a
+    flow the walk cut short (depth 8, 300 steps) does not hide a test that does reach it. The nearest come first: by
+    the depth of the callable on a stored flow that starts there, else by the number of calls between. Each item has
+    the test's or entry point's node id, and its flow id when one exists. The flow steps are read once."""
+    from .change import enclosing
+    flows_of: dict[str, tuple] = {}     # a flow's start -> (flow id, kind)
+    for fid, start, kind in con.execute("SELECT id, entry_id, json_extract(attrs, '$.kind') FROM flows"):
+        if start and kind in ("test", "entry") and start not in flows_of:
+            flows_of[start] = (fid, kind)
+    tests = {r[0] for r in con.execute("SELECT id FROM nodes WHERE kind = 'test'")}
+    tests |= {s for s, (_f, k) in flows_of.items() if k == "test"}
+    depth_on: dict[str, int] = {}       # a flow's start -> the depth of node_id on it
+    for start, depth in con.execute("SELECT f.entry_id, s.depth FROM flow_steps s JOIN flows f ON f.id = s.flow_id"
+                                    " WHERE s.callable_id = ?", (node_id,)):
+        if start != node_id and (start not in depth_on or depth < depth_on[start]):
+            depth_on[start] = depth
+    adj = _adjacency(con, reverse=True)
+    shape = {r[0]: {"kind": r[1], "parent_id": r[2]} for r in con.execute("SELECT id, kind, parent_id FROM nodes")}
+    dist: dict[str, int] = {node_id: 0}
+
+    def lift(found, d):   # a nested function runs when the function it is in runs, as in `impact`
+        more = []
+        for i in found:
+            for e in enclosing(shape, i):
+                if e in dist:
+                    break
+                dist[e] = d
+                more.append(e)
+        return found + more
+
+    frontier, d = lift([node_id], 0), 0
+    while frontier:
+        nxt = []
+        for cur in frontier:
+            for src, _via in adj.get(cur, ()):
+                if src not in dist:
+                    dist[src] = d + 1
+                    nxt.append(src)
+        frontier, d = lift(nxt, d + 1), d + 1
+    found = [i for i in dist if i != node_id]
+
+    def listing(ids):
+        ids = sorted(ids, key=lambda i: (depth_on.get(i, dist[i]), i not in depth_on, shape.get(i, {}).get("kind") != "test", i))
+        names = {r[0]: (f"the top level of {r[2]}" if r[1] == "<module>" and r[2] else r[1]) for r in con.execute(
+            f"SELECT id, name, path FROM nodes WHERE id IN ({','.join('?' * len(ids[:limit]))})", ids[:limit])} if ids else {}
+        items = []
+        for i in ids[:limit]:
+            item = {"id": i, "name": names.get(i, i), "calls_away": dist[i]}
+            if i in flows_of:
+                item["flow"] = flows_of[i][0]
+            items.append(item)
+        return {"total": len(ids), "items": items}
+
+    return {"tests": listing([i for i in found if i in tests]),
+            "entries": listing([i for i in found if i not in tests and flows_of.get(i, (None, None))[1] == "entry"])}
 
 
 def impact(con, node_id: str, max_depth: int = 6, flows_limit: int = 40) -> dict:

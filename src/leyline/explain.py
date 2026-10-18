@@ -28,7 +28,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-from . import diagrams, query, store
+from . import diagrams, summaries, query, store
 
 # -- words ---------------------------------------------------------------------------------------------------------
 STOP = set("""a an the and or of to in on for with from by is are was were be been being it its this that these those
@@ -66,7 +66,10 @@ SYNONYMS = [
     "test spec",
 ]
 
-WEIGHT = {"name": 3.0, "route": 3.0, "test": 2.0, "owner": 1.5, "file": 1.2, "doc": 1.0, "language": 1.0, "path": 0.5}
+WEIGHT = {"name": 3.0, "route": 3.0, "test": 2.0, "note": 2.0, "owner": 1.5, "file": 1.2, "doc": 1.0, "language": 1.0,
+          "path": 0.5}
+STEP_SUMMARY = 120   # characters of what a step of a walk is for
+STRONG = ("name", "route", "owner", "doc", "note")   # where two words of the description found count for more
 LANGUAGE_WORDS = {"csharp": "csharp cs c# dotnet", "typescript": "typescript ts", "javascript": "javascript js",
                   "python": "python py", "gdscript": "gdscript godot", "cpp": "cpp c++"}
 EXACT, NEAR, SYNONYM = 1.0, 0.8, 0.6
@@ -163,42 +166,6 @@ class _Lines:
         return self.line(node_id, path, n)
 
 
-COMMENT = re.compile(r"^\s*(//+|#+|/\*+|\*+/?|<!--|--)\s?")
-
-
-def leading_doc(lines: list[str], start: int) -> str:
-    """The comment just above a declaration, and a Python docstring just below it: what its author said it does."""
-    if not lines or not start:
-        return ""
-    out: list[str] = []
-    k = start - 2
-    while k >= 0 and len(out) < 10:
-        s = lines[k].strip()
-        if s.startswith("@") or s.startswith("["):    # a decorator or an attribute sits between the comment and the code
-            k -= 1
-            continue
-        if not COMMENT.match(s) or not s:
-            break
-        out.append(re.sub(r"\s*(\*/|-->)$", "", COMMENT.sub("", s)))
-        k -= 1
-    out.reverse()
-    for k in range(start, min(start + 3, len(lines))):   # the docstring, on the lines after `def ...:`
-        s = lines[k].strip()
-        if s.startswith(('"""', "'''", 'r"""')):
-            q = s.lstrip("r")[:3]
-            body = [s.lstrip("r")[3:]]
-            j = k
-            while q not in body[-1] and j + 1 < len(lines) and len(body) < 8:
-                j += 1
-                body.append(lines[j].strip())
-            out.append(" ".join(body).split(q)[0])
-            break
-        if s and not s.endswith((":", "(", ",")):
-            break
-    text = re.sub(r"<[^>]+>", " ", " ".join(out))     # C# /// <summary>
-    return " ".join(text.split())[:400]
-
-
 def _path_fields(path: Optional[str]) -> dict:
     """A file's own name, which says what it is about, and the folders it is in, which say less."""
     folders, _, base = (path or "").rpartition("/")
@@ -224,7 +191,6 @@ class Index:
         self.flows_from: dict[str, list] = defaultdict(list)
         for fid, eid in con.execute("SELECT id, entry_id FROM flows"):
             self.flows_from[eid].append(fid)
-        lines = _Lines(con)
         self.ids: list[str] = []
         self.rows: list[dict] = []
         self.fields: list[dict] = []
@@ -255,7 +221,7 @@ class Index:
                           "owner": owner, "route": route,
                           **_path_fields(path)}
                 if not top:
-                    fields["doc"] = leading_doc(lines.get(nid, path), line or 0)
+                    fields["doc"] = a.get("doc") or ""
             fields["language"] = LANGUAGE_WORDS.get(lang or "", lang or "")
             k = len(self.ids)
             self.ids.append(nid)
@@ -274,6 +240,7 @@ class Index:
                 for s in ws:
                     self.postings[s].append((k, f))
             self.fields.append(stems_by_field)
+        self.where = {nid: k for k, nid in enumerate(self.ids)}   # a node id -> its row
         self.vocab = sorted(self.postings)
         self.df = {s: len({k for k, _ in ps}) for s, ps in self.postings.items()}
         self.n = max(len(self.ids), 1)
@@ -398,6 +365,16 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
         df = ix.df.get(t["stem"]) or min([ix.df[v] for v in matches[t["stem"]]] or [0])
         weight[t["stem"]] = (0.3 if t["weak"] else 1.5 if t.get("named") else 1.0) * math.log(1 + ix.n / (1 + df))
     weak = {t["stem"]: t["weak"] for t in ts}
+    # What a person or an agent said a function is for (`annotate responsibility`) is read on each call, not kept in
+    # the index: one written after the map is found at once. Its words match like the words of the code.
+    said = {}
+    for nid, text in summaries.annotation_text(con).items():
+        k = ix.where.get(nid)
+        if k is not None:
+            said[k] = {stem(w) for w in split_words(text) if len(w) > 1 and w not in STOP}
+    for t in ts:
+        extra = {v for stems in said.values() for v in stems if v == t["stem"] and v not in matches[t["stem"]]}
+        matches[t["stem"]].update({v: EXACT for v in extra})
     total = sum(weight.values()) or 1.0
     # Code in tests, samples and fixtures counts for half, unless the question is about tests: a product's
     # `wsgi_app` answers "what happens when a request comes in", not a test's `before_request1`.
@@ -409,8 +386,11 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
     found: dict[int, dict] = defaultdict(lambda: defaultdict(list))   # row -> term stem -> [(score, field, stem, quality)]
     for t in ts:
         for v, q in matches[t["stem"]].items():
-            for k, f in ix.postings[v]:
+            for k, f in ix.postings.get(v, ()):
                 found[k][t["stem"]].append((WEIGHT[f] * q, f, v, q))
+            for k, stems in said.items():
+                if v in stems:
+                    found[k][t["stem"]].append((WEIGHT["note"] * q, "note", v, q))
     best: dict[int, dict] = {}   # row -> term stem -> (score, field, matched stem, quality)
     scored = []
     for k, per_term in found.items():
@@ -439,6 +419,8 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
         raw = sum(weight[s] * term[s] for s in hits)
         strong = any(h[1] in ("name", "route", "test") and not weak[s] for s, h in hits.items())
         score = raw * (0.4 + covered / total) * KINDS[row["kind"]][1] * (1.0 if strong else 0.6)
+        if sum(1 for s, h in hits.items() if h[1] in STRONG and not weak[s]) >= 2:
+            score *= 1.5   # two of its own words answer two words of the question: a name and a comment, say
         if aside_prefixes and (row["path"] or "").startswith(aside_prefixes):
             score *= 0.5
         scored.append((score, k))
@@ -461,7 +443,7 @@ def find_flows(con, description: str, limit: int = 10) -> dict:
         why = []
         for s, (sc, f, v, q) in sorted(best[k].items(), key=lambda x: -x[1][0]):
             where = {"name": "its name", "route": "its route", "test": "the test's name", "owner": "the name of what"
-                     " it is in", "doc": "its comment", "file": "its file's name", "path": "its folder", "language": "its language"}[f]
+                     " it is in", "doc": "its comment", "note": "its note", "file": "its file's name", "path": "its folder", "language": "its language"}[f]
             said = ix.surface.get(v, v)
             how = "" if q == EXACT else f" (as {said})" if q == NEAR else f" (as {said}, which means the same here)"
             why.append(f"{words[s]}{how} in {where}")
@@ -822,6 +804,10 @@ def explain_path(con, frm: str, to: Optional[str] = None, through: Optional[str]
         if later:
             step["later_elsewhere"] = later
         out_steps.append(step)
+    said = summaries.for_nodes(con, [s["id"] for s in out_steps], width=STEP_SUMMARY)   # what each step is for
+    for step in out_steps:
+        if step["id"] in said:
+            step["summary"] = said[step["id"]]
     from .outline import labels   # the named part (module_outline, name_part) each step sits in
     named = labels(con, [s["id"] for s in out_steps])
     for step in out_steps:
@@ -971,6 +957,8 @@ def walk_text(r: dict) -> str:
         else:
             L.append(f"{s['n']:>3}. {pad}{s['how']} -> {s['name']}  ({s['at']})" + ("  [guessed link]" if s.get("guessed") else "")
                      + into)
+        if s.get("summary"):
+            L.append(f"     {pad}   {s['summary']}")
         if s.get("call"):
             L.append(f"     {pad}   at {s.get('call_line', '')}: {s['call']}")
         if s.get("declaration") and s["how"] != "call":
