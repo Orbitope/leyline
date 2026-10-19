@@ -192,7 +192,7 @@ def test_a_mutant_is_made_at_the_operator(tmp_path):
     afters = {m["after"] for m in doc["mutants"] if m["operator"] == "> to <="}
     assert 'flag = ("é", a > b and c <= d)' in afters and 'flag = ("é", a <= b and c > d)' in afters
     for m in doc["mutants"]:                                                       # each mutated file still parses
-        src = (p.root / m["file"]).read_text().split("\n")
+        src = (p.root / m["file"]).read_text(encoding="utf-8").split("\n")
         src[m["line"] - 1] = "    " + m["after"]                                    # the plan keeps the line stripped
         compile("\n".join(src), m["file"], "exec")
 

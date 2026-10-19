@@ -72,8 +72,8 @@ def test_a_comment_edited_above_a_function_re_parses_only_its_own_file(tmp_path)
     db = tmp_path / "s.db"
     index(root, db, "s")
     core = root / "pkg" / "core.py"
-    core.write_text(core.read_text().replace("# Sums two numbers. Never more than two.", "# Adds two numbers."))
-    docs = core.read_text().replace("def helper():\n    return 0", "# Gives zero.\ndef helper():\n    return 0")
+    core.write_text(core.read_text(encoding="utf-8").replace("# Sums two numbers. Never more than two.", "# Adds two numbers."), encoding="utf-8")
+    docs = core.read_text(encoding="utf-8").replace("def helper():\n    return 0", "# Gives zero.\ndef helper():\n    return 0")
     core.write_text(docs)                                      # a comment above a name that other files call too
     second = index(root, db, "s")["incremental"]
     assert second["mode"] == "incremental"

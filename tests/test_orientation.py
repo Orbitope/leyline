@@ -91,7 +91,7 @@ def test_the_parts_are_computed_once_per_map(big, tmp_path, monkeypatch):
     m = loop.map_repos([str(repo)], tmp_path / "again.db", repo_id="r")
     assert len(calls) == 1                                      # the tour and the page read the one result
     assert "unnamed_parts" in m and "parts" not in m
-    assert '"part:r:dir:svc/src/shop/core"' in Path(m["page"]).read_text()
+    assert '"part:r:dir:svc/src/shop/core"' in Path(m["page"]).read_text(encoding="utf-8")
 
 
 def test_map_says_when_the_parts_of_the_main_module_are_unnamed(big, tmp_path):
