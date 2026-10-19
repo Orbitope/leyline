@@ -386,7 +386,10 @@ def tests(root, ids, fail_fast, timeout):
     cmd = [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider", "-rfE"] + (["-x"] if fail_fast else []) + list(ids)
     began = time.time()
     try:
-        done = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        # No bytecode is written: a mutant changes one character, so the file keeps its size, and compiled twice in the same
+        # second it would keep its modification time too, and the compiled original would run in place of the mutant.
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        done = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
     except subprocess.TimeoutExpired:
         return None, time.time() - began
     failed = [line.split(" ", 1)[1].split(" - ", 1)[0].strip() for line in done.stdout.splitlines()
@@ -398,12 +401,22 @@ def tests(root, ids, fail_fast, timeout):
     return failed, time.time() - began
 
 
+def forget_bytecode(path):
+    """Delete the compiled copies of a file that is about to run changed, or has been put back."""
+    for pyc in (Path(path).parent / "__pycache__").glob(Path(path).stem + ".*.pyc"):
+        try:
+            pyc.unlink()
+        except OSError:
+            pass
+
+
 def restore():
     """Put back a file a run that was killed left changed."""
     marker = HERE / "applied.json"
     if marker.exists():
         info = json.loads(marker.read_text(encoding="utf-8"))
         Path(info["file"]).write_bytes((BACKUP / info["backup"]).read_bytes())
+        forget_bytecode(info["file"])
         marker.unlink()
         say("Put back %s, which an earlier run left changed." % info["file"])
 
@@ -471,6 +484,7 @@ def main():
             if applied.returncode != 0:
                 rec["why"] = "git apply: " + applied.stderr.strip()[-200:]
             else:
+                forget_bytecode(path)
                 failed, _ = tests(root, m["stage1"], False, limit) if m["stage1"] else ([], 0)
                 rec["ran"][0] = len(m["stage1"])
                 if failed is None:
@@ -493,6 +507,7 @@ def main():
             rec["why"] = str(e)[:300]
         finally:
             path.write_bytes(original)
+            forget_bytecode(path)
             (HERE / "applied.json").unlink(missing_ok=True)
         record(rec)
         say("%s %s: %s" % (m["id"], m["operator"], rec["status"]))

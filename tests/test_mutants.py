@@ -64,8 +64,10 @@ def git(root: Path, *args: str) -> None:
 
 
 def run_tests(root: Path) -> str:
+    # No bytecode: a test file written again with a changed character keeps its size, and in the same second its modification
+    # time, so the compiled copy of the old one would run in place of the new one.
     return subprocess.run([sys.executable, "-m", "pytest", "-rA", "-q", "-p", "no:cacheprovider"], cwd=root,
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1")).stdout
 
 
 class Project:
